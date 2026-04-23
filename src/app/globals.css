@@ -9,6 +9,12 @@
   body {
     @apply bg-qc-ink text-qc-text antialiased;
     font-feature-settings: "ss01", "cv11";
+    caret-color: transparent;
+  }
+  input,
+  textarea,
+  [contenteditable="true"] {
+    caret-color: auto;
   }
   ::selection {
     @apply bg-qc-cyan/30 text-qc-text;
