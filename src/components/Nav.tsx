@@ -15,23 +15,23 @@ export default function Nav() {
           {siteConfig.name}
         </Link>
 
-        <nav className="hidden items-center gap-8 text-sm text-qc-text-dim md:flex">
-          <a href="#capabilities" className="hover:text-qc-text transition-colors">
-            Capabilities
+        <nav className="hidden items-center gap-8 text-sm text-qc-text-dim md:flex" aria-label="Main navigation">
+          <a href="#capabilities" className="transition-colors hover:text-qc-text">
+            AI analysts
           </a>
-          <a href="#who-we-serve" className="hover:text-qc-text transition-colors">
-            Who we serve
+          <a href="#who-we-serve" className="transition-colors hover:text-qc-text">
+            Who it is for
           </a>
-          <a href="#contact" className="hover:text-qc-text transition-colors">
-            Contact
+          <a href="#contact" className="transition-colors hover:text-qc-text">
+            Custom systems
           </a>
         </nav>
 
         <a
-          href="#contact"
-          className="rounded-md border border-qc-cyan/40 bg-qc-cyan/10 px-3.5 py-1.5 font-mono text-xs uppercase tracking-wider text-qc-cyan transition-colors hover:bg-qc-cyan/20"
+          href="#early-access"
+          className="rounded-md border border-qc-cyan/40 bg-qc-cyan/10 px-3.5 py-1.5 font-mono text-[11px] uppercase tracking-wider text-qc-cyan transition-colors hover:bg-qc-cyan/20"
         >
-          Get in touch
+          Request early access
         </a>
       </div>
     </header>
