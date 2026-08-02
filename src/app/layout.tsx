@@ -15,29 +15,31 @@ const jetbrains = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Quant Cloud · Agentic AI for capital markets",
+  title: "Quant Cloud | AI analysts for serious research",
   description:
-    "Quant Cloud builds agentic AI systems for finance. Research, workflow, and data infrastructure for capital markets.",
+    "Configurable AI analysts for company, industry, thematic, and private-market research. Built around your sources, methods, and output format.",
   metadataBase: new URL("https://quantcloud.com"),
   openGraph: {
-    title: "Quant Cloud",
-    description: "Agentic AI systems for capital markets.",
+    title: "Quant Cloud | AI analysts for serious research",
+    description:
+      "AI analysts built around your research universe, methods, and house format.",
     url: "https://quantcloud.com",
     siteName: "Quant Cloud",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "Quant Cloud",
-    description: "Agentic AI systems for capital markets.",
+    title: "Quant Cloud | AI analysts for serious research",
+    description:
+      "AI analysts built around your research universe, methods, and house format.",
   },
 };
 
 export default function RootLayout({
   children,
-}: {
+}: Readonly<{
   children: React.ReactNode;
-}) {
+}>) {
   return (
     <html lang="en" className={`${inter.variable} ${jetbrains.variable}`}>
       <body>{children}</body>

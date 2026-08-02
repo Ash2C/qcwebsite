@@ -10,15 +10,7 @@ export default function Footer() {
           {siteConfig.name}
         </div>
         <p className="font-mono text-xs uppercase tracking-widest">
-          Sister company of{" "}
-          <a
-            href="https://01.co"
-            target="_blank"
-            rel="noreferrer"
-            className="text-qc-text-dim transition-colors hover:text-qc-text"
-          >
-            Zero One
-          </a>
+          Research systems, built for serious use
         </p>
         <p className="font-mono text-xs uppercase tracking-widest">
           © {year} {siteConfig.name}

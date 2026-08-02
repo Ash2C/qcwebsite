@@ -13,11 +13,19 @@
   }
   input,
   textarea,
+  select,
   [contenteditable="true"] {
     caret-color: auto;
   }
+  select option {
+    @apply bg-qc-ink-soft text-qc-text;
+  }
   ::selection {
     @apply bg-qc-cyan/30 text-qc-text;
+  }
+  :focus-visible {
+    outline: 2px solid theme("colors.qc-cyan");
+    outline-offset: 3px;
   }
 }
 
@@ -31,5 +39,19 @@
   .radial-fade {
     mask-image: radial-gradient(ellipse at center, black 40%, transparent 75%);
     -webkit-mask-image: radial-gradient(ellipse at center, black 40%, transparent 75%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

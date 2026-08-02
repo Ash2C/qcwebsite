@@ -1,9 +1,9 @@
 export const siteConfig = {
   name: "Quant Cloud",
   domain: "quantcloud.com",
-  tagline: "Agentic AI systems for capital markets.",
+  tagline: "AI analysts built around your research universe.",
   description:
-    "Quant Cloud builds agentic AI for finance. Research, workflow automation, and data infrastructure engineered for institutional capital.",
+    "Quant Cloud builds configurable AI analysts for company, industry, thematic, and private-market research—producing rigorous work for internal use or public distribution.",
   contactEmail:
     process.env.NEXT_PUBLIC_CONTACT_EMAIL ?? "hello@quantcloud.com",
 };
