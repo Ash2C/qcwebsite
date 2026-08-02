@@ -15,19 +15,17 @@ export default function Footer() {
         </div>
 
         <div className="mt-8 grid gap-7 border-t border-white/5 pt-8 md:grid-cols-2 md:gap-12">
-          <address className="not-italic">
+          <div>
             <p className="font-mono text-[10px] uppercase tracking-widest text-qc-cyan">
-              Based in
+              Contact
             </p>
-            <p className="mt-2 font-medium text-qc-text">Boston, USA</p>
             <a
               href="tel:+16176228038"
-              className="mt-1 inline-block transition-colors hover:text-qc-text"
+              className="mt-2 inline-block font-medium text-qc-text transition-colors hover:text-qc-text"
             >
               617 622 8038
             </a>
-            <p className="mt-1">60 State Street, Suite 1400, Boston, MA 02109</p>
-          </address>
+          </div>
 
           <div className="md:text-right">
             <p className="font-mono text-[10px] uppercase tracking-widest text-qc-cyan">

@@ -28,10 +28,10 @@ export default function Nav() {
         </nav>
 
         <a
-          href="#early-access"
+          href="#request-access"
           className="rounded-md border border-qc-cyan/40 bg-qc-cyan/10 px-3.5 py-1.5 font-mono text-[11px] uppercase tracking-wider text-qc-cyan transition-colors hover:bg-qc-cyan/20"
         >
-          Request early access
+          Request access
         </a>
       </div>
     </header>

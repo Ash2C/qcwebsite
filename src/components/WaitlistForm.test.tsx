@@ -27,9 +27,9 @@ async function completeEmailStep() {
   const user = userEvent.setup();
   await user.type(screen.getByLabelText("Work email"), "pm@fund.com");
   await user.click(
-    screen.getByRole("button", { name: "Request early access" })
+    screen.getByRole("button", { name: "Request access" })
   );
-  await screen.findByText("You are on the early-access list.");
+  await screen.findByText("Your access request is received.");
   return user;
 }
 
@@ -47,6 +47,9 @@ describe("Quant Cloud waitlist form", () => {
     });
     expect(screen.getByLabelText("Organization type")).toBeInTheDocument();
     expect(container.textContent).not.toMatch(/Zero One|The Blade/i);
+    expect(container.textContent).not.toMatch(
+      /early access|founding cohort|first cohort|beta|pilot|test users/i
+    );
     expect(user).toBeDefined();
   });
 
@@ -73,7 +76,7 @@ describe("Quant Cloud waitlist form", () => {
     await user.click(screen.getByRole("button", { name: "Send details" }));
 
     expect(await screen.findByText("Your request is in.")).toBeInTheDocument();
-    expect(screen.getByText(/Quant Cloud team will be in touch/i)).toBeInTheDocument();
+    expect(screen.getByText(/review your requirements.*fit and implementation/i)).toBeInTheDocument();
     const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toEqual({
       step: 2,
@@ -127,11 +130,20 @@ describe("Quant Cloud waitlist form", () => {
     const { container } = render(<WaitlistForm />);
     expect(container.textContent).toMatch(/Quant Cloud/i);
     expect(container.textContent).not.toMatch(/Zero One|The Blade/i);
+    expect(container.textContent).not.toMatch(
+      /early access|founding cohort|first cohort|beta|pilot|test users/i
+    );
 
     const user = await completeEmailStep();
     expect(container.textContent).not.toMatch(/Zero One|The Blade/i);
+    expect(container.textContent).not.toMatch(
+      /early access|founding cohort|first cohort|beta|pilot|test users/i
+    );
 
     await user.click(screen.getByRole("button", { name: "Skip for now" }));
     expect(container.textContent).not.toMatch(/Zero One|The Blade/i);
+    expect(container.textContent).not.toMatch(
+      /early access|founding cohort|first cohort|beta|pilot|test users/i
+    );
   });
 });

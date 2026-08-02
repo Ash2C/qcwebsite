@@ -47,7 +47,7 @@ export default function WaitlistForm() {
     });
     if (!response.ok) {
       const data = await response.json().catch(() => null);
-      throw new Error(data?.error || "Registration is temporarily unavailable.");
+      throw new Error(data?.error || "Access requests are temporarily unavailable.");
     }
   }
 
@@ -62,7 +62,7 @@ export default function WaitlistForm() {
       setError(
         submissionError instanceof Error
           ? submissionError.message
-          : "Registration is temporarily unavailable."
+          : "Access requests are temporarily unavailable."
       );
     } finally {
       setBusy(false);
@@ -101,7 +101,7 @@ export default function WaitlistForm() {
         <div>
           <p className="font-semibold text-qc-text">Your request is in.</p>
           <p className="mt-1 text-sm leading-relaxed text-qc-text-dim">
-            The Quant Cloud team will be in touch as we open the next early-access group.
+            The Quant Cloud team will review your requirements and be in touch to discuss fit and implementation.
           </p>
         </div>
       </div>
@@ -115,10 +115,10 @@ export default function WaitlistForm() {
           <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-qc-cyan" />
           <div>
             <p className="font-semibold text-qc-text">
-              You are on the early-access list.
+              Your access request is received.
             </p>
             <p className="mt-1 text-sm text-qc-text-dim">
-              A few optional details help us shape the right analyst for you.
+              A few optional details help us understand the right configuration for your organization.
             </p>
           </div>
         </div>
@@ -225,7 +225,7 @@ export default function WaitlistForm() {
           disabled={busy}
           className="shrink-0 rounded-md bg-qc-cyan px-5 py-3 text-sm font-semibold text-qc-ink-deep transition hover:bg-qc-cyan-dim disabled:opacity-50"
         >
-          {busy ? "Joining..." : "Request early access"}
+          {busy ? "Sending..." : "Request access"}
         </button>
       </div>
       {error && (
@@ -235,9 +235,9 @@ export default function WaitlistForm() {
         </div>
       )}
       <p className="mt-3 text-xs leading-relaxed text-qc-text-muted">
-        Early access is limited and hands-on. No cost for the first cohort.
+        Tell us about your research needs. The Quant Cloud team will follow up to discuss fit and implementation.
       </p>
-      <p className="sr-only">Quant Cloud early-access registration</p>
+      <p className="sr-only">Quant Cloud access request form</p>
     </form>
   );
 }

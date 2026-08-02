@@ -56,16 +56,16 @@ describe("QC AI analyst positioning", () => {
     expect(copy).not.toMatch(/Zero One|The Blade/i);
     expect(copy).not.toMatch(/marketing content/i);
     expect(copy).not.toMatch(/US-listed|US stocks/i);
+    expect(copy).toMatch(/request access/i);
+    expect(copy).not.toMatch(
+      /early access|founding cohort|first cohort|beta|pilot|test users/i
+    );
   });
 
-  it("shows the Boston contact details and legal entity", () => {
-    const { getByRole, getByText } = render(<Footer />);
+  it("shows contact and legal details without a Massachusetts location", () => {
+    const { container, getByRole, getByText } = render(<Footer />);
 
-    expect(getByText("Boston, USA")).toBeInTheDocument();
     expect(getByText("617 622 8038")).toBeInTheDocument();
-    expect(
-      getByText("60 State Street, Suite 1400, Boston, MA 02109")
-    ).toBeInTheDocument();
     expect(getByText("Clearsight Systems Pte. Ltd.")).toBeInTheDocument();
     expect(
       getByText("© 2026 Clearsight Systems Pte. Ltd.")
@@ -74,5 +74,6 @@ describe("QC AI analyst positioning", () => {
       "href",
       "tel:+16176228038"
     );
+    expect(container).not.toHaveTextContent(/Boston|Massachusetts|60 State Street/i);
   });
 });

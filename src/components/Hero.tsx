@@ -23,7 +23,7 @@ export default function Hero() {
         >
           <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 font-mono text-[11px] uppercase tracking-widest text-qc-text-dim">
             <span className="h-1.5 w-1.5 rounded-full bg-qc-cyan shadow-[0_0_12px_rgba(106,230,255,0.9)]" />
-            AI analysts · Early access
+            AI analysts · Configured for your work
           </div>
 
           <h1 className="max-w-3xl text-5xl font-semibold leading-[1.02] tracking-[-0.045em] text-qc-text sm:text-6xl md:text-7xl">
@@ -56,7 +56,7 @@ export default function Hero() {
         </motion.div>
 
         <motion.div
-          id="early-access"
+          id="request-access"
           initial={{ opacity: 0, y: 18 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.7, delay: 0.12, ease: "easeOut" }}
@@ -64,14 +64,14 @@ export default function Hero() {
         >
           <div className="absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-qc-cyan/80 to-transparent" aria-hidden />
           <p className="font-mono text-[11px] uppercase tracking-widest text-qc-cyan">
-            / Founding cohort
+            / Request access
           </p>
           <h2 className="mt-3 text-2xl font-semibold tracking-tight text-qc-text">
-            Build your first AI analyst.
+            Configure an AI analyst for your organization.
           </h2>
           <p className="mb-7 mt-3 text-sm leading-relaxed text-qc-text-dim">
-            We are onboarding a small group of teams and configuring each
-            analyst around a real research workflow.
+            Tell us about the research you need to produce. We will review your
+            requirements and discuss an implementation built around your workflow.
           </p>
           <WaitlistForm />
         </motion.div>
