@@ -211,3 +211,39 @@ If the environment or existing tests provide an approved QA address, submit it t
 - [ ] **Step 5: Record final repository state**
 
 Run `git status --short`, `git log -5 --oneline`, the full tests, and both production builds again after any deployment-driven edits. Report deployed URLs, commits, checks, and any deliberately skipped live-subscriber check.
+
+---
+
+### Task 6: Publish Boston contact and legal identity
+
+**Files:**
+- Modify: `src/components/Footer.tsx`
+- Modify: `src/components/Content.test.tsx`
+
+**Interfaces:**
+- Consumes: the existing QC footer and content regression suite.
+- Produces: a compact Boston contact block, clickable phone number, legal-entity disclosure, and fixed 2026 copyright notice.
+
+- [ ] **Step 1: Add a failing footer content test**
+
+Assert that the rendered page includes `Boston, USA`, `617 622 8038`,
+`60 State Street, Suite 1400, Boston, MA 02109`, `Clearsight Systems Pte. Ltd.`,
+and `© 2026 Clearsight Systems Pte. Ltd.`, and that the phone link uses
+`tel:+16176228038`.
+
+- [ ] **Step 2: Run the focused test and confirm RED**
+
+Run: `npm test -- src/components/Content.test.tsx`
+
+Expected: FAIL because the footer does not yet contain the contact or legal copy.
+
+- [ ] **Step 3: Implement the compact legal/contact footer**
+
+Keep the existing brand statement, add the Boston contact details in a separate
+subordinate block, and replace the dynamic copyright year with the exact fixed
+2026 legal-entity notice.
+
+- [ ] **Step 4: Verify and publish**
+
+Run `npm test`, `npx tsc --noEmit`, and `npm run build`, then deploy the linked
+Vercel project to production and confirm the live footer copy.

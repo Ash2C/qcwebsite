@@ -83,3 +83,12 @@ After deployment, production verification will confirm:
 - A new CRM or database
 - A claim that AI output is investment advice
 - A full redesign of unrelated Zero One pages
+
+## Footer contact and legal identity amendment
+
+The footer identifies Quant Cloud as based in Boston, USA and lists telephone
+`617 622 8038` and address `60 State Street, Suite 1400, Boston, MA 02109`.
+It separately names the operating legal entity as `Clearsight Systems Pte. Ltd.`
+and uses the fixed notice `© 2026 Clearsight Systems Pte. Ltd.` The contact
+details remain visually subordinate to the product page, and the telephone is
+clickable using `tel:+16176228038`.
