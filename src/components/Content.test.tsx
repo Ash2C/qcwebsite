@@ -57,4 +57,22 @@ describe("QC AI analyst positioning", () => {
     expect(copy).not.toMatch(/marketing content/i);
     expect(copy).not.toMatch(/US-listed|US stocks/i);
   });
+
+  it("shows the Boston contact details and legal entity", () => {
+    const { getByRole, getByText } = render(<Footer />);
+
+    expect(getByText("Boston, USA")).toBeInTheDocument();
+    expect(getByText("617 622 8038")).toBeInTheDocument();
+    expect(
+      getByText("60 State Street, Suite 1400, Boston, MA 02109")
+    ).toBeInTheDocument();
+    expect(getByText("Clearsight Systems Pte. Ltd.")).toBeInTheDocument();
+    expect(
+      getByText("© 2026 Clearsight Systems Pte. Ltd.")
+    ).toBeInTheDocument();
+    expect(getByRole("link", { name: "617 622 8038" })).toHaveAttribute(
+      "href",
+      "tel:+16176228038"
+    );
+  });
 });
