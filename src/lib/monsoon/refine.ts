@@ -86,7 +86,11 @@ export async function refineContact(input: RefineInput): Promise<RefineOutput> {
 
   let notes = typeof out.notes === "string" ? out.notes.trim() : "";
   if (notes === "") {
-    notes = [input.notes, input.spoken.trim()].filter(Boolean).join("\n");
+    // The dictated text stays whole; the tail of the existing notes gets whatever room is left.
+    const said = input.spoken.trim().slice(0, MAX_NOTES);
+    const room = MAX_NOTES - said.length - 1;
+    const tail = room > 0 ? input.notes.slice(-room).trimStart() : "";
+    notes = [tail, said].filter(Boolean).join("\n");
   }
   return { fields, notes: notes.slice(0, MAX_NOTES) };
 }

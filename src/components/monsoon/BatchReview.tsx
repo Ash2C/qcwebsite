@@ -7,6 +7,7 @@ import { saveCard, type EstateInfo, type SaveBody } from "./api";
 import { changedClass, notesRows, Was } from "./Highlight";
 import { describeResult, type SavePrompt } from "./outcomes";
 import PromptButtons from "./PromptButtons";
+import { mergeRefine, type Snapshot } from "./merge";
 import SpeakNotes from "./SpeakNotes";
 import { card, fieldInput, fieldLabel, FIELD_ROWS, primaryButton, secondaryButton, type FieldKey } from "./styles";
 
@@ -83,6 +84,9 @@ export default function BatchReview({
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  // Ids of rows with a tidy request in flight: those rows are read-only and nothing can be saved or dropped.
+  const [tidyIds, setTidyIds] = useState<string[]>([]);
+  const tidying = tidyIds.length > 0;
   const runRef = useRef(false);
 
   const eligible = batch.rows.filter(isEligible).length;
@@ -119,13 +123,15 @@ export default function BatchReview({
 
   // Nothing is saved here. The first snapshot is kept across repeated applies; a card that
   // needed attention or failed is a fresh attempt, like after a hand edit.
-  function applyRefine(id: string, next: RefineOutput) {
+  // A result for a row that is gone, being saved or already saved is dropped.
+  function applyRefine(id: string, result: RefineOutput, sent: Snapshot) {
     onChange((prev) => ({
       ...prev,
       rows: prev.rows.map((r) => {
-        if (r.id !== id) return r;
-        const base = r.before ?? { fields: r.fields, notes: r.notes, changed: [] };
+        if (r.id !== id || r.status === "saving" || r.status === "saved") return r;
         const nowNotes = r.notes ?? prev.note;
+        const next = mergeRefine({ fields: r.fields, notes: nowNotes }, sent, result);
+        const base = r.before ?? { fields: r.fields, notes: r.notes, changed: [] };
         const wasNotes = base.notes ?? prev.note;
         const changed: (FieldKey | "notes")[] = FIELD_ROWS.map((f) => f.key).filter(
           (k) => next.fields[k] !== base.fields[k],
@@ -192,7 +198,7 @@ export default function BatchReview({
           estateLabel: estate.label,
           roleLabel: (key) => estate.roles.find((r) => r.key === key)?.label ?? key,
         });
-        if (out.kind === "done") patchRow(row.id, { status: "saved", message: out.text });
+        if (out.kind === "done") patchRow(row.id, { status: "saved", message: out.text, before: undefined, spoken: undefined });
         else if (out.kind === "prompt") patchRow(row.id, { status: "needs", message: out.text, prompt: out.prompt });
         else patchRow(row.id, { status: "needs", message: out.text });
       } else if (res.status === 400) {
@@ -227,7 +233,7 @@ export default function BatchReview({
   }
 
   function remove(row: BatchRow) {
-    if (row.status === "saved" || running) return;
+    if (row.status === "saved" || running || tidying) return;
     onChange((prev) => ({ ...prev, rows: prev.rows.filter((r) => r.id !== row.id) }));
     if (openId === row.id) setOpenId(null);
   }
@@ -246,7 +252,7 @@ export default function BatchReview({
           <select
             id="batch-role"
             value={batch.role}
-            disabled={running}
+            disabled={running || tidying}
             onChange={(e) => onChange((prev) => ({ ...prev, role: e.target.value }))}
             className={`${fieldInput} appearance-none`}
           >
@@ -265,7 +271,7 @@ export default function BatchReview({
             id="batch-note"
             type="text"
             value={batch.note}
-            disabled={running}
+            disabled={running || tidying}
             onChange={(e) => onChange((prev) => ({ ...prev, note: e.target.value }))}
             className={fieldInput}
           />
@@ -298,7 +304,7 @@ export default function BatchReview({
               <div className="px-4 pb-3">
                 <PromptButtons
                   prompt={row.prompt}
-                  disabled={running}
+                  disabled={running || tidying}
                   onUseOrg={(org) =>
                     void run([{ ...row, fields: { ...row.fields, org }, newOrg: undefined }])
                   }
@@ -312,12 +318,17 @@ export default function BatchReview({
                 row={row}
                 estate={estate}
                 running={running}
+                tidying={tidyIds.includes(row.id)}
+                anyTidying={tidying}
                 batchNote={batch.note}
                 onField={(key, value) => editField(row, key, value)}
                 onRole={(role) => patchRow(row.id, { role })}
                 onNotes={(notes) => patchRow(row.id, { notes, before: dropChanged(row, "notes") })}
                 onDraft={(spoken) => patchRow(row.id, { spoken })}
-                onApply={(next) => applyRefine(row.id, next)}
+                onApply={(next, sent) => applyRefine(row.id, next, sent)}
+                onBusy={(b) =>
+                  setTidyIds((ids) => (b ? [...ids, row.id] : ids.filter((x) => x !== row.id)))
+                }
                 onUndo={() => undoRefine(row)}
                 onUnauthorized={onUnauthorized}
                 onRemove={() => remove(row)}
@@ -342,13 +353,13 @@ export default function BatchReview({
           <button
             type="button"
             className={primaryButton}
-            disabled={eligible === 0 || running}
+            disabled={eligible === 0 || running || tidying}
             onClick={() => void run(batch.rows.filter(isEligible))}
           >
             {running ? "Saving…" : `Save all (${eligible})`}
           </button>
         )}
-        <button type="button" className={secondaryButton} onClick={discard}>
+        <button type="button" disabled={tidying} className={secondaryButton} onClick={discard}>
           Discard batch
         </button>
       </div>
@@ -361,12 +372,15 @@ function RowEditor({
   row,
   estate,
   running,
+  tidying,
+  anyTidying,
   batchNote,
   onField,
   onRole,
   onNotes,
   onDraft,
   onApply,
+  onBusy,
   onUndo,
   onUnauthorized,
   onRemove,
@@ -374,17 +388,20 @@ function RowEditor({
   row: BatchRow;
   estate: EstateInfo;
   running: boolean;
+  tidying: boolean; // this card has a tidy request in flight
+  anyTidying: boolean; // some card does
   batchNote: string;
   onField: (key: FieldKey, value: string) => void;
   onRole: (role: string | undefined) => void;
   onNotes: (notes: string | undefined) => void;
   onDraft: (text: string) => void;
-  onApply: (next: RefineOutput) => void;
+  onApply: (next: RefineOutput, sent: Snapshot) => void;
+  onBusy: (busy: boolean) => void;
   onUndo: () => void;
   onUnauthorized: () => void;
   onRemove: () => void;
 }) {
-  const locked = row.status === "saved" || row.status === "saving" || running;
+  const locked = row.status === "saved" || row.status === "saving" || running || tidying;
   const marked = (key: FieldKey | "notes") => row.before?.changed.includes(key) ?? false;
   return (
     <div className="divide-y divide-neutral-200 border-t border-neutral-200 dark:divide-white/10 dark:border-white/10">
@@ -451,10 +468,11 @@ function RowEditor({
             onDraft={onDraft}
             onApply={onApply}
             onUnauthorized={onUnauthorized}
+            onBusy={onBusy}
             disabled={running || row.status === "saving"}
           />
           {row.before && (
-            <button type="button" disabled={running} className={secondaryButton} onClick={onUndo}>
+            <button type="button" disabled={running || tidying} className={secondaryButton} onClick={onUndo}>
               Undo
             </button>
           )}
@@ -462,7 +480,7 @@ function RowEditor({
       )}
       {row.status !== "saved" && (
         <div className="p-3">
-          <button type="button" disabled={running} className={secondaryButton} onClick={onRemove}>
+          <button type="button" disabled={running || anyTidying} className={secondaryButton} onClick={onRemove}>
             Remove
           </button>
         </div>

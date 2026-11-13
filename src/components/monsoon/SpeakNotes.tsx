@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import type { ContactFields, RefineOutput } from "@/lib/monsoon/refine";
 import { refineCard } from "./api";
+import type { Snapshot } from "./merge";
 import { secondaryButton } from "./styles";
 
 // Dictation happens with the iPhone keyboard microphone into a plain textarea; no audio is handled here.
@@ -15,14 +16,18 @@ export default function SpeakNotes({
   onDraft,
   onApply,
   onUnauthorized,
+  onBusy,
   disabled,
 }: {
   fields: ContactFields;
   notes: string;
   draft: string;
   onDraft: (text: string) => void;
-  onApply: (next: RefineOutput) => void;
+  // `sent` is what the request carried, so the parent can tell what the model actually changed.
+  onApply: (next: RefineOutput, sent: Snapshot) => void;
   onUnauthorized: () => void;
+  // True while a tidy request is in flight, so the parent can lock the contact it belongs to.
+  onBusy?: (busy: boolean) => void;
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -30,8 +35,8 @@ export default function SpeakNotes({
   const [failed, setFailed] = useState(false);
   const runRef = useRef(false);
 
-  function finish(next: RefineOutput) {
-    onApply(next);
+  function finish(next: RefineOutput, sent: Snapshot) {
+    onApply(next, sent);
     onDraft("");
     setFailed(false);
     setOpen(false);
@@ -42,12 +47,14 @@ export default function SpeakNotes({
     runRef.current = true;
     setRunning(true);
     setFailed(false);
+    onBusy?.(true);
+    const sent = { fields, notes };
     try {
-      const res = await refineCard({ fields, notes, spoken: draft });
+      const res = await refineCard({ ...sent, spoken: draft });
       if (res.status === 401) {
         onUnauthorized();
       } else if (res.status === 200 && "fields" in res.body) {
-        finish(res.body);
+        finish(res.body, sent);
       } else {
         setFailed(true);
       }
@@ -56,7 +63,15 @@ export default function SpeakNotes({
     } finally {
       runRef.current = false;
       setRunning(false);
+      onBusy?.(false);
     }
+  }
+
+  // Applies the typed text without a request; bracketed as busy so the parent stamps it as current.
+  function applyAsTyped() {
+    onBusy?.(true);
+    finish({ fields, notes: [notes, draft].filter(Boolean).join("\n") }, { fields, notes });
+    onBusy?.(false);
   }
 
   if (!open) {
@@ -101,7 +116,7 @@ export default function SpeakNotes({
           <button
             type="button"
             className={secondaryButton}
-            onClick={() => finish({ fields, notes: [notes, draft].filter(Boolean).join("\n") })}
+            onClick={applyAsTyped}
           >
             Use as typed
           </button>

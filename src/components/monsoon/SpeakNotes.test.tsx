@@ -14,6 +14,7 @@ const FIELDS = { name: "Jane Tan", title: "", org: "Acme", email: "", phone: "",
 const RESULT = { fields: { ...FIELDS, title: "CIO" }, notes: "Now CIO." };
 
 let onApply: ReturnType<typeof vi.fn>;
+let onBusy: ReturnType<typeof vi.fn>;
 let onUnauthorized: ReturnType<typeof vi.fn>;
 let lastDraft = "";
 
@@ -29,6 +30,7 @@ function Harness({ initial = "" }: { initial?: string }) {
       onDraft={setDraft}
       onApply={onApply as never}
       onUnauthorized={onUnauthorized as never}
+      onBusy={onBusy as never}
     />
   );
 }
@@ -40,6 +42,7 @@ async function openIt(user: ReturnType<typeof userEvent.setup>) {
 beforeEach(() => {
   vi.resetAllMocks();
   onApply = vi.fn();
+  onBusy = vi.fn();
   onUnauthorized = vi.fn();
   lastDraft = "";
 });
@@ -73,7 +76,7 @@ describe("SpeakNotes", () => {
     await openIt(user);
     await user.type(screen.getByRole("textbox"), "she is CIO");
     await user.click(screen.getByRole("button", { name: "Apply" }));
-    await waitFor(() => expect(onApply).toHaveBeenCalledWith(RESULT));
+    await waitFor(() => expect(onApply).toHaveBeenCalledWith(RESULT, { fields: FIELDS, notes: "met at demo" }));
     expect(m.refineCard).toHaveBeenCalledWith({ fields: FIELDS, notes: "met at demo", spoken: "she is CIO" });
     expect(lastDraft).toBe("");
     expect(screen.getByRole("button", { name: "Speak notes" })).toBeInTheDocument();
@@ -113,7 +116,10 @@ describe("SpeakNotes", () => {
     expect(await screen.findByText("Could not tidy the notes.")).toBeInTheDocument();
     expect(onApply).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Use as typed" }));
-    expect(onApply).toHaveBeenCalledWith({ fields: FIELDS, notes: "met at demo\ncall her" });
+    expect(onApply).toHaveBeenCalledWith(
+      { fields: FIELDS, notes: "met at demo\ncall her" },
+      { fields: FIELDS, notes: "met at demo" },
+    );
     expect(lastDraft).toBe("");
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
@@ -141,6 +147,31 @@ describe("SpeakNotes", () => {
     expect(m.refineCard).toHaveBeenCalledTimes(1);
     resolve({ status: 200, body: RESULT } as never);
     await waitFor(() => expect(onApply).toHaveBeenCalledTimes(1));
+  });
+
+  it("reports busy while the request runs, and again false when it ends", async () => {
+    const user = userEvent.setup();
+    let resolve!: (v: never) => void;
+    m.refineCard.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+    render(<Harness />);
+    await openIt(user);
+    await user.type(screen.getByRole("textbox"), "x");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    expect(onBusy.mock.calls).toEqual([[true]]);
+    resolve({ status: 200, body: RESULT } as never);
+    await waitFor(() => expect(onBusy.mock.calls).toEqual([[true], [false]]));
+    // onApply ran before the lock was released.
+    expect(onApply.mock.invocationCallOrder[0]).toBeLessThan(onBusy.mock.invocationCallOrder[1]);
+  });
+
+  it("reports busy false after a 401", async () => {
+    const user = userEvent.setup();
+    m.refineCard.mockResolvedValue({ status: 401, body: { error: "unauthorized" } });
+    render(<Harness />);
+    await openIt(user);
+    await user.type(screen.getByRole("textbox"), "x");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(onBusy.mock.calls).toEqual([[true], [false]]));
   });
 
   it("is disabled when told so", () => {

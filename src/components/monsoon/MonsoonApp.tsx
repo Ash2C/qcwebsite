@@ -10,6 +10,7 @@ import BatchReview, { makeBatch, type Batch } from "./BatchReview";
 import { describeResult, type SavePrompt } from "./outcomes";
 import ContactFormFields, { type FormKey } from "./ContactFormFields";
 import PromptButtons from "./PromptButtons";
+import { mergeRefine, type Snapshot } from "./merge";
 import SpeakNotes from "./SpeakNotes";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
 
@@ -97,6 +98,10 @@ export default function MonsoonApp() {
   // `changed` lists the fields still highlighted (a hand edit drops just that field).
   const [spokenDraft, setSpokenDraft] = useState("");
   const [beforeRefine, setBeforeRefine] = useState<{ form: Form; changed: FormKey[] } | null>(null);
+  const [tidying, setTidying] = useState(false);
+  // Bumped whenever the form is cleared or replaced; a tidy result stamped with an older value is dropped.
+  const genRef = useRef(0);
+  const tidyGenRef = useRef(0);
   const savingRef = useRef(false);
   const formRef = useRef(form);
   formRef.current = form;
@@ -144,13 +149,17 @@ export default function MonsoonApp() {
   }
 
   function clearRefine() {
+    genRef.current += 1;
     setBeforeRefine(null);
     setSpokenDraft("");
   }
 
   // Nothing is saved here. The first snapshot is kept across repeated applies.
-  function applyRefine(next: RefineOutput) {
+  function applyRefine(result: RefineOutput, sent: Snapshot) {
+    if (tidyGenRef.current !== genRef.current) return;
     const cur = formRef.current;
+    const { notes: curNotes, ...curFields } = cur;
+    const next = mergeRefine({ fields: curFields, notes: curNotes }, sent, result);
     const merged: Form = { ...cur, ...next.fields, notes: next.notes };
     setForm(merged);
     setBeforeRefine((prev) => {
@@ -458,7 +467,7 @@ export default function MonsoonApp() {
     );
   }
 
-  const busy = reading || saving;
+  const busy = reading || saving || tidying;
   const messageColour =
     message?.tone === "ok"
       ? "text-green-700 dark:text-green-400"
@@ -483,7 +492,7 @@ export default function MonsoonApp() {
                 key={e.key}
                 type="button"
                 aria-pressed={selected}
-                disabled={!e.available || batchStarted}
+                disabled={!e.available || batchStarted || tidying}
                 onClick={() => chooseEstate(e)}
                 className={`min-h-[44px] rounded-lg px-2 text-[16px] font-semibold disabled:opacity-40 ${
                   selected
@@ -561,6 +570,7 @@ export default function MonsoonApp() {
               changed={beforeRefine?.changed ?? []}
               onEdit={edit}
               onRole={setRole}
+              locked={tidying}
               speak={
                 <div className="flex flex-col gap-2">
                   <SpeakNotes
@@ -577,6 +587,10 @@ export default function MonsoonApp() {
                     onDraft={setSpokenDraft}
                     onApply={applyRefine}
                     onUnauthorized={() => setPhase("locked")}
+                    onBusy={(b) => {
+                      if (b) tidyGenRef.current = genRef.current;
+                      setTidying(b);
+                    }}
                     disabled={busy}
                   />
                   {beforeRefine && (

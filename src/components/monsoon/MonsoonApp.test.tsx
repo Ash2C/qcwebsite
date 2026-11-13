@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MonsoonApp from "./MonsoonApp";
@@ -780,6 +780,63 @@ describe("MonsoonApp", () => {
       // A successful save clears the highlights and the snapshot.
       await screen.findByText(/Saved|saved|Added|added/);
       expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    });
+
+    // Starts a tidy and leaves it pending; returns the function that finishes it.
+    async function pendingTidy(user: User) {
+      let resolve!: (v: never) => void;
+      m.refineCard.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+      await loadCard(user);
+      await user.click(screen.getByRole("button", { name: "Speak notes" }));
+      await user.type(screen.getByRole("textbox", { name: "Spoken notes" }), "x");
+      await user.click(screen.getByRole("button", { name: "Apply" }));
+      await waitFor(() => expect(m.refineCard).toHaveBeenCalled());
+      return (body: unknown) => resolve({ status: 200, body } as never);
+    }
+
+    it("Save, the photo input, the estate buttons and the fields are locked while a tidy is pending", async () => {
+      const user = userEvent.setup();
+      const finish = await pendingTidy(user);
+      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+      expect(document.querySelector('input[type="file"]')).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Zero One" })).toBeDisabled();
+      expect(screen.getByLabelText("Name")).toHaveAttribute("readonly");
+      expect(screen.getByLabelText("Notes")).toHaveAttribute("readonly");
+      expect(screen.getByLabelText("Role")).toBeDisabled();
+      finish({ fields: FIELDS, notes: "n" });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+      expect(screen.getByLabelText("Name")).not.toHaveAttribute("readonly");
+    });
+
+    it("a tidy result arriving after the form was replaced is ignored", async () => {
+      const user = userEvent.setup();
+      const finish = await pendingTidy(user);
+      // The lock is bypassed on purpose: fire the change event on the disabled input.
+      m.readCards.mockResolvedValue({
+        status: 200,
+        body: { cards: [{ ...CARD, name: "Bob Lee", title: "Analyst" }] },
+      });
+      fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+        target: { files: [new File(["img"], "b.jpg", { type: "image/jpeg" })] },
+      });
+      await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("Bob Lee"));
+      finish({ fields: { ...FIELDS, title: "CIO" }, notes: "Now CIO." });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Speak notes" })).toBeInTheDocument());
+      expect(screen.getByLabelText("Name")).toHaveValue("Bob Lee");
+      expect(screen.getByLabelText("Title")).toHaveValue("Analyst");
+      expect(screen.getByLabelText("Notes")).toHaveValue("");
+      expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    });
+
+    it("a hand edit to a field is not overwritten when the model returns it unchanged", async () => {
+      const user = userEvent.setup();
+      const finish = await pendingTidy(user);
+      // The lock is bypassed on purpose: fire the change event on the read-only input.
+      fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Chief" } });
+      finish({ fields: { ...FIELDS, org: "Acme Group" }, notes: "Tidy." });
+      await waitFor(() => expect(screen.getByLabelText("Company")).toHaveValue("Acme Group"));
+      expect(screen.getByLabelText("Title")).toHaveValue("Chief");
+      expect(screen.getByLabelText("Notes")).toHaveValue("Tidy.");
     });
 
     it("a new photo clears the snapshot and the draft", async () => {

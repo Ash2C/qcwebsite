@@ -113,6 +113,23 @@ describe("refineContact", () => {
     expect((await refineContact({ ...INPUT, notes: "" })).notes).toBe("she is now CIO, call next week");
   });
 
+  it("the notes fallback keeps the whole dictated text and cuts the head of the old notes", async () => {
+    create.mockResolvedValue(reply(model({ notes: "" })));
+    const spoken = "s".repeat(1500);
+    const old = "a".repeat(600) + "b".repeat(600);
+    const out = await refineContact({ ...INPUT, notes: old, spoken });
+    expect(out.notes).toHaveLength(2000);
+    expect(out.notes.endsWith(spoken)).toBe(true);
+    // 2000 - 1500 - 1 newline = 499 characters of the tail of the old notes.
+    expect(out.notes.slice(0, 499)).toBe("b".repeat(499));
+  });
+
+  it("the notes fallback caps very long dictated text at 2000 and drops the old notes", async () => {
+    create.mockResolvedValue(reply(model({ notes: "" })));
+    const out = await refineContact({ ...INPUT, notes: "old", spoken: "d".repeat(4000) });
+    expect(out.notes).toBe("d".repeat(2000));
+  });
+
   it("cuts notes to 2000 characters", async () => {
     create.mockResolvedValue(reply(model({ notes: "n".repeat(2500) })));
     expect((await refineContact(INPUT)).notes).toHaveLength(2000);

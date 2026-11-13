@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React, { useState } from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import BatchReview, { makeBatch, type Batch } from "./BatchReview";
@@ -31,8 +31,11 @@ const CY = cardOf("Cy Wu", "Wu Co");
 
 type Handlers = { onUnauthorized: () => void; onClose: (s: string | null) => void };
 
+let setBatchOutside: React.Dispatch<React.SetStateAction<Batch>>;
+
 function Harness({ cards, handlers }: { cards: ReturnType<typeof cardOf>[]; handlers: Handlers }) {
   const [batch, setBatch] = useState<Batch>(() => makeBatch(cards, "lp_prospect", "met at demo day"));
+  setBatchOutside = setBatch;
   return (
     <BatchReview
       estate={ESTATE}
@@ -404,6 +407,101 @@ describe("BatchReview", () => {
       resolve(added);
       await screen.findByText("1 saved to Traxo.");
       expect(screen.queryByRole("button", { name: "Speak notes" })).toBeNull();
+    });
+
+    it("a second apply followed by Undo restores the original card", async () => {
+      const user = userEvent.setup();
+      m.refineCard
+        .mockResolvedValueOnce(refined({ ...JANE_FIELDS, title: "CIO" }, "Now CIO."))
+        .mockResolvedValueOnce(refined({ ...JANE_FIELDS, title: "CEO" }, "Now CEO."));
+      show([JANE]);
+      await open(user, "Jane Tan");
+      await speak(user, "first");
+      await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("CIO"));
+      await speak(user, "second");
+      await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("CEO"));
+      expect(m.refineCard).toHaveBeenLastCalledWith({
+        fields: { ...JANE_FIELDS, title: "CIO" },
+        notes: "Now CIO.",
+        spoken: "second",
+      });
+      await user.click(screen.getByRole("button", { name: "Undo" }));
+      expect(screen.getByLabelText("Title")).toHaveValue("");
+      expect(screen.getByLabelText("Card notes")).toHaveValue("");
+      expect(screen.getByLabelText("Card notes")).toHaveAttribute("placeholder", "Same as batch");
+    });
+
+    it("locks the card, Save all, Remove and Discard while a tidy is pending", async () => {
+      const user = userEvent.setup();
+      let resolve!: (v: never) => void;
+      m.refineCard.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+      show([JANE, BOB]);
+      await open(user, "Jane Tan");
+      await user.click(screen.getByRole("button", { name: "Speak notes" }));
+      await user.type(screen.getByPlaceholderText("Tap the microphone on the keyboard and talk"), "x");
+      await user.click(screen.getByRole("button", { name: "Apply" }));
+      await waitFor(() => expect(m.refineCard).toHaveBeenCalled());
+      expect(screen.getByRole("button", { name: "Save all (2)" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Remove" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Discard batch" })).toBeDisabled();
+      expect(screen.getByLabelText("Title")).toHaveAttribute("readonly");
+      expect(screen.getByLabelText("Card notes")).toHaveAttribute("readonly");
+      resolve(refined(JANE_FIELDS, "tidy") as never);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save all (2)" })).toBeEnabled());
+      expect(screen.getByRole("button", { name: "Discard batch" })).toBeEnabled();
+      expect(screen.getByLabelText("Title")).not.toHaveAttribute("readonly");
+    });
+
+    it("a tidy result for a row that has become saved is ignored", async () => {
+      const user = userEvent.setup();
+      let resolve!: (v: never) => void;
+      m.refineCard.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+      show([JANE]);
+      await open(user, "Jane Tan");
+      await user.click(screen.getByRole("button", { name: "Speak notes" }));
+      await user.type(screen.getByPlaceholderText("Tap the microphone on the keyboard and talk"), "x");
+      await user.click(screen.getByRole("button", { name: "Apply" }));
+      await waitFor(() => expect(m.refineCard).toHaveBeenCalled());
+      // The lock stops the UI saving; mark the row saved from outside to prove the guard alone.
+      act(() => setBatchOutside((b) => ({ ...b, rows: b.rows.map((r) => ({ ...r, status: "saved" as const })) })));
+      resolve(refined({ ...JANE_FIELDS, title: "CIO" }, "Now CIO.") as never);
+      await waitFor(() => expect(m.refineCard).toHaveBeenCalledTimes(1));
+      await act(async () => {});
+      expect(screen.getByLabelText("Title")).toHaveValue("");
+      expect(screen.getByLabelText("Card notes")).toHaveValue("");
+      expect(screen.queryByText("was empty")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    });
+
+    it("a saved card no longer shows highlights or was text", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue(refined({ ...JANE_FIELDS, title: "CIO" }, "Now CIO."));
+      m.saveCard.mockResolvedValue(added);
+      show([JANE]);
+      await open(user, "Jane Tan");
+      await speak(user, "x");
+      await screen.findByText("was empty");
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await screen.findByText("1 saved to Traxo.");
+      expect(screen.queryByText("was empty")).toBeNull();
+      expect(screen.getByLabelText("Title")).toHaveValue("CIO");
+      expect(screen.getByLabelText("Title").closest("[data-changed]")).toBeNull();
+    });
+
+    it("a hand edit made while the tidy ran is not overwritten by an unchanged field", async () => {
+      const user = userEvent.setup();
+      let resolve!: (v: never) => void;
+      m.refineCard.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+      show([JANE]);
+      await open(user, "Jane Tan");
+      await user.click(screen.getByRole("button", { name: "Speak notes" }));
+      await user.type(screen.getByPlaceholderText("Tap the microphone on the keyboard and talk"), "x");
+      await user.click(screen.getByRole("button", { name: "Apply" }));
+      await waitFor(() => expect(m.refineCard).toHaveBeenCalled());
+      fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Chief" } });
+      resolve(refined({ ...JANE_FIELDS, org: "Acme Group" }, "Tidy.") as never);
+      await waitFor(() => expect(screen.getByLabelText("Company")).toHaveValue("Acme Group"));
+      expect(screen.getByLabelText("Title")).toHaveValue("Chief");
     });
   });
 });

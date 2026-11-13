@@ -25,6 +25,7 @@ export default function ContactFormFields({
   changed,
   onEdit,
   onRole,
+  locked,
   speak,
 }: {
   form: FormValues;
@@ -34,6 +35,7 @@ export default function ContactFormFields({
   changed: readonly FormKey[];
   onEdit: (key: FormKey, value: string) => void;
   onRole: (role: string) => void;
+  locked: boolean; // a tidy request is running: the fields are read-only until it returns
   speak: ReactNode;
 }) {
   const mark = (key: FormKey) => was !== null && changed.includes(key);
@@ -52,6 +54,7 @@ export default function ContactFormFields({
             autoCapitalize={r.key === "name" || r.key === "title" || r.key === "org" ? "words" : "off"}
             autoCorrect="off"
             value={form[r.key]}
+            readOnly={locked}
             onChange={(e) => onEdit(r.key, e.target.value)}
             className={fieldInput}
           />
@@ -65,6 +68,7 @@ export default function ContactFormFields({
         <select
           id="f-role"
           value={role}
+          disabled={locked}
           onChange={(e) => onRole(e.target.value)}
           className={`${fieldInput} appearance-none`}
         >
@@ -83,6 +87,7 @@ export default function ContactFormFields({
           id="f-notes"
           rows={notesRows(form.notes)}
           value={form.notes}
+          readOnly={locked}
           onChange={(e) => onEdit("notes", e.target.value)}
           className={`${fieldInput} resize-none overflow-y-auto`}
         />
