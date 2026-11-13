@@ -1,0 +1,246 @@
+// Port of the CRM core's capture transaction (quantcloud/crm/db.py Crm.capture) plus the
+// monsoon additions in the spec, section 6.4. All SQL is parameterised and unnamed.
+import type { ClientBase } from "pg";
+import { mergeFillEmpty, nameKey, similarOrgNames } from "./rules";
+
+export type CaptureInput = {
+  captureId: string; // UUID
+  name: string;
+  role: string;
+  org?: string;
+  title?: string;
+  email?: string;
+  phone?: string;
+  linkedin?: string;
+  notes?: string;
+  rawText?: string;
+  extracted?: unknown; // reader's original output
+  newOrg?: boolean;
+  samePerson?: string | false; // person id, or false = a different person
+};
+
+export type CaptureResult =
+  | { outcome: "added"; person: string; org: string | null; role: string; filled: string[] }
+  | { outcome: "existing"; person: string; org: string | null; role: string; filled: string[] }
+  | { outcome: "duplicate"; person: string; org: string | null }
+  | { outcome: "org_lookalike"; similar: string[] }
+  | { outcome: "same_name"; matches: { personId: string; org: string | null }[] }
+  | { outcome: "ambiguous"; orgs: (string | null)[] }
+  | { outcome: "invalid"; error: string };
+
+const SOURCE = "monsoon-app";
+const OWNER = "VF";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PERSON_COLUMNS = ["title", "email", "phone", "linkedin_url"] as const;
+
+type PersonRow = {
+  id: string;
+  org_id: string | null;
+  title: string | null;
+  email: string | null;
+  phone: string | null;
+  linkedin_url: string | null;
+};
+
+function clean(value: string | undefined): string | undefined {
+  const v = value?.trim();
+  return v ? v : undefined;
+}
+
+async function orgName(db: ClientBase, orgId: string | null): Promise<string | null> {
+  if (!orgId) return null;
+  const r = await db.query("SELECT name FROM orgs WHERE id = $1", [orgId]);
+  return r.rows[0]?.name ?? null;
+}
+
+async function peopleByKey(db: ClientBase, key: string): Promise<PersonRow[]> {
+  const r = await db.query("SELECT * FROM people WHERE name_key = $1 ORDER BY created_at, id", [key]);
+  return r.rows;
+}
+
+/** Fill only the empty person columns; returns the columns filled. */
+async function fillPerson(
+  db: ClientBase,
+  person: PersonRow,
+  fields: Record<string, string | undefined>,
+): Promise<string[]> {
+  const updates = mergeFillEmpty(person, fields);
+  const cols = PERSON_COLUMNS.filter((c) => c in updates);
+  if (cols.length === 0) return [];
+  const sets = cols.map((c, i) => `${c} = $${i + 2}`).join(", ");
+  await db.query(`UPDATE people SET ${sets} WHERE id = $1`, [person.id, ...cols.map((c) => updates[c])]);
+  return [...cols];
+}
+
+export async function capture(db: ClientBase, input: CaptureInput): Promise<CaptureResult> {
+  const name = (input.name ?? "").trim();
+  if (!name) return { outcome: "invalid", error: "name is required" };
+  if (!UUID_RE.test(input.captureId ?? "")) return { outcome: "invalid", error: "captureId must be a UUID" };
+
+  const org = clean(input.org);
+  const notes = clean(input.notes);
+  const fields = {
+    title: clean(input.title),
+    email: clean(input.email),
+    phone: clean(input.phone),
+    linkedin_url: clean(input.linkedin),
+  };
+  const key = nameKey(name);
+
+  async function insertPerson(orgId: string | null): Promise<PersonRow> {
+    const r = await db.query(
+      `INSERT INTO people (org_id, name, name_key, title, email, phone, linkedin_url, source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [
+        orgId,
+        name,
+        key,
+        fields.title ?? null,
+        fields.email ?? null,
+        fields.phone ?? null,
+        fields.linkedin_url ?? null,
+        SOURCE,
+      ],
+    );
+    return r.rows[0];
+  }
+
+  async function run(): Promise<CaptureResult> {
+    // 1. Lock on the capture id; an earlier capture with this id returns its result.
+    await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [input.captureId]);
+    const earlier = await db.query(
+      "SELECT person_id, org_id FROM captures WHERE capture_id = $1 ORDER BY created_at, id LIMIT 1",
+      [input.captureId],
+    );
+    if (earlier.rows[0]) {
+      const row = earlier.rows[0];
+      return { outcome: "duplicate", person: row.person_id ?? "", org: await orgName(db, row.org_id) };
+    }
+
+    // 2. The role must exist.
+    const role = await db.query("SELECT 1 FROM roles WHERE key = $1", [input.role]);
+    if (role.rowCount === 0) return { outcome: "invalid", error: `unknown role: ${input.role}` };
+
+    // 3. Same name under another company, or Vincent's answer to that question.
+    let person: PersonRow | undefined;
+    let created = false;
+    let cardOrg: string | undefined; // typed company that differs from the one on file
+    let filled: string[] = [];
+    const namesakes = await peopleByKey(db, key);
+
+    if (typeof input.samePerson === "string") {
+      person = namesakes.find((p) => p.id === input.samePerson);
+      if (!person) return { outcome: "invalid", error: "samePerson is not a person with this name" };
+    } else if (org && input.samePerson === undefined && namesakes.length > 0) {
+      const atTypedOrg = await db.query(
+        "SELECT 1 FROM people p JOIN orgs o ON o.id = p.org_id WHERE p.name_key = $1 AND o.name_key = $2",
+        [key, nameKey(org)],
+      );
+      if (atTypedOrg.rowCount === 0) {
+        const matches = [];
+        for (const p of namesakes) matches.push({ personId: p.id, org: await orgName(db, p.org_id) });
+        return { outcome: "same_name", matches };
+      }
+    }
+
+    if (person) {
+      // Reuse the person; their company on file stays.
+      const onFile = await orgName(db, person.org_id);
+      if (org && (onFile === null || nameKey(onFile) !== nameKey(org))) cardOrg = org;
+      filled = await fillPerson(db, person, fields);
+    } else if (org) {
+      // 4. Lookalike guard, then find or create the org and the person.
+      let orgRow = (await db.query("SELECT id FROM orgs WHERE name_key = $1", [nameKey(org)])).rows[0];
+      if (!orgRow) {
+        if (!input.newOrg) {
+          const existing = (await db.query("SELECT name FROM orgs")).rows.map((r) => r.name as string);
+          const similar = similarOrgNames(org, existing).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+          if (similar.length > 0) return { outcome: "org_lookalike", similar };
+        }
+        orgRow = (
+          await db.query("INSERT INTO orgs (name, name_key, source) VALUES ($1, $2, $3) RETURNING id", [
+            org,
+            nameKey(org),
+            SOURCE,
+          ])
+        ).rows[0];
+      }
+      const found = (await db.query("SELECT * FROM people WHERE name_key = $1 AND org_id = $2", [key, orgRow.id]))
+        .rows[0] as PersonRow | undefined;
+      if (found) {
+        person = found;
+        filled = await fillPerson(db, person, fields);
+      } else {
+        person = await insertPerson(orgRow.id);
+        created = true;
+      }
+    } else if (namesakes.length > 1) {
+      const orgs: (string | null)[] = [];
+      for (const p of namesakes) orgs.push(await orgName(db, p.org_id));
+      return { outcome: "ambiguous", orgs };
+    } else if (namesakes.length === 1) {
+      person = namesakes[0];
+      filled = await fillPerson(db, person, fields);
+    } else {
+      person = await insertPerson(null);
+      created = true;
+    }
+
+    // 5. The member, if this person has none. An existing member is left alone.
+    let member = (await db.query("SELECT id, role FROM members WHERE person_id = $1", [person.id])).rows[0];
+    let memberCreated = false;
+    if (!member) {
+      const stage = (await db.query("SELECT key FROM stages WHERE NOT terminal ORDER BY ord LIMIT 1")).rows[0]?.key;
+      member = (
+        await db.query(
+          `INSERT INTO members (person_id, role, stage, owner, notes, source)
+           VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, role`,
+          [person.id, input.role, stage, OWNER, notes ?? null, SOURCE],
+        )
+      ).rows[0];
+      memberCreated = true;
+    }
+
+    // 6. The captures row.
+    await db.query(
+      `INSERT INTO captures (capture_id, channel, status, raw_text, extracted, image_ref, person_id, org_id)
+       VALUES ($1, $2, 'written', $3, $4, NULL, $5, $6)`,
+      [
+        input.captureId,
+        SOURCE,
+        input.rawText ?? null,
+        input.extracted === undefined ? null : JSON.stringify(input.extracted),
+        person.id,
+        person.org_id,
+      ],
+    );
+
+    // 7. A meeting touch, also for an existing member.
+    let summary = "Card captured in person";
+    if (notes) summary += `: ${notes}`;
+    if (cardOrg) summary += ` (card shows ${cardOrg})`;
+    await db.query("INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'meeting', $2, $3)", [
+      member.id,
+      OWNER,
+      summary,
+    ]);
+
+    return {
+      outcome: created || memberCreated ? "added" : "existing",
+      person: person.id,
+      org: await orgName(db, person.org_id),
+      role: member.role,
+      filled,
+    };
+  }
+
+  await db.query("BEGIN");
+  try {
+    const result = await run();
+    await db.query(result.outcome === "added" || result.outcome === "existing" ? "COMMIT" : "ROLLBACK");
+    return result;
+  } catch (err) {
+    await db.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  }
+}
