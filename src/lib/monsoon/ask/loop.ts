@@ -129,9 +129,13 @@ export async function runAsk(
         model,
         max_tokens: 4096,
         system,
+        // Same tools as every other call (the history holds tool_use blocks); `none` only forbids using them.
+        tools: TOOLS,
+        tool_choice: { type: "none" },
         messages: [...convo, { role: "user", content: TOO_BIG_TURN }],
       });
-      return finish(textOf(reply.content));
+      const answer = textOf(reply.content);
+      return finish(answer === "" ? TOO_BIG_ANSWER : answer);
     } catch {
       return finish(TOO_BIG_ANSWER);
     }

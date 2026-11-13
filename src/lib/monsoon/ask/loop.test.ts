@@ -119,7 +119,8 @@ describe("runAsk", () => {
     expect(runTool).toHaveBeenCalledTimes(6);
     expect(s.create).toHaveBeenCalledTimes(7);
     const final = s.calls[6];
-    expect(final.tools).toBeUndefined();
+    expect(final.tools).toEqual(s.calls[0].tools);
+    expect(final.tool_choice).toEqual({ type: "none" });
     expect((final.messages as { content: unknown }[]).at(-1)!.content).toBe(
       "Answer now from what you have, in a sentence or two, and say the question was too big to finish.",
     );
@@ -132,7 +133,8 @@ describe("runAsk", () => {
     const s = setup([use("t0", "pipeline_summary"), text("Out of time.")], () => (t += 25_000));
     const out = await s.run();
     expect(s.create).toHaveBeenCalledTimes(2);
-    expect(s.calls[1].tools).toBeUndefined();
+    expect(s.calls[1].tools).toEqual(s.calls[0].tools);
+    expect(s.calls[1].tool_choice).toEqual({ type: "none" });
     expect(out.answer).toBe("Out of time.");
   });
 
@@ -149,10 +151,20 @@ describe("runAsk", () => {
     const s = setup([cut, text("Too big.")]);
     expect((await s.run()).answer).toBe("Too big.");
     expect(runTool).not.toHaveBeenCalled();
-    expect(s.calls[1].tools).toBeUndefined();
+    expect(s.calls[1].tool_choice).toEqual({ type: "none" });
 
     const s2 = setup([{ stop_reason: "max_tokens", content: [{ type: "thinking", thinking: "", signature: "s" }] }, text("Too big too.")]);
     expect((await s2.run()).answer).toBe("Too big too.");
+  });
+
+  it("ignores a tool_use in the final reply and uses its text, or the fixed sentence without text", async () => {
+    runTool.mockResolvedValue({ result: { ok: 1 }, refs: [] });
+    const rounds = () => Array.from({ length: 6 }, (_, i) => use(`t${i}`, "pipeline_summary"));
+    const withText: Reply = { stop_reason: "tool_use", content: [{ type: "text", text: "Too big." }, { type: "tool_use", id: "z", name: "pipeline_summary", input: {} }] };
+    expect((await setup([...rounds(), withText]).run()).answer).toBe("Too big.");
+    expect(runTool).toHaveBeenCalledTimes(6);
+    const noText: Reply = { stop_reason: "tool_use", content: [{ type: "tool_use", id: "z", name: "pipeline_summary", input: {} }] };
+    expect((await setup([...rounds(), noText]).run()).answer).toBe("That question was too big to finish. Try a narrower one.");
   });
 
   it("keeps usable text from a max_tokens reply", async () => {
