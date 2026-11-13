@@ -6,6 +6,7 @@ import type { CaptureResult } from "@/lib/monsoon/capture";
 import type { RefineOutput } from "@/lib/monsoon/refine";
 import { loadEstates, readCards, saveCard, signIn, type EstateInfo, type SaveBody } from "./api";
 import { downsizeImage } from "./image";
+import AskPanel, { EMPTY_ASK, type AskState } from "./AskPanel";
 import BatchReview, { makeBatch, type Batch } from "./BatchReview";
 import { describeResult, type SavePrompt } from "./outcomes";
 import ContactFormFields, { type FormKey } from "./ContactFormFields";
@@ -107,6 +108,10 @@ export default function MonsoonApp() {
   const batchEstateRef = useRef<string | null>(null);
   // True while a batch save run is in flight (reported by BatchReview).
   const [batchRunning, setBatchRunning] = useState(false);
+  // Ask mode: the conversation lives here so it survives the passcode screen; askBusy is reported by AskPanel.
+  const [mode, setMode] = useState<"capture" | "ask">("capture");
+  const [ask, setAsk] = useState<AskState>(EMPTY_ASK);
+  const [askBusy, setAskBusy] = useState(false);
   const formRef = useRef(form);
   formRef.current = form;
 
@@ -196,7 +201,8 @@ export default function MonsoonApp() {
   }
 
   function chooseEstate(e: EstateInfo) {
-    if (!e.available || batchStarted) return;
+    if (!e.available || batchStarted || askBusy) return;
+    if (e.key !== estateKey) setAsk(EMPTY_ASK);
     setEstateKey(e.key);
     setRole(startRole(e));
     // Cards not yet saved follow the new estate: its start role, and no per-card role left over.
@@ -503,7 +509,7 @@ export default function MonsoonApp() {
                 key={e.key}
                 type="button"
                 aria-pressed={selected}
-                disabled={!e.available || batchStarted || tidying || reading || batchRunning}
+                disabled={!e.available || batchStarted || tidying || reading || batchRunning || askBusy}
                 onClick={() => chooseEstate(e)}
                 className={`min-h-[44px] rounded-lg px-2 text-[16px] font-semibold disabled:opacity-40 ${
                   selected
@@ -517,7 +523,38 @@ export default function MonsoonApp() {
           })}
         </div>
 
-        {batch && estate ? (
+        <div
+          role="group"
+          aria-label="Mode"
+          className="grid grid-cols-2 gap-1 rounded-xl bg-neutral-200/80 p-1 dark:bg-white/10"
+        >
+          {(["capture", "ask"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              aria-pressed={mode === m}
+              disabled={m === "capture" ? askBusy : reading || saving || tidying || batchRunning}
+              onClick={() => setMode(m)}
+              className={`min-h-[44px] rounded-lg px-2 text-[16px] font-semibold disabled:opacity-40 ${
+                mode === m
+                  ? "bg-white text-neutral-900 shadow-sm dark:bg-[#636366] dark:text-white"
+                  : "text-neutral-600 dark:text-neutral-300"
+              }`}
+            >
+              {m === "capture" ? "Capture" : "Ask"}
+            </button>
+          ))}
+        </div>
+
+        {mode === "ask" && estate ? (
+          <AskPanel
+            estate={estate}
+            state={ask}
+            onChange={setAsk}
+            onUnauthorized={() => setPhase("locked")}
+            onBusy={setAskBusy}
+          />
+        ) : batch && estate ? (
           <BatchReview
             estate={estate}
             batch={batch}

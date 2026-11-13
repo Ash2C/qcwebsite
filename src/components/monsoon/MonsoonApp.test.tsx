@@ -14,6 +14,8 @@ vi.mock("./api", () => ({
   readCards: vi.fn(),
   saveCard: vi.fn(),
   refineCard: vi.fn(),
+  askCrm: vi.fn(),
+  actOnCrm: vi.fn(),
 }));
 vi.mock("./image", () => ({
   downsizeImage: vi.fn(),
@@ -952,6 +954,98 @@ describe("MonsoonApp", () => {
       await waitFor(() => expect(m.readCards).toHaveBeenCalledTimes(2));
       await waitFor(() => expect(screen.queryByRole("button", { name: "Undo" })).toBeNull());
       expect(screen.getByRole("textbox", { name: "Spoken notes" })).toHaveValue("");
+    });
+  });
+
+  describe("Ask mode", () => {
+    const ANSWER = { status: 200, body: { answer: "Jane is hot.", refs: [], proposals: [] } } as never;
+
+    async function openAsk(user: User) {
+      signedIn();
+      render(<MonsoonApp />);
+      await ready();
+      await user.click(screen.getByRole("button", { name: "Ask" }));
+      await screen.findByRole("textbox", { name: "Your question" });
+    }
+
+    async function question(user: User, text: string) {
+      await user.type(screen.getByRole("textbox", { name: "Your question" }), text);
+      await user.click(screen.getAllByRole("button", { name: "Ask" }).at(-1)!);
+    }
+
+    it("switches to Ask and back to Capture with the capture form intact", async () => {
+      const user = userEvent.setup();
+      signedIn();
+      render(<MonsoonApp />);
+      await ready();
+      await typeName(user);
+      await user.click(screen.getByRole("button", { name: "Ask" }));
+      expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Capture" }));
+      expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan");
+    });
+
+    it("keeps the conversation when switching modes", async () => {
+      const user = userEvent.setup();
+      m.askCrm.mockResolvedValue(ANSWER);
+      await openAsk(user);
+      await question(user, "Who?");
+      await screen.findByText("Jane is hot.");
+      await user.click(screen.getByRole("button", { name: "Capture" }));
+      await user.click(screen.getByRole("button", { name: "Ask" }));
+      expect(screen.getByText("Jane is hot.")).toBeInTheDocument();
+    });
+
+    it("switching estate clears the conversation", async () => {
+      const user = userEvent.setup();
+      m.askCrm.mockResolvedValue(ANSWER);
+      await openAsk(user);
+      await question(user, "Who?");
+      await screen.findByText("Jane is hot.");
+      await user.click(screen.getByRole("button", { name: "Zero One" }));
+      expect(screen.queryByText("Jane is hot.")).toBeNull();
+      expect(screen.getByPlaceholderText("Ask about Zero One...")).toBeInTheDocument();
+    });
+
+    it("the conversation survives the passcode screen", async () => {
+      const user = userEvent.setup();
+      m.askCrm.mockResolvedValueOnce(ANSWER);
+      await openAsk(user);
+      await question(user, "Who?");
+      await screen.findByText("Jane is hot.");
+      m.askCrm.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } });
+      await question(user, "Again?");
+      await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
+      m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+      await user.click(screen.getByRole("button", { name: "Unlock" }));
+      await screen.findByRole("textbox", { name: "Your question" });
+      expect(screen.getByText("Jane is hot.")).toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Again?");
+    });
+
+    it("locks the estate buttons and the switch while a question is pending, then frees them", async () => {
+      const user = userEvent.setup();
+      let resolve!: (v: never) => void;
+      m.askCrm.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+      await openAsk(user);
+      await question(user, "Who?");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Zero One" })).toBeDisabled());
+      expect(screen.getByRole("button", { name: "Traxo" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Capture" })).toBeDisabled();
+      resolve(ANSWER);
+      await screen.findByText("Jane is hot.");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Zero One" })).toBeEnabled());
+      expect(screen.getByRole("button", { name: "Capture" })).toBeEnabled();
+    });
+
+    it("the Ask switch is disabled while a capture read is in flight", async () => {
+      const user = userEvent.setup();
+      signedIn();
+      m.readCards.mockImplementation(() => new Promise(() => {}));
+      render(<MonsoonApp />);
+      await ready();
+      await pickPhoto(user);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled());
     });
   });
 });

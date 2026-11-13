@@ -1,0 +1,402 @@
+// @vitest-environment jsdom
+import React, { useState } from "react";
+import "@testing-library/jest-dom/vitest";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import AskPanel, { EMPTY_ASK, type AskState, type AskTurn } from "./AskPanel";
+import * as api from "./api";
+
+vi.mock("./api", () => ({ askCrm: vi.fn(), actOnCrm: vi.fn() }));
+const m = vi.mocked(api);
+
+const ESTATE = { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", available: true, roles: [] };
+
+type User = ReturnType<typeof userEvent.setup>;
+
+const NOTE_PROPOSAL = {
+  proposal: {
+    kind: "add_note",
+    estate: "traxo",
+    memberId: "m1",
+    memberKind: "person",
+    memberName: "Jane Tan",
+    company: "Acme Capital",
+    about: "the Q3 call",
+    expires: 1,
+  },
+  signature: "sig-note",
+  text: "Call went well",
+} as const;
+
+const STAGE_PROPOSAL = {
+  proposal: {
+    kind: "move_stage",
+    estate: "traxo",
+    memberId: "m2",
+    memberKind: "company",
+    memberName: "Beta Fund",
+    company: null,
+    about: null,
+    fromStage: "lead",
+    toStage: "in_talks",
+    expires: 1,
+  },
+  signature: "sig-stage",
+} as const;
+
+function answer(text: string, proposals: unknown[] = [], refs: unknown[] = []) {
+  return { status: 200, body: { answer: text, refs, proposals } } as never;
+}
+
+function Harness({
+  initial = EMPTY_ASK,
+  estate = ESTATE,
+  onUnauthorized = () => {},
+  onBusy,
+}: {
+  initial?: AskState;
+  estate?: typeof ESTATE;
+  onUnauthorized?: () => void;
+  onBusy?: (b: boolean) => void;
+}) {
+  const [state, setState] = useState<AskState>(initial);
+  return <AskPanel estate={estate} state={state} onChange={setState} onUnauthorized={onUnauthorized} onBusy={onBusy} />;
+}
+
+async function ask(user: User, text: string) {
+  await user.type(screen.getByRole("textbox", { name: "Your question" }), text);
+  await user.click(screen.getByRole("button", { name: "Ask" }));
+}
+
+beforeEach(() => {
+  vi.resetAllMocks();
+});
+afterEach(cleanup);
+
+describe("AskPanel", () => {
+  it("suggestions fill the draft without sending", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "Summarise the pipeline" }));
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Summarise the pipeline");
+    await user.click(screen.getByRole("button", { name: "Tell me about" }));
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Tell me about ");
+    expect(m.askCrm).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Who should I chase this week?" })).toBeInTheDocument();
+  });
+
+  it("has the estate placeholder and a disabled Ask while blank", async () => {
+    render(<Harness />);
+    expect(screen.getByPlaceholderText("Ask about Traxo...")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
+  });
+
+  it("shows Looking... then the answer, sending the estate, the local date and the conversation", async () => {
+    const user = userEvent.setup();
+    let resolve!: (v: never) => void;
+    m.askCrm.mockImplementationOnce(() => new Promise((r) => (resolve = r as never)));
+    render(<Harness />);
+    await ask(user, "Who is hot?");
+    expect(await screen.findByRole("status")).toHaveTextContent("Looking...");
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("");
+    resolve(answer("Jane is hot.", [], [{ memberId: "m1", name: "Jane Tan", company: "Acme", kind: "person" }]));
+    expect(await screen.findByText("Jane is hot.")).toBeInTheDocument();
+    expect(screen.queryByRole("status")).toBeNull();
+    const first = m.askCrm.mock.calls[0][0];
+    expect(first.estate).toBe("traxo");
+    expect(first.today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(first.messages).toEqual([{ role: "user", content: "Who is hot?" }]);
+
+    m.askCrm.mockResolvedValueOnce(answer("Done."));
+    await ask(user, "And then?");
+    await screen.findByText("Done.");
+    expect(m.askCrm.mock.calls[1][0].messages).toEqual([
+      { role: "user", content: "Who is hot?" },
+      {
+        role: "assistant",
+        content: "Jane is hot.",
+        refs: [{ memberId: "m1", name: "Jane Tan", company: "Acme", kind: "person" }],
+      },
+      { role: "user", content: "And then?" },
+    ]);
+  });
+
+  it("uses the local date, not the UTC one", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 0, 5, 23, 30));
+    try {
+      const user = userEvent.setup();
+      m.askCrm.mockResolvedValue(answer("ok"));
+      render(<Harness />);
+      await ask(user, "hi");
+      await screen.findByText("ok");
+      expect(m.askCrm.mock.calls[0][0].today).toBe("2026-01-05");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends only the last 24 messages and the first is a user turn", async () => {
+    const user = userEvent.setup();
+    const turns: AskTurn[] = [];
+    for (let i = 0; i < 15; i++) {
+      turns.push({ id: `u${i}`, role: "user", content: `q${i}` });
+      turns.push({ id: `a${i}`, role: "assistant", content: `a${i}` });
+    }
+    m.askCrm.mockResolvedValue(answer("ok"));
+    render(<Harness initial={{ turns, draft: "" }} />);
+    await ask(user, "next");
+    await screen.findByText("ok");
+    const sent = m.askCrm.mock.calls[0][0].messages;
+    // 31 turns, last 24 would start with an assistant turn (index 7), so it is dropped: 23 sent.
+    expect(sent.length).toBe(23);
+    expect(sent[0].role).toBe("user");
+    expect(sent[sent.length - 1]).toEqual({ role: "user", content: "next" });
+  });
+
+  it("a second click while pending sends nothing more", async () => {
+    const user = userEvent.setup();
+    let resolve!: (v: never) => void;
+    m.askCrm.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+    render(<Harness />);
+    await ask(user, "one");
+    await user.type(screen.getByRole("textbox", { name: "Your question" }), "two");
+    expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    expect(m.askCrm).toHaveBeenCalledTimes(1);
+    resolve(answer("ok"));
+    await screen.findByText("ok");
+  });
+
+  it("reports busy while asking and releases it afterwards and on unmount", async () => {
+    const user = userEvent.setup();
+    const onBusy = vi.fn();
+    let resolve!: (v: never) => void;
+    m.askCrm.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+    const { unmount } = render(<Harness onBusy={onBusy} />);
+    await ask(user, "one");
+    await waitFor(() => expect(onBusy).toHaveBeenLastCalledWith(true));
+    unmount();
+    expect(onBusy).toHaveBeenLastCalledWith(false);
+    resolve(answer("late"));
+  });
+
+  it("a 502 restores the question and shows the failure line", async () => {
+    const user = userEvent.setup();
+    m.askCrm.mockResolvedValue({ status: 502, body: { error: "x" } });
+    render(<Harness />);
+    await ask(user, "Why?");
+    expect(await screen.findByText("Could not get an answer. Check signal and try again.")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Why?");
+    expect(screen.queryByText("Why?", { selector: "div" })).toBeNull();
+  });
+
+  it("a network failure behaves like a failed answer", async () => {
+    const user = userEvent.setup();
+    m.askCrm.mockRejectedValue(new Error("offline"));
+    render(<Harness />);
+    await ask(user, "Why?");
+    expect(await screen.findByText("Could not get an answer. Check signal and try again.")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Why?");
+  });
+
+  it("a 401 restores the question and calls onUnauthorized", async () => {
+    const user = userEvent.setup();
+    const onUnauthorized = vi.fn();
+    m.askCrm.mockResolvedValue({ status: 401, body: { error: "unauthorized" } });
+    render(<Harness onUnauthorized={onUnauthorized} />);
+    await ask(user, "Why?");
+    await waitFor(() => expect(onUnauthorized).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Why?");
+    expect(screen.queryByText("Could not get an answer. Check signal and try again.")).toBeNull();
+  });
+
+  it("drops a late answer when the estate changes mid-question", async () => {
+    const user = userEvent.setup();
+    let resolve!: (v: never) => void;
+    m.askCrm.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+    const other = { ...ESTATE, key: "zeroone", label: "Zero One" };
+    function Switcher() {
+      const [e, setE] = useState(ESTATE);
+      const [state, setState] = useState<AskState>(EMPTY_ASK);
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              setE(other);
+              setState(EMPTY_ASK);
+            }}
+          >
+            switch
+          </button>
+          <AskPanel estate={e} state={state} onChange={setState} onUnauthorized={() => {}} />
+        </>
+      );
+    }
+    render(<Switcher />);
+    await ask(user, "q");
+    await user.click(screen.getByRole("button", { name: "switch" }));
+    resolve(answer("stale answer"));
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+    expect(screen.queryByText("stale answer")).toBeNull();
+  });
+
+  describe("change cards", () => {
+    async function withNoteCard(user: User) {
+      m.askCrm.mockResolvedValueOnce(answer("I can add that.", [NOTE_PROPOSAL, STAGE_PROPOSAL]));
+      render(<Harness />);
+      await ask(user, "Note it");
+      await screen.findByText("I can add that.");
+    }
+
+    it("renders the add_note card with contact, About line and editable text", async () => {
+      const user = userEvent.setup();
+      await withNoteCard(user);
+      expect(screen.getByText("Add note")).toBeInTheDocument();
+      expect(screen.getByText("Jane Tan")).toBeInTheDocument();
+      expect(screen.getByText("Acme Capital")).toBeInTheDocument();
+      expect(screen.getByText("About the Q3 call")).toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name: "Note text" })).toHaveValue("Call went well");
+    });
+
+    it("renders a move_stage card as from → to, with 'company' for a company member", async () => {
+      const user = userEvent.setup();
+      await withNoteCard(user);
+      expect(screen.getByText("Move stage")).toBeInTheDocument();
+      expect(screen.getByText("lead → in talks")).toBeInTheDocument();
+      expect(screen.getByText("Beta Fund")).toBeInTheDocument();
+      expect(screen.getByText("company")).toBeInTheDocument();
+    });
+
+    it("Confirm sends the edited text, shows the message, and the next question carries the note", async () => {
+      const user = userEvent.setup();
+      await withNoteCard(user);
+      m.actOnCrm.mockResolvedValue({ status: 200, body: { status: "ok", message: "Note added to Jane Tan." } });
+      const box = screen.getByRole("textbox", { name: "Note text" });
+      await user.clear(box);
+      await user.type(box, "Edited note");
+      await user.click(screen.getAllByRole("button", { name: "Confirm" })[0]);
+      expect(await screen.findByText("Note added to Jane Tan.")).toBeInTheDocument();
+      expect(m.actOnCrm).toHaveBeenCalledWith({
+        estate: "traxo",
+        proposal: NOTE_PROPOSAL.proposal,
+        signature: "sig-note",
+        text: "Edited note",
+      });
+      // The first card is read-only now; the second still has its buttons.
+      expect(screen.getAllByRole("button", { name: "Confirm" })).toHaveLength(1);
+      m.askCrm.mockResolvedValueOnce(answer("Next."));
+      await ask(user, "Thanks");
+      await screen.findByText("Next.");
+      const sent = m.askCrm.mock.calls[1][0].messages;
+      expect(sent).toContainEqual({ role: "assistant", content: "Change confirmed: Note added to Jane Tan." });
+      // Notes are not shown as chat bubbles.
+      expect(screen.queryByText("Change confirmed: Note added to Jane Tan.")).toBeNull();
+    });
+
+    it("a stage move sends no text", async () => {
+      const user = userEvent.setup();
+      await withNoteCard(user);
+      m.actOnCrm.mockResolvedValue({ status: 200, body: { status: "ok", message: "Moved." } });
+      await user.click(screen.getAllByRole("button", { name: "Confirm" })[1]);
+      await screen.findByText("Moved.");
+      expect(m.actOnCrm).toHaveBeenCalledWith({
+        estate: "traxo",
+        proposal: STAGE_PROPOSAL.proposal,
+        signature: "sig-stage",
+      });
+    });
+
+    it("Cancel shows Cancelled. and the next request includes the cancellation", async () => {
+      const user = userEvent.setup();
+      await withNoteCard(user);
+      await user.click(screen.getAllByRole("button", { name: "Cancel" })[1]);
+      expect(screen.getByText("Cancelled.")).toBeInTheDocument();
+      expect(m.actOnCrm).not.toHaveBeenCalled();
+      m.askCrm.mockResolvedValueOnce(answer("Ok."));
+      await ask(user, "Never mind");
+      await screen.findByText("Ok.");
+      const sent = m.askCrm.mock.calls[1][0].messages;
+      expect(sent).toContainEqual({
+        role: "assistant",
+        content: "Change cancelled: move Beta Fund from lead to in talks",
+      });
+    });
+
+    it("a 403 marks the card expired and read-only", async () => {
+      const user = userEvent.setup();
+      await withNoteCard(user);
+      m.actOnCrm.mockResolvedValue({ status: 403, body: { error: "This change has expired. Ask again." } });
+      await user.click(screen.getAllByRole("button", { name: "Confirm" })[0]);
+      expect(await screen.findByText("This change has expired. Ask again.")).toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: "Confirm" })).toHaveLength(1);
+    });
+
+    it("a failed confirm leaves the card open with the retry message", async () => {
+      const user = userEvent.setup();
+      await withNoteCard(user);
+      m.actOnCrm.mockResolvedValueOnce({ status: 502, body: { error: "x" } });
+      await user.click(screen.getAllByRole("button", { name: "Confirm" })[0]);
+      expect(await screen.findByText("Could not save. Check signal and try again.")).toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: "Confirm" })).toHaveLength(2);
+      m.actOnCrm.mockResolvedValueOnce({ status: 200, body: { status: "ok", message: "Saved." } });
+      await user.click(screen.getAllByRole("button", { name: "Confirm" })[0]);
+      expect(await screen.findByText("Saved.")).toBeInTheDocument();
+    });
+
+    it("a 401 on confirm reopens the card and calls onUnauthorized", async () => {
+      const user = userEvent.setup();
+      const onUnauthorized = vi.fn();
+      m.askCrm.mockResolvedValueOnce(answer("Sure.", [NOTE_PROPOSAL]));
+      render(<Harness onUnauthorized={onUnauthorized} />);
+      await ask(user, "Note it");
+      await screen.findByText("Sure.");
+      m.actOnCrm.mockResolvedValue({ status: 401, body: { error: "unauthorized" } });
+      await user.click(screen.getByRole("button", { name: "Confirm" }));
+      await waitFor(() => expect(onUnauthorized).toHaveBeenCalledTimes(1));
+      expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
+    });
+
+    it("blocks a double confirm and locks the card while working", async () => {
+      const user = userEvent.setup();
+      const onBusy = vi.fn();
+      m.askCrm.mockResolvedValueOnce(answer("Sure.", [NOTE_PROPOSAL]));
+      render(<Harness onBusy={onBusy} />);
+      await ask(user, "Note it");
+      await screen.findByText("Sure.");
+      let resolve!: (v: never) => void;
+      m.actOnCrm.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+      await user.click(screen.getByRole("button", { name: "Confirm" }));
+      expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+      await waitFor(() => expect(onBusy).toHaveBeenLastCalledWith(true));
+      await user.click(screen.getByRole("button", { name: "Confirm" }));
+      expect(m.actOnCrm).toHaveBeenCalledTimes(1);
+      resolve({ status: 200, body: { status: "ok", message: "Saved." } } as never);
+      await screen.findByText("Saved.");
+      await waitFor(() => expect(onBusy).toHaveBeenLastCalledWith(false));
+    });
+
+    it("disables Confirm for a blank or over-long note", async () => {
+      const user = userEvent.setup();
+      m.askCrm.mockResolvedValueOnce(answer("Sure.", [NOTE_PROPOSAL]));
+      render(<Harness />);
+      await ask(user, "Note it");
+      await screen.findByText("Sure.");
+      await user.clear(screen.getByRole("textbox", { name: "Note text" }));
+      expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    });
+  });
+
+  it("renders the answer as text, never as HTML", async () => {
+    const user = userEvent.setup();
+    m.askCrm.mockResolvedValue(answer('<b>bold</b> <script>window.hacked = 1</script>'));
+    const { container } = render(<Harness />);
+    await ask(user, "x");
+    await screen.findByText(/<b>bold<\/b>/);
+    expect(container.querySelector("b")).toBeNull();
+    expect(container.querySelector("script")).toBeNull();
+  });
+});

@@ -3,6 +3,8 @@
 import type { CardFields } from "@/lib/monsoon/extract";
 import type { CaptureResult } from "@/lib/monsoon/capture";
 import type { RefineInput, RefineOutput } from "@/lib/monsoon/refine";
+import type { AskMessage, AskResult } from "@/lib/monsoon/ask/loop";
+import type { SignedProposal } from "@/lib/monsoon/ask/proposal";
 
 export type EstateInfo = {
   key: string;
@@ -85,6 +87,35 @@ export async function refineCard(
 ): Promise<ApiResult<RefineOutput | { error: string }>> {
   return parse(
     await fetch("/api/monsoon/refine", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+export async function askCrm(body: {
+  estate: string;
+  today: string;
+  messages: AskMessage[];
+}): Promise<ApiResult<AskResult | { error: string }>> {
+  return parse(
+    await fetch("/api/monsoon/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+export async function actOnCrm(body: {
+  estate: string;
+  proposal: SignedProposal["proposal"];
+  signature: string;
+  text?: string;
+}): Promise<ApiResult<{ status: string; message: string } | { error: string }>> {
+  return parse(
+    await fetch("/api/monsoon/act", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
