@@ -1,0 +1,293 @@
+{
+  "name_key": [
+    {
+      "in": "Jane Tan",
+      "out": "jane tan"
+    },
+    {
+      "in": "  jane   TAN ",
+      "out": "jane tan"
+    },
+    {
+      "in": "Jane\tTan",
+      "out": "jane tan"
+    },
+    {
+      "in": "JANE TAN",
+      "out": "jane tan"
+    },
+    {
+      "in": "José Álvarez",
+      "out": "josé álvarez"
+    },
+    {
+      "in": "",
+      "out": ""
+    }
+  ],
+  "merge_fill_empty": [
+    {
+      "existing": {
+        "id": "1",
+        "name": "A",
+        "email": null,
+        "phone": " ",
+        "title": "CEO"
+      },
+      "incoming": {
+        "name": "B",
+        "email": "a@b.co",
+        "phone": "123",
+        "title": "CFO",
+        "linkedin_url": ""
+      },
+      "out": {
+        "email": "a@b.co",
+        "phone": "123"
+      }
+    },
+    {
+      "existing": {
+        "id": "1",
+        "name": "A",
+        "email": null,
+        "phone": " ",
+        "title": "CEO"
+      },
+      "incoming": {},
+      "out": {}
+    }
+  ],
+  "org_name_cores": [
+    {
+      "in": "Meridian Harbour Asset Management (MHAM)",
+      "out": [
+        "meridian harbour",
+        "mham"
+      ]
+    },
+    {
+      "in": "Northwind Capital",
+      "out": [
+        "northwind"
+      ]
+    },
+    {
+      "in": "The Capital Group",
+      "out": [
+        "the capital group"
+      ]
+    },
+    {
+      "in": "Acme Capital Pte. Ltd.",
+      "out": [
+        "acme"
+      ]
+    },
+    {
+      "in": "A&B Partners",
+      "out": [
+        "a b"
+      ]
+    },
+    {
+      "in": "(X)",
+      "out": [
+        "x"
+      ]
+    },
+    {
+      "in": "",
+      "out": []
+    }
+  ],
+  "ratio": [
+    {
+      "a": "brightwater famly",
+      "b": "brightwater family",
+      "out": 0.9714285714285714
+    },
+    {
+      "a": "corvane",
+      "b": "corvine",
+      "out": 0.8571428571428571
+    },
+    {
+      "a": "abcdef",
+      "b": "abcdxy",
+      "out": 0.6666666666666666
+    },
+    {
+      "a": "",
+      "b": "",
+      "out": 1.0
+    },
+    {
+      "a": "abc",
+      "b": "",
+      "out": 0.0
+    },
+    {
+      "a": "northwind",
+      "b": "northwind",
+      "out": 1.0
+    },
+    {
+      "a": "alpha beta",
+      "b": "beta alpha",
+      "out": 0.5
+    }
+  ],
+  "similar_org_names": [
+    {
+      "name": "MHAM",
+      "existing": [
+        "Meridian Harbour Asset Management (MHAM)",
+        "Northwind Capital",
+        "Corvane",
+        "Brightwater Family Office",
+        "Acme Capital Pte Ltd",
+        "Acme Capital Partners Asia"
+      ],
+      "out": [
+        "Meridian Harbour Asset Management (MHAM)"
+      ]
+    },
+    {
+      "name": "Northwind Capital Management",
+      "existing": [
+        "Meridian Harbour Asset Management (MHAM)",
+        "Northwind Capital",
+        "Corvane",
+        "Brightwater Family Office",
+        "Acme Capital Pte Ltd",
+        "Acme Capital Partners Asia"
+      ],
+      "out": [
+        "Northwind Capital"
+      ]
+    },
+    {
+      "name": "Brightwater Famly Office",
+      "existing": [
+        "Meridian Harbour Asset Management (MHAM)",
+        "Northwind Capital",
+        "Corvane",
+        "Brightwater Family Office",
+        "Acme Capital Pte Ltd",
+        "Acme Capital Partners Asia"
+      ],
+      "out": [
+        "Brightwater Family Office"
+      ]
+    },
+    {
+      "name": "Corvane",
+      "existing": [
+        "Meridian Harbour Asset Management (MHAM)",
+        "Northwind Capital",
+        "Corvane",
+        "Brightwater Family Office",
+        "Acme Capital Pte Ltd",
+        "Acme Capital Partners Asia"
+      ],
+      "out": []
+    },
+    {
+      "name": "Pinecrest Holdings",
+      "existing": [
+        "Meridian Harbour Asset Management (MHAM)",
+        "Northwind Capital",
+        "Corvane",
+        "Brightwater Family Office",
+        "Acme Capital Pte Ltd",
+        "Acme Capital Partners Asia"
+      ],
+      "out": []
+    },
+    {
+      "name": "Acme Capital",
+      "existing": [
+        "Meridian Harbour Asset Management (MHAM)",
+        "Northwind Capital",
+        "Corvane",
+        "Brightwater Family Office",
+        "Acme Capital Pte Ltd",
+        "Acme Capital Partners Asia"
+      ],
+      "out": [
+        "Acme Capital Pte Ltd",
+        "Acme Capital Partners Asia"
+      ]
+    },
+    {
+      "name": "acme capital pte ltd",
+      "existing": [
+        "Meridian Harbour Asset Management (MHAM)",
+        "Northwind Capital",
+        "Corvane",
+        "Brightwater Family Office",
+        "Acme Capital Pte Ltd",
+        "Acme Capital Partners Asia"
+      ],
+      "out": [
+        "Acme Capital Partners Asia"
+      ]
+    },
+    {
+      "name": "Corvine",
+      "existing": [
+        "Meridian Harbour Asset Management (MHAM)",
+        "Northwind Capital",
+        "Corvane",
+        "Brightwater Family Office",
+        "Acme Capital Pte Ltd",
+        "Acme Capital Partners Asia"
+      ],
+      "out": [
+        "Corvane"
+      ]
+    },
+    {
+      "name": "Corvanne",
+      "existing": [
+        "Meridian Harbour Asset Management (MHAM)",
+        "Northwind Capital",
+        "Corvane",
+        "Brightwater Family Office",
+        "Acme Capital Pte Ltd",
+        "Acme Capital Partners Asia"
+      ],
+      "out": [
+        "Corvane"
+      ]
+    },
+    {
+      "name": "Acme",
+      "existing": [
+        "Meridian Harbour Asset Management (MHAM)",
+        "Northwind Capital",
+        "Corvane",
+        "Brightwater Family Office",
+        "Acme Capital Pte Ltd",
+        "Acme Capital Partners Asia"
+      ],
+      "out": [
+        "Acme Capital Pte Ltd",
+        "Acme Capital Partners Asia"
+      ]
+    },
+    {
+      "name": "North",
+      "existing": [
+        "Meridian Harbour Asset Management (MHAM)",
+        "Northwind Capital",
+        "Corvane",
+        "Brightwater Family Office",
+        "Acme Capital Pte Ltd",
+        "Acme Capital Partners Asia"
+      ],
+      "out": []
+    }
+  ]
+}
