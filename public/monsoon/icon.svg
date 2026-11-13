@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="1024" height="1024">
+  <!-- Monsoon app icon (concept 6C): an outlined raindrop with a rising bar chart. Master source for the PNGs. -->
+  <defs>
+    <radialGradient id="ink" cx="50%" cy="28%" r="80%">
+      <stop offset="0" stop-color="#17222D"/><stop offset="1" stop-color="#07090C"/>
+    </radialGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#B4F5FF"/><stop offset=".45" stop-color="#6AE6FF"/><stop offset="1" stop-color="#2496C0"/>
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" fill="url(#ink)"/>
+  <path d="M50 12 C50 12 23.5 44.5 23.5 63 A26.5 26.5 0 0 0 76.5 63 C76.5 44.5 50 12 50 12 Z" fill="#0E1822" stroke="url(#cyan)" stroke-width="4.5" stroke-linejoin="round"/>
+  <g fill="url(#cyan)">
+    <rect x="35" y="65" width="8" height="14" rx="1.6"/>
+    <rect x="46" y="57" width="8" height="22" rx="1.6"/>
+    <rect x="57" y="47" width="8" height="32" rx="1.6"/>
+  </g>
+</svg>
