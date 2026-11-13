@@ -11,7 +11,7 @@ const { q, a } = vi.hoisted(() => ({ q: {
   searchNotes: vi.fn(),
   recentActivity: vi.fn(),
 }, a: { proposeNote: vi.fn(), proposeStage: vi.fn() } }));
-vi.mock("./queries", () => q);
+vi.mock("./queries", async (orig) => ({ ...(await orig<typeof import("./queries")>()), ...q }));
 vi.mock("./actions", () => a);
 
 import { runTool, TOOLS, type ToolContext } from "./tools";
@@ -83,7 +83,13 @@ describe("read tools", () => {
     ];
     q.listPipeline.mockResolvedValue({ rows, total: 2 });
     const out = await runTool(ctx, "list_pipeline", {});
-    expect(out.result).toEqual({ rows, total: 2 });
+    expect(out.result).toEqual({
+      rows: [
+        { memberId: "m1", memberKind: "person", name: "Jane Tan", company: "Acme" },
+        { memberId: "m2", memberKind: "company", name: "Northwind" },
+      ],
+      total: 2,
+    });
     expect(out.refs).toEqual([
       { memberId: "m1", name: "Jane Tan", company: "Acme", kind: "person" },
       { memberId: "m2", name: "Northwind", company: null, kind: "company" },
@@ -187,5 +193,75 @@ describe("propose tools", () => {
     a.proposeStage.mockResolvedValue({ ok: false, reason: "Jane is already in engaged." });
     const out = await runTool(ctx, "propose_stage", { member_id: ID, stage: "engaged" });
     expect(out).toEqual({ result: { error: "Jane is already in engaged." }, refs: [] });
+  });
+});
+
+describe("result shaping for the model", () => {
+  const row = (i: number, over: Record<string, unknown> = {}) => ({
+    memberId: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+    memberKind: "person",
+    name: `Contact Number ${i}`,
+    company: `Company ${i}`,
+    role: "investor",
+    stage: "engaged",
+    owner: i % 2 ? "VF" : null,
+    lastActionAt: "2026-10-01T09:00:00.000Z",
+    lastActionKind: "email",
+    nextAction: "x".repeat(600),
+    nextActionDate: "2026-11-01",
+    due: "overdue",
+    ...over,
+  });
+  const many = Array.from({ length: 120 }, (_, i) => row(i));
+
+  it("chase_list fits the cap with totals, a note, clipped text and no empty fields", async () => {
+    q.chaseList.mockResolvedValue({ due: many.slice(0, 50), stale: many.slice(50, 100) });
+    const out = await runTool(ctx, "chase_list", {});
+    const json = JSON.stringify(out.result);
+    expect(json.length).toBeLessThan(24_000);
+    const r = out.result as { due: Record<string, unknown>[]; stale: unknown[]; dueTotal: number; staleTotal: number; note: string };
+    expect(r.due).toHaveLength(25);
+    expect(r.stale).toHaveLength(15);
+    expect(r.dueTotal).toBe(50);
+    expect(r.staleTotal).toBe(50);
+    expect(r.note).toContain("50 or more");
+    expect(r.due[0].memberId).toBeDefined();
+    expect((r.due[0].nextAction as string).length).toBeLessThan(180);
+    expect(r.due[0].nextAction).toContain("[cut]");
+    expect(Object.values(r.due[0]).some((v) => v === null || v === "")).toBe(false);
+    expect(out.refs).toHaveLength(40);
+  });
+
+  it("chase_list adds no note when everything fits", async () => {
+    q.chaseList.mockResolvedValue({ due: many.slice(0, 3), stale: [] });
+    const out = await runTool(ctx, "chase_list", { owner: "VF" });
+    expect(out.result).toMatchObject({ dueTotal: 3, staleTotal: 0 });
+    expect(out.result).not.toHaveProperty("note");
+  });
+
+  it("list_pipeline fits the cap with 40 rows, the total and a note", async () => {
+    q.listPipeline.mockResolvedValue({ rows: many.slice(0, 50), total: 120 });
+    const out = await runTool(ctx, "list_pipeline", {});
+    expect(JSON.stringify(out.result).length).toBeLessThan(24_000);
+    const r = out.result as { rows: unknown[]; total: number; note: string };
+    expect(r.rows).toHaveLength(40);
+    expect(r.total).toBe(120);
+    expect(r.note).toContain("120");
+  });
+
+  it("clips free text in find_contacts, search_notes and recent_activity rows", async () => {
+    q.findContacts.mockResolvedValue([{ kind: "person", name: "J", email: null, company: "", member: null }]);
+    expect((await runTool(ctx, "find_contacts", { query: "jj" })).result).toEqual([{ kind: "person", name: "J" }]);
+    q.searchNotes.mockResolvedValue([{ member: null, name: "J", snippet: "y".repeat(400), at: null }]);
+    const hits = (await runTool(ctx, "search_notes", { text: "yy" })).result as { snippet: string }[];
+    expect(hits[0].snippet.length).toBeLessThan(180);
+    q.recentActivity.mockResolvedValue([{ memberId: "m", name: "J", company: null, summary: "z".repeat(400), by: null }]);
+    const act = (await runTool(ctx, "recent_activity", { days: 3 })).result as Record<string, string>[];
+    expect(act[0].summary.length).toBeLessThan(180);
+    expect(act[0]).not.toHaveProperty("by");
+  });
+
+  it("states in the chase_list description that owner includes unassigned contacts", () => {
+    expect(TOOLS.find((t) => t.name === "chase_list")!.description).toMatch(/includes unassigned/);
   });
 });

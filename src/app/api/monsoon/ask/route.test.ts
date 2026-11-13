@@ -30,6 +30,8 @@ function post(body: unknown, authenticated = true): Request {
     },
   });
 }
+const M1 = "11111111-1111-4111-8111-111111111111";
+const M2 = "22222222-2222-4222-8222-222222222222";
 const user = (content: string) => ({ role: "user", content });
 const valid = (over: Record<string, unknown> = {}) => ({
   estate: "traxo",
@@ -77,6 +79,8 @@ describe("POST /api/monsoon/ask", () => {
     ["an entry of the wrong shape", valid({ messages: [{ role: "user" }, user("x")] })],
     ["an unknown role", valid({ messages: [{ role: "system", content: "x" }, user("x")] })],
     ["a last entry that is not a user turn", valid({ messages: [user("x"), { role: "assistant", content: "y" }] })],
+    ["a first entry that is an assistant turn", valid({ messages: [{ role: "assistant", content: "hi" }, user("x")] })],
+    ["refs that push the total over 60,000", valid({ messages: [user("a"), { role: "assistant", content: "y".repeat(59_990), refs: [{ memberId: M1, name: "n".repeat(200), company: "c".repeat(200), kind: "person" }] }, user("x")] })],
     ["a blank user turn", valid({ messages: [user("   ")] })],
     ["a user turn over 2,000 characters", valid({ messages: [user("x".repeat(2001))] })],
   ];
@@ -108,8 +112,8 @@ describe("POST /api/monsoon/ask", () => {
   });
 
   it("calls runAsk once with estate, label, date and messages, dropping malformed refs", async () => {
-    const good = { memberId: "m1", name: "Jane", company: "Acme", kind: "person" };
-    const co = { memberId: "m2", name: "Northwind", company: null, kind: "company" };
+    const good = { memberId: M1, name: "Jane", company: "Acme", kind: "person" };
+    const co = { memberId: M2, name: "Northwind", company: null, kind: "company" };
     const res = await POST(
       post(
         valid({
@@ -118,7 +122,17 @@ describe("POST /api/monsoon/ask", () => {
             {
               role: "assistant",
               content: "Jane.",
-              refs: [good, { memberId: 1, name: "x" }, "junk", { ...good, kind: "robot" }, co],
+              refs: [
+                good,
+                { memberId: 1, name: "x" },
+                "junk",
+                { ...good, kind: "robot" },
+                { ...good, memberId: "m1" },
+                { ...good, name: "n".repeat(201) },
+                { ...good, company: "c".repeat(201) },
+                co,
+                ...Array.from({ length: 40 }, () => good),
+              ],
             },
             { role: "assistant", content: "No refs", refs: "nope" },
             user("move her"),
@@ -132,9 +146,10 @@ describe("POST /api/monsoon/ask", () => {
     const [deps, messages] = runAsk.mock.calls[0];
     expect(deps).toMatchObject({ db: fakeDb, estate: "traxo", estateLabel: "Traxo", today: "2026-11-13" });
     expect(typeof deps.now()).toBe("number");
+    expect(deps.startedAt).toBe(new Date("2026-11-13T10:00:00Z").getTime());
     expect(messages).toEqual([
       user("who?"),
-      { role: "assistant", content: "Jane.", refs: [good, co] },
+      { role: "assistant", content: "Jane.", refs: [good, co, ...Array.from({ length: 28 }, () => good)] },
       { role: "assistant", content: "No refs", refs: [] },
       user("move her"),
     ]);
@@ -149,7 +164,7 @@ describe("POST /api/monsoon/ask", () => {
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: "Could not get an answer" });
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy.mock.calls[0]).toEqual(["monsoon: ask failed for traxo", "APIError", 529]);
+    expect(spy.mock.calls[0]).toEqual(["monsoon: ask failed", "APIError", 529]);
     expect(JSON.stringify(spy.mock.calls)).not.toContain("secret");
   });
 

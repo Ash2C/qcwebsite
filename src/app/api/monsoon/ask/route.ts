@@ -16,6 +16,8 @@ const MAX_MESSAGES = 30;
 const MAX_TOTAL_CHARS = 60_000;
 const MAX_USER_CHARS = 2000;
 const MAX_REFS_PER_MESSAGE = 30;
+const MAX_REF_TEXT = 200;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DAY_MS = 86_400_000;
 
 function bad(error: string) {
@@ -38,9 +40,10 @@ function cleanRefs(value: unknown): Ref[] {
   if (!Array.isArray(value)) return [];
   const out: Ref[] = [];
   for (const r of value) {
-    if (!isObj(r) || typeof r.memberId !== "string" || typeof r.name !== "string") continue;
+    if (!isObj(r) || typeof r.memberId !== "string" || !UUID_RE.test(r.memberId)) continue;
+    if (typeof r.name !== "string" || r.name.length === 0 || r.name.length > MAX_REF_TEXT) continue;
     if (r.kind !== "person" && r.kind !== "company") continue;
-    if (r.company !== null && typeof r.company !== "string") continue;
+    if (r.company !== null && (typeof r.company !== "string" || r.company.length > MAX_REF_TEXT)) continue;
     out.push({ memberId: r.memberId, name: r.name, company: r.company, kind: r.kind });
     if (out.length >= MAX_REFS_PER_MESSAGE) break;
   }
@@ -60,17 +63,21 @@ function parseMessages(value: unknown): AskMessage[] | string {
       if (m.content.length > MAX_USER_CHARS) return "Message is too long";
       out.push({ role: "user", content: m.content });
     } else if (m.role === "assistant") {
-      out.push({ role: "assistant", content: m.content, refs: cleanRefs(m.refs) });
+      const refs = cleanRefs(m.refs);
+      for (const r of refs) total += r.memberId.length + r.name.length + (r.company?.length ?? 0);
+      out.push({ role: "assistant", content: m.content, refs });
     } else {
       return "Invalid message";
     }
   }
+  if (out[0].role !== "user") return "The conversation must start with a user message";
   if (total > MAX_TOTAL_CHARS) return "Conversation is too long";
   if (out[out.length - 1].role !== "user") return "The last message must be from the user";
   return out;
 }
 
 export async function POST(request: Request) {
+  const startedAt = Date.now(); // the loop's deadline counts from here, database connection included
   const denied = requireSession(request);
   if (denied) return denied;
 
@@ -83,13 +90,13 @@ export async function POST(request: Request) {
   if (!estate) return bad("Unknown estate");
   const messages = parseMessages(b.messages);
   if (typeof messages === "string") return bad(messages);
-  const today = resolveToday(b.today, Date.now());
+  const today = resolveToday(b.today, startedAt);
 
   try {
     const result = await withEstateDb(estate, async (db) => {
       const client = new Anthropic({ timeout: 20_000, maxRetries: 0 }).messages as unknown as ModelClient;
       return runAsk(
-        { db, estate: estate.key, estateLabel: estate.label, today, client, now: () => Date.now() },
+        { db, estate: estate.key, estateLabel: estate.label, today, client, now: () => Date.now(), startedAt },
         messages,
       );
     });
@@ -97,11 +104,7 @@ export async function POST(request: Request) {
   } catch (err) {
     // Name and status only: messages can carry questions, contact data or connection details.
     const status = (err as { status?: unknown })?.status;
-    console.error(
-      `monsoon: ask failed for ${estate.key}`,
-      err instanceof Error ? err.name : "error",
-      typeof status === "number" ? status : "",
-    );
+    console.error("monsoon: ask failed", err instanceof Error ? err.name : "error", ...(typeof status === "number" ? [status] : []));
     return NextResponse.json({ error: "Could not get an answer" }, { status: 502 });
   }
 }

@@ -13,6 +13,7 @@ import {
   pipelineSummary,
   recentActivity,
   searchNotes,
+  clip,
   type MemberKind,
 } from "./queries";
 
@@ -67,7 +68,7 @@ export const TOOLS: ToolDef[] = [
   tool("pipeline_summary", "Count pipeline members by stage, role and due bucket. Use it for how-many and overview questions.", {}),
   tool(
     "chase_list",
-    "List members whose next action is due or that have gone quiet, optionally for one owner (that owner plus unowned). Use it for who to chase or follow up.",
+    "List members whose next action is due or that have gone quiet, optionally for one owner . Passing owner includes unassigned contacts too (that owner plus unassigned); leave it out for the whole team. Use it for who to chase or follow up.",
     { owner: { type: "string", description: "An owner key." } },
   ),
   tool(
@@ -165,6 +166,28 @@ function describeChange(p: SignedProposal): string {
     : `Move ${who} from ${x.fromStage} to ${x.toStage}`;
 }
 
+const TEXT_MAX = 160;
+const LIST_ROWS = 40;
+const CHASE_DUE_ROWS = 25;
+const CHASE_STALE_ROWS = 15;
+const QUERY_LIST_CAP = 50; // the queries cut each list at 50
+
+/** A row for the model: null and empty fields omitted, free text clipped, ids kept. */
+function slim(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(slim);
+  if (typeof value === "string") return clip(value, TEXT_MAX);
+  if (!isObj(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (v === null || v === undefined || v === "") continue;
+    out[k] = slim(v);
+  }
+  return out;
+}
+
+const left = (total: number) =>
+  total >= QUERY_LIST_CAP ? `${QUERY_LIST_CAP} or more` : String(total);
+
 async function dispatch(ctx: ToolContext, name: string, a: Record<string, string | number>): Promise<ToolOutcome> {
   const { db, today } = ctx;
   const read = (result: unknown): ToolOutcome => ({ result, refs: extractRefs(result) });
@@ -174,7 +197,7 @@ async function dispatch(ctx: ToolContext, name: string, a: Record<string, string
   };
   switch (name) {
     case "find_contacts":
-      return read(await findContacts(db, a.query as string));
+      return read(slim(await findContacts(db, a.query as string)));
     case "get_contact": {
       const r = await getContact(db, a.member_id as string, today);
       return read(r ?? { error: "No such contact." });
@@ -183,27 +206,48 @@ async function dispatch(ctx: ToolContext, name: string, a: Record<string, string
       const r = await getPerson(db, a.person_id as string);
       return read(r ?? { error: "No such person." });
     }
-    case "list_pipeline":
-      return read(
-        await listPipeline(
-          db,
-          {
-            ...(a.stage !== undefined ? { stage: a.stage as string } : {}),
-            ...(a.role !== undefined ? { role: a.role as string } : {}),
-            ...(a.owner !== undefined ? { owner: a.owner as string } : {}),
-            ...(a.due !== undefined ? { due: a.due as "overdue" } : {}),
-          },
-          today,
-        ),
+    case "list_pipeline": {
+      const r = await listPipeline(
+        db,
+        {
+          ...(a.stage !== undefined ? { stage: a.stage as string } : {}),
+          ...(a.role !== undefined ? { role: a.role as string } : {}),
+          ...(a.owner !== undefined ? { owner: a.owner as string } : {}),
+          ...(a.due !== undefined ? { due: a.due as "overdue" } : {}),
+        },
+        today,
       );
+      const rows = slim(r.rows.slice(0, LIST_ROWS));
+      return read({
+        rows,
+        total: r.total,
+        ...(r.total > LIST_ROWS ? { note: `Showing the first ${LIST_ROWS} of ${r.total}; ${r.total - LIST_ROWS} not shown.` } : {}),
+      });
+    }
     case "pipeline_summary":
       return read(await pipelineSummary(db, today));
-    case "chase_list":
-      return read(await chaseList(db, a.owner !== undefined ? { owner: a.owner as string } : {}, today));
+    case "chase_list": {
+      const r = await chaseList(db, a.owner !== undefined ? { owner: a.owner as string } : {}, today);
+      const due = r.due.slice(0, CHASE_DUE_ROWS);
+      const stale = r.stale.slice(0, CHASE_STALE_ROWS);
+      const hidden = r.due.length - due.length + (r.stale.length - stale.length);
+      return read({
+        due: slim(due),
+        stale: slim(stale),
+        // The query cuts each list at 50, so these are exact below 50 and a floor at 50.
+        dueTotal: r.due.length,
+        staleTotal: r.stale.length,
+        ...(hidden > 0
+          ? {
+              note: `Showing the ${due.length} most urgent due and ${stale.length} longest-quiet of ${left(r.due.length)} due and ${left(r.stale.length)} quiet; ${hidden} not shown.`,
+            }
+          : {}),
+      });
+    }
     case "search_notes":
-      return read(await searchNotes(db, a.text as string));
+      return read(slim(await searchNotes(db, a.text as string)));
     case "recent_activity":
-      return read(await recentActivity(db, a.days as number, today));
+      return read(slim(await recentActivity(db, a.days as number, today)));
     case "propose_note":
     case "propose_stage": {
       const r =

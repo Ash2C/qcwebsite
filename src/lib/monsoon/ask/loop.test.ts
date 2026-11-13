@@ -33,19 +33,26 @@ const use = (id: string, name: string, input: unknown = {}): Reply => ({
   ],
 });
 
-function setup(script: Array<Reply | Error>, clock: () => number = () => 0) {
+function setup(
+  script: Array<Reply | Error>,
+  clock: () => number = () => 0,
+  extra: { onCreate?: () => void; startedAt?: number } = {},
+) {
   const calls: Record<string, unknown>[] = [];
-  const create = vi.fn(async (params: Record<string, unknown>) => {
+  const timeouts: (number | undefined)[] = [];
+  const create = vi.fn(async (params: Record<string, unknown>, options?: { timeout?: number }) => {
     // Snapshot: the loop keeps appending to the same messages array.
     calls.push(JSON.parse(JSON.stringify(params)));
+    timeouts.push(options?.timeout);
+    extra.onCreate?.();
     const next = script.shift();
     if (!next) throw new Error("script exhausted");
     if (next instanceof Error) throw next;
     return next;
   });
   const client: ModelClient = { create };
-  const deps = { db, estate: "traxo" as const, estateLabel: "Traxo", today: "2026-11-13", client, now: clock };
-  return { calls, create, run: (m: AskMessage[] = Q) => runAsk(deps, m) };
+  const deps = { db, estate: "traxo" as const, estateLabel: "Traxo", today: "2026-11-13", client, now: clock, startedAt: extra.startedAt };
+  return { calls, create, timeouts, run: (m: AskMessage[] = Q) => runAsk(deps, m) };
 }
 
 const jane = { memberId: "m1", name: "Jane Tan", company: "Acme", kind: "person" as const };
@@ -127,15 +134,83 @@ describe("runAsk", () => {
     expect(out.answer).toBe("Too big, sorry.");
   });
 
-  it("stops when the time budget is spent", async () => {
-    runTool.mockResolvedValue({ result: { ok: 1 }, refs: [] });
-    let t = 0;
-    const s = setup([use("t0", "pipeline_summary"), text("Out of time.")], () => (t += 25_000));
-    const out = await s.run();
-    expect(s.create).toHaveBeenCalledTimes(2);
-    expect(s.calls[1].tools).toEqual(s.calls[0].tools);
-    expect(s.calls[1].tool_choice).toEqual({ type: "none" });
-    expect(out.answer).toBe("Out of time.");
+  describe("one deadline bounds all work", () => {
+    it("passes a per-call timeout of min(20s, remaining - 1s)", async () => {
+      runTool.mockResolvedValue({ result: { ok: 1 }, refs: [] });
+      let t = 0;
+      const s = setup([use("a", "pipeline_summary"), text("done")], () => t, {
+        onCreate: () => {
+          t += 35_000;
+        },
+      });
+      await s.run();
+      expect(s.timeouts).toEqual([20_000, 14_000]);
+    });
+
+    it("never starts a call under 5s left, and skips tools once under 8s are left", async () => {
+      runTool.mockResolvedValue({ result: { ok: 1 }, refs: [] });
+      let t = 0;
+      const advance = [30_000, 15_000, 0];
+      const s = setup(
+        [use("a", "pipeline_summary"), use("b", "pipeline_summary"), text("Too big.")],
+        () => t,
+        { onCreate: () => void (t += advance.shift() ?? 0) },
+      );
+      const out = await s.run();
+      expect(s.timeouts).toEqual([20_000, 19_000, 4_000]);
+      expect(runTool).toHaveBeenCalledTimes(1); // round 2's tool came after 45s: not run
+      const last = (s.calls[2].messages as { content: unknown }[]).at(-2)!.content as Record<string, unknown>[];
+      expect(last[0]).toEqual({ type: "tool_result", tool_use_id: "b", content: JSON.stringify({ error: "Out of time." }), is_error: true });
+      expect(s.calls[2].tool_choice).toEqual({ type: "none" });
+      expect(out.answer).toBe("Too big.");
+    });
+
+    it("skips the final call and gives the fixed sentence when under 5s are left", async () => {
+      runTool.mockResolvedValue({ result: { ok: 1 }, refs: [] });
+      let t = 0;
+      const s = setup([use("a", "pipeline_summary")], () => t, { onCreate: () => void (t += 46_000) });
+      const out = await s.run();
+      expect(s.create).toHaveBeenCalledTimes(1);
+      expect(runTool).not.toHaveBeenCalled();
+      expect(out.answer).toBe("That question was too big to finish. Try a narrower one.");
+    });
+
+    it("measures from startedAt, so connection time counts", async () => {
+      const s = setup([text("Quick.")], () => 0, { startedAt: -45_000 });
+      const out = await s.run();
+      expect(s.create).toHaveBeenCalledTimes(1);
+      expect(s.calls[0].tool_choice).toEqual({ type: "none" }); // went straight to the final call
+      expect(s.timeouts).toEqual([4_000]);
+      expect(out.answer).toBe("Quick.");
+    });
+
+    it("runs at most 8 tools per reply and answers the rest with an error", async () => {
+      runTool.mockResolvedValue({ result: { ok: 1 }, refs: [] });
+      const ten: Reply = {
+        stop_reason: "tool_use",
+        content: Array.from({ length: 10 }, (_, i) => ({ type: "tool_use", id: `u${i}`, name: "pipeline_summary", input: {} })),
+      };
+      const s = setup([ten, text("ok")]);
+      await s.run();
+      expect(runTool).toHaveBeenCalledTimes(8);
+      const last = (s.calls[1].messages as { content: unknown }[]).at(-1)!.content as Record<string, unknown>[];
+      expect(last).toHaveLength(10);
+      expect(last[9]).toEqual({
+        type: "tool_result",
+        tool_use_id: "u9",
+        content: JSON.stringify({ error: "Too many lookups at once. Ask for fewer." }),
+        is_error: true,
+      });
+    });
+  });
+
+  it("strips emphasis and heading markers from the answer", async () => {
+    const out = await setup([text(`## Chase
+**Jane** and __Li__ are due.
+- one`)]).run();
+    expect(out.answer).toBe(`Chase
+Jane and Li are due.
+- one`);
   });
 
   it("gives the fixed too-big message when the final call fails", async () => {
@@ -239,7 +314,7 @@ describe("runAsk", () => {
     const s = setup([text("Yes.")]);
     await s.run([
       { role: "user", content: "who is Jane?" },
-      { role: "assistant", content: "Jane Tan at Acme.", refs: [jane, { memberId: "m2", name: "Northwind", company: null, kind: "company" }] },
+      { role: "assistant", content: "Jane Tan at Acme.", refs: [jane, { memberId: "m2", name: "Northwind", company: null, kind: "company" }, { memberId: "m3", name: "Solo Sam", company: null, kind: "person" }] },
       { role: "assistant", content: "Plain." },
       { role: "user", content: "move her" },
     ]);
@@ -247,7 +322,7 @@ describe("runAsk", () => {
       { role: "user", content: "who is Jane?" },
       {
         role: "assistant",
-        content: "Jane Tan at Acme.\n[contacts referred to: Jane Tan (Acme) = member m1; Northwind (company) = member m2]",
+        content: "Jane Tan at Acme.\n[contacts referred to: Jane Tan (Acme) = member m1; Northwind (company) = member m2; Solo Sam = member m3]",
       },
       { role: "assistant", content: "Plain." },
       { role: "user", content: "move her" },
@@ -294,7 +369,13 @@ describe("buildSystem", () => {
     for (const k of ["contacted", "engaged", "passed"]) expect(s).toContain(k);
     expect(s).toContain("passed (Passed, terminal)");
     expect(s).toContain("investor");
+    expect(s).toContain("previous answers");
+    expect(s).toContain("not shown again");
+    expect(s).toMatch(/never retract/i);
+    expect(s).toContain("No asterisks");
+    expect(s).toContain("yours and unassigned");
+    expect(s).toContain("Never describe how the data is stored");
     expect(s).toContain("You cannot delete anything and you cannot change anything yourself; you can only prepare a change for the user to confirm.");
-    expect(s.split(/\s+/).length).toBeLessThan(350);
+    expect(s.split(/\s+/).length).toBeLessThan(450);
   });
 });
