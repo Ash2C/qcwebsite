@@ -14,7 +14,7 @@ const { q, a } = vi.hoisted(() => ({ q: {
 vi.mock("./queries", async (orig) => ({ ...(await orig<typeof import("./queries")>()), ...q }));
 vi.mock("./actions", () => a);
 
-import { runTool, TOOLS, type ToolContext } from "./tools";
+import { refKey, runTool, TOOLS, type ToolContext } from "./tools";
 
 const db = { fake: true } as unknown as ClientBase;
 const ctx: ToolContext = { db, estate: "traxo", today: "2026-11-13", nowMs: 1_000 };
@@ -52,41 +52,41 @@ describe("read tools", () => {
     q.getPerson.mockResolvedValue(null);
     q.listPipeline.mockResolvedValue({ rows: [], total: 0 });
     q.pipelineSummary.mockResolvedValue({ total: 0 });
-    q.chaseList.mockResolvedValue({ due: [], stale: [] });
-    q.searchNotes.mockResolvedValue([]);
+    q.chaseList.mockResolvedValue({ due: [], stale: [], dueTotal: 0, staleTotal: 0 });
+    q.searchNotes.mockResolvedValue({ hits: [], total: 0 });
     q.recentActivity.mockResolvedValue([]);
 
     await runTool(ctx, "find_contacts", { query: "jane" });
-    expect(q.findContacts).toHaveBeenCalledWith(db, "jane");
+    expect(q.findContacts).toHaveBeenCalledWith(db, "jane", undefined);
     await runTool(ctx, "get_contact", { member_id: ID });
-    expect(q.getContact).toHaveBeenCalledWith(db, ID, "2026-11-13");
+    expect(q.getContact).toHaveBeenCalledWith(db, ID, "2026-11-13", undefined);
     await runTool(ctx, "get_person", { person_id: ID });
-    expect(q.getPerson).toHaveBeenCalledWith(db, ID);
+    expect(q.getPerson).toHaveBeenCalledWith(db, ID, undefined);
     await runTool(ctx, "list_pipeline", { stage: "engaged", owner: "VF", due: "overdue" });
-    expect(q.listPipeline).toHaveBeenCalledWith(db, { stage: "engaged", owner: "VF", due: "overdue" }, "2026-11-13");
+    expect(q.listPipeline).toHaveBeenCalledWith(db, { stage: "engaged", owner: "VF", due: "overdue" }, "2026-11-13", undefined);
     await runTool(ctx, "list_pipeline", {});
-    expect(q.listPipeline).toHaveBeenLastCalledWith(db, {}, "2026-11-13");
+    expect(q.listPipeline).toHaveBeenLastCalledWith(db, {}, "2026-11-13", undefined);
     await runTool(ctx, "pipeline_summary", {});
-    expect(q.pipelineSummary).toHaveBeenCalledWith(db, "2026-11-13");
+    expect(q.pipelineSummary).toHaveBeenCalledWith(db, "2026-11-13", undefined);
     await runTool(ctx, "chase_list", { owner: "VF" });
-    expect(q.chaseList).toHaveBeenCalledWith(db, { owner: "VF" }, "2026-11-13");
+    expect(q.chaseList).toHaveBeenCalledWith(db, { owner: "VF" }, "2026-11-13", undefined);
     await runTool(ctx, "search_notes", { text: "fund" });
-    expect(q.searchNotes).toHaveBeenCalledWith(db, "fund");
+    expect(q.searchNotes).toHaveBeenCalledWith(db, "fund", undefined);
     await runTool(ctx, "recent_activity", { days: 7 });
-    expect(q.recentActivity).toHaveBeenCalledWith(db, 7, "2026-11-13");
+    expect(q.recentActivity).toHaveBeenCalledWith(db, 7, "2026-11-13", undefined);
   });
 
   it("returns the result and the members it names, in order", async () => {
     const rows = [
-      { memberId: "m1", memberKind: "person", name: "Jane Tan", company: "Acme" },
+      { memberId: "m1", memberKind: "person", name: "Jane Tan", company: "Acme", owner: "unassigned" },
       { memberId: "m2", memberKind: "company", name: "Northwind", company: null },
     ];
     q.listPipeline.mockResolvedValue({ rows, total: 2 });
     const out = await runTool(ctx, "list_pipeline", {});
     expect(out.result).toEqual({
       rows: [
-        { memberId: "m1", memberKind: "person", name: "Jane Tan", company: "Acme" },
-        { memberId: "m2", memberKind: "company", name: "Northwind" },
+        { memberId: "m1", memberKind: "person", name: "Jane Tan", company: "Acme", owner: "unassigned" },
+        { memberId: "m2", memberKind: "company", name: "Northwind", owner: "unassigned" },
       ],
       total: 2,
     });
@@ -107,6 +107,37 @@ describe("read tools", () => {
     expect((await runTool(ctx, "pipeline_summary", {})).refs).toEqual([]);
   });
 
+  it("passes the remaining time to every query as a statement timeout, minus 3 seconds, at least 1 second", async () => {
+    q.findContacts.mockResolvedValue([]);
+    q.getContact.mockResolvedValue(null);
+    q.getPerson.mockResolvedValue(null);
+    q.listPipeline.mockResolvedValue({ rows: [], total: 0 });
+    q.pipelineSummary.mockResolvedValue({ total: 0 });
+    q.chaseList.mockResolvedValue({ due: [], stale: [], dueTotal: 0, staleTotal: 0 });
+    q.searchNotes.mockResolvedValue({ hits: [], total: 0 });
+    q.recentActivity.mockResolvedValue([]);
+    let left = 20_000;
+    const timed: ToolContext = { ...ctx, remainingMs: () => left };
+    await runTool(timed, "find_contacts", { query: "jane" });
+    expect(q.findContacts).toHaveBeenCalledWith(db, "jane", { timeoutMs: 17_000 });
+    await runTool(timed, "get_contact", { member_id: ID });
+    expect(q.getContact).toHaveBeenCalledWith(db, ID, "2026-11-13", { timeoutMs: 17_000 });
+    await runTool(timed, "get_person", { person_id: ID });
+    expect(q.getPerson).toHaveBeenCalledWith(db, ID, { timeoutMs: 17_000 });
+    left = 9_000;
+    await runTool(timed, "list_pipeline", { stage: "engaged" });
+    expect(q.listPipeline).toHaveBeenCalledWith(db, { stage: "engaged" }, "2026-11-13", { timeoutMs: 6_000 });
+    await runTool(timed, "pipeline_summary", {});
+    expect(q.pipelineSummary).toHaveBeenCalledWith(db, "2026-11-13", { timeoutMs: 6_000 });
+    await runTool(timed, "chase_list", {});
+    expect(q.chaseList).toHaveBeenCalledWith(db, {}, "2026-11-13", { timeoutMs: 6_000 });
+    left = 2_000;
+    await runTool(timed, "search_notes", { text: "fund" });
+    expect(q.searchNotes).toHaveBeenCalledWith(db, "fund", { timeoutMs: 1_000 });
+    await runTool(timed, "recent_activity", { days: 7 });
+    expect(q.recentActivity).toHaveBeenCalledWith(db, 7, "2026-11-13", { timeoutMs: 1_000 });
+  });
+
   it("infers the kind of an activity row, which has no memberKind", async () => {
     q.recentActivity.mockResolvedValue([
       { memberId: "m1", name: "Jane", company: "Acme", summary: "x" },
@@ -114,6 +145,48 @@ describe("read tools", () => {
     ]);
     const out = await runTool(ctx, "recent_activity", { days: 3 });
     expect(out.refs.map((r) => r.kind)).toEqual(["person", "company"]);
+  });
+});
+
+describe("refs for a person filed under a company (I1)", () => {
+  const nw = { memberId: "m-nw", memberKind: "company", role: "investor", stage: "engaged" };
+  const JANE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const OMAR = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+  it("gives each such person their own ref with the company's member and their person id", async () => {
+    q.findContacts.mockResolvedValue([
+      { kind: "person", personId: JANE, name: "Jane Tan", company: "Northwind", member: nw },
+      { kind: "person", personId: OMAR, name: "Omar Reyes", company: "Northwind", member: nw },
+      { kind: "person", personId: "p3", name: "Li Wei", company: "Acme", member: { memberId: "m-li", memberKind: "person", role: "x", stage: "y" } },
+      { kind: "company", personId: null, name: "Northwind", company: null, member: nw },
+    ]);
+    const out = await runTool(ctx, "find_contacts", { query: "northwind" });
+    expect(out.refs).toEqual([
+      { memberId: "m-nw", name: "Jane Tan", company: "Northwind", kind: "company", personId: JANE },
+      { memberId: "m-nw", name: "Omar Reyes", company: "Northwind", kind: "company", personId: OMAR },
+      { memberId: "m-li", name: "Li Wei", company: "Acme", kind: "person" },
+      { memberId: "m-nw", name: "Northwind", company: null, kind: "company" },
+    ]);
+    expect(out.refs.map(refKey)).toEqual([JANE, OMAR, "m-li", "m-nw"]);
+    expect(new Set(out.refs.map(refKey)).size).toBe(4);
+  });
+
+  it("does the same for get_person and for a hit in a person's notes", async () => {
+    q.getPerson.mockResolvedValue({ personId: JANE, name: "Jane Tan", company: "Northwind", member: nw });
+    expect((await runTool(ctx, "get_person", { person_id: JANE })).refs).toEqual([
+      { memberId: "m-nw", name: "Jane Tan", company: "Northwind", kind: "company", personId: JANE },
+    ]);
+    q.searchNotes.mockResolvedValue({
+      hits: [
+        { member: nw, personId: JANE, name: "Jane Tan", company: "Northwind", where: "person notes", snippet: "x", at: null },
+        { member: nw, personId: null, name: "Northwind", company: null, where: "company notes", snippet: "y", at: null },
+      ],
+      total: 2,
+    });
+    expect((await runTool(ctx, "search_notes", { text: "long" })).refs).toEqual([
+      { memberId: "m-nw", name: "Jane Tan", company: "Northwind", kind: "company", personId: JANE },
+      { memberId: "m-nw", name: "Northwind", company: null, kind: "company" },
+    ]);
   });
 });
 
@@ -141,11 +214,36 @@ describe("bad calls", () => {
 
   it("does not leak the message of a thrown query", async () => {
     q.searchNotes.mockRejectedValue(new Error("connection to postgres://u:secret@host failed"));
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const out = await runTool(ctx, "search_notes", { text: "fund" });
     expect(out).toEqual({ result: { error: "That lookup failed." }, refs: [] });
     a.proposeNote.mockRejectedValue(new Error("secret"));
     const p = await runTool(ctx, "propose_note", { member_id: ID, text: "hi" });
     expect(JSON.stringify(p)).not.toContain("secret");
+    spy.mockRestore();
+  });
+});
+
+describe("logging a failed tool (D12)", () => {
+  it("logs the tool name, the error name and a numeric or SQLSTATE code, and nothing else", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const err = Object.assign(new Error("connection to postgres://u:secret@host failed for jane@x.com"), { code: "57014" });
+    q.searchNotes.mockRejectedValue(err);
+    await runTool(ctx, "search_notes", { text: "secret topic" });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]).toEqual(["monsoon: ask tool failed", "search_notes", "Error", "57014"]);
+    expect(JSON.stringify(spy.mock.calls)).not.toMatch(/secret|jane@x|postgres:/);
+
+    spy.mockClear();
+    q.getPerson.mockRejectedValue(Object.assign(new Error("m"), { code: "ECONNREFUSED with text", status: 503 }));
+    await runTool(ctx, "get_person", { person_id: ID });
+    expect(spy.mock.calls[0]).toEqual(["monsoon: ask tool failed", "get_person", "Error", 503]);
+
+    spy.mockClear();
+    q.getContact.mockRejectedValue("a string with secret");
+    await runTool(ctx, "get_contact", { member_id: ID });
+    expect(spy.mock.calls[0]).toEqual(["monsoon: ask tool failed", "get_contact", "error"]);
+    spy.mockRestore();
   });
 });
 
@@ -215,16 +313,18 @@ describe("result shaping for the model", () => {
   const many = Array.from({ length: 120 }, (_, i) => row(i));
 
   it("chase_list fits the cap with totals, a note, clipped text and no empty fields", async () => {
-    q.chaseList.mockResolvedValue({ due: many.slice(0, 50), stale: many.slice(50, 100) });
+    q.chaseList.mockResolvedValue({ due: many.slice(0, 50), stale: many.slice(50, 100), dueTotal: 73, staleTotal: 50 });
     const out = await runTool(ctx, "chase_list", {});
     const json = JSON.stringify(out.result);
     expect(json.length).toBeLessThan(24_000);
     const r = out.result as { due: Record<string, unknown>[]; stale: unknown[]; dueTotal: number; staleTotal: number; note: string };
     expect(r.due).toHaveLength(25);
     expect(r.stale).toHaveLength(15);
-    expect(r.dueTotal).toBe(50);
+    expect(r.dueTotal).toBe(73);
     expect(r.staleTotal).toBe(50);
-    expect(r.note).toContain("50 or more");
+    // 73 - 25 + 50 - 15 = 83 left out of what is shown; the totals are true counts
+    expect(r.note).toBe("Showing the 25 most urgent due and 15 longest-quiet of 73 due and 50 quiet; 83 not shown.");
+    expect(r.note).not.toContain("or more");
     expect(r.due[0].memberId).toBeDefined();
     expect((r.due[0].nextAction as string).length).toBeLessThan(180);
     expect(r.due[0].nextAction).toContain("[cut]");
@@ -233,7 +333,7 @@ describe("result shaping for the model", () => {
   });
 
   it("chase_list adds no note when everything fits", async () => {
-    q.chaseList.mockResolvedValue({ due: many.slice(0, 3), stale: [] });
+    q.chaseList.mockResolvedValue({ due: many.slice(0, 3), stale: [], dueTotal: 3, staleTotal: 0 });
     const out = await runTool(ctx, "chase_list", { owner: "VF" });
     expect(out.result).toMatchObject({ dueTotal: 3, staleTotal: 0 });
     expect(out.result).not.toHaveProperty("note");
@@ -252,8 +352,8 @@ describe("result shaping for the model", () => {
   it("clips free text in find_contacts, search_notes and recent_activity rows", async () => {
     q.findContacts.mockResolvedValue([{ kind: "person", name: "J", email: null, company: "", member: null }]);
     expect((await runTool(ctx, "find_contacts", { query: "jj" })).result).toEqual([{ kind: "person", name: "J" }]);
-    q.searchNotes.mockResolvedValue([{ member: null, name: "J", snippet: "y".repeat(400), at: null }]);
-    const hits = (await runTool(ctx, "search_notes", { text: "yy" })).result as { snippet: string }[];
+    q.searchNotes.mockResolvedValue({ hits: [{ member: null, name: "J", snippet: "y".repeat(400), at: null }], total: 1 });
+    const { hits } = (await runTool(ctx, "search_notes", { text: "yy" })).result as { hits: { snippet: string }[] };
     expect(hits[0].snippet.length).toBeLessThan(180);
     q.recentActivity.mockResolvedValue([{ memberId: "m", name: "J", company: null, summary: "z".repeat(400), by: null }]);
     const act = (await runTool(ctx, "recent_activity", { days: 3 })).result as Record<string, string>[];
@@ -261,7 +361,33 @@ describe("result shaping for the model", () => {
     expect(act[0]).not.toHaveProperty("by");
   });
 
-  it("states in the chase_list description that owner includes unassigned contacts", () => {
-    expect(TOOLS.find((t) => t.name === "chase_list")!.description).toMatch(/includes unassigned/);
+  it("states in the chase_list description that owner includes unassigned contacts, with no stray space", () => {
+    const d = TOOLS.find((t) => t.name === "chase_list")!.description;
+    expect(d).toMatch(/includes unassigned/);
+    expect(d).toContain("for one owner.");
+    expect(d).not.toMatch(/ \./);
+  });
+
+  it("says outright that a row has no owner, in list_pipeline and chase_list", async () => {
+    q.listPipeline.mockResolvedValue({ rows: [row(0, { owner: null }), row(1, { owner: "VF" })], total: 2 });
+    const lp = (await runTool(ctx, "list_pipeline", {})).result as { rows: { owner: string }[] };
+    expect(lp.rows.map((r) => r.owner)).toEqual(["unassigned", "VF"]);
+    q.chaseList.mockResolvedValue({ due: [row(2, { owner: null })], stale: [row(3, { owner: null })], dueTotal: 1, staleTotal: 1 });
+    const cl = (await runTool(ctx, "chase_list", {})).result as { due: { owner: string }[]; stale: { owner: string }[] };
+    expect([cl.due[0].owner, cl.stale[0].owner]).toEqual(["unassigned", "unassigned"]);
+  });
+
+  it("search_notes passes the hits and the true total, with a left-out note only when some are not shown", async () => {
+    const hit = (i: number) => ({ member: null, personId: null, name: `N${i}`, company: null, where: "timeline", snippet: `s${i}`, at: null });
+    q.searchNotes.mockResolvedValue({ hits: [hit(1), hit(2)], total: 2 });
+    const all = (await runTool(ctx, "search_notes", { text: "ab" })).result as Record<string, unknown>;
+    expect(all.total).toBe(2);
+    expect((all.hits as unknown[]).length).toBe(2);
+    expect(all).not.toHaveProperty("note");
+    q.searchNotes.mockResolvedValue({ hits: [hit(1), hit(2)], total: 47 });
+    const some = (await runTool(ctx, "search_notes", { text: "ab" })).result as { total: number; note: string };
+    expect(some.total).toBe(47);
+    expect(some.note).toContain("2 newest of 47");
+    expect(some.note).toContain("45 not shown");
   });
 });

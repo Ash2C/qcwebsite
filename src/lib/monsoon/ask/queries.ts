@@ -81,12 +81,16 @@ export type Summary = {
 };
 export type NoteHit = {
   member: MemberRef | null;
+  /** The person, for a hit in a person's notes (their member may be their company's). */
+  personId: string | null;
   name: string;
   company: string | null;
   where: "member notes" | "person notes" | "company notes" | "timeline";
   snippet: string;
   at: string | null;
 };
+export type SearchResult = { hits: NoteHit[]; total: number };
+export type ChaseResult = { due: PipelineRow[]; stale: PipelineRow[]; dueTotal: number; staleTotal: number };
 export type ActivityRow = TimelineEntry & { memberId: string; name: string; company: string | null };
 
 export const CUT = " …[cut]";
@@ -108,10 +112,23 @@ export function clip(text: string | null, max: number): string | null {
 }
 
 /** Run `fn` in a read-only transaction; the connection is outside any transaction afterwards. */
-export async function readOnly<T>(db: ClientBase, fn: () => Promise<T>): Promise<T> {
+export type QueryOptions = { timeoutMs?: number };
+
+const STATEMENT_MAX_MS = 8000;
+const STATEMENT_MIN_MS = 1000;
+
+/** The statement timeout in ms: 8 seconds, or less when the caller has less time left (never below 1 second). */
+function statementTimeout(opts?: QueryOptions): number {
+  const wanted = opts?.timeoutMs;
+  if (typeof wanted !== "number" || !Number.isFinite(wanted)) return STATEMENT_MAX_MS;
+  return Math.min(STATEMENT_MAX_MS, Math.max(STATEMENT_MIN_MS, Math.trunc(wanted)));
+}
+
+export async function readOnly<T>(db: ClientBase, fn: () => Promise<T>, opts?: QueryOptions): Promise<T> {
   await db.query("BEGIN TRANSACTION READ ONLY");
   try {
-    await db.query("SET LOCAL statement_timeout = '8s'");
+    // A whole number of milliseconds built here, never text from the model.
+    await db.query(opts?.timeoutMs === undefined ? "SET LOCAL statement_timeout = '8s'" : `SET LOCAL statement_timeout = '${statementTimeout(opts)}ms'`);
     const out = await fn();
     await db.query("COMMIT");
     return out;
@@ -226,7 +243,7 @@ async function pipelineRows(db: ClientBase, members: MemberRow[], today: string)
 
 // --- queries -----------------------------------------------------------------------------------
 
-export function vocabulary(db: ClientBase): Promise<Vocabulary> {
+export function vocabulary(db: ClientBase, opts?: QueryOptions): Promise<Vocabulary> {
   return readOnly(db, async () => {
     const stages = await db.query("SELECT key, label, ord, terminal FROM stages ORDER BY ord, key");
     const roles = await db.query("SELECT key, label FROM roles ORDER BY key");
@@ -236,10 +253,10 @@ export function vocabulary(db: ClientBase): Promise<Vocabulary> {
       roles: roles.rows.map((r) => ({ key: r.key, label: r.label })),
       owners: owners.rows.map((r) => ({ key: r.key, name: r.name })),
     };
-  });
+  }, opts);
 }
 
-export function findContacts(db: ClientBase, query: string): Promise<ContactMatch[]> {
+export function findContacts(db: ClientBase, query: string, opts?: QueryOptions): Promise<ContactMatch[]> {
   const q = (query ?? "").trim();
   if (q.length < 2) return Promise.resolve([]);
   const pattern = escapeLike(q);
@@ -252,7 +269,7 @@ export function findContacts(db: ClientBase, query: string): Promise<ContactMatc
          LEFT JOIN orgs po ON po.id = p.org_id
          LEFT JOIN members own ON own.person_id = p.id
          LEFT JOIN members cm ON cm.org_id = p.org_id
-        WHERE p.name ILIKE '%' || $1 || '%' OR p.email ILIKE '%' || $1 || '%'
+        WHERE p.name ILIKE '%' || $1 || '%' ESCAPE '\\' OR p.email ILIKE '%' || $1 || '%' ESCAPE '\\'
         ORDER BY p.name, p.id
         LIMIT 20`,
       [pattern],
@@ -273,7 +290,7 @@ export function findContacts(db: ClientBase, query: string): Promise<ContactMatc
       const orgs = await db.query(
         `SELECT o.id, o.name, m.id AS mid, m.role, m.stage
            FROM orgs o LEFT JOIN members m ON m.org_id = o.id
-          WHERE o.name ILIKE '%' || $1 || '%'
+          WHERE o.name ILIKE '%' || $1 || '%' ESCAPE '\\'
           ORDER BY o.name, o.id
           LIMIT $2`,
         [pattern, room],
@@ -291,10 +308,15 @@ export function findContacts(db: ClientBase, query: string): Promise<ContactMatc
       }
     }
     return out;
-  });
+  }, opts);
 }
 
-export function getContact(db: ClientBase, memberId: string, today: string): Promise<ContactDetail | null> {
+export function getContact(
+  db: ClientBase,
+  memberId: string,
+  today: string,
+  opts?: QueryOptions,
+): Promise<ContactDetail | null> {
   if (!UUID_RE.test(memberId ?? "")) return Promise.resolve(null);
   return readOnly(db, async () => {
     const found = await db.query(
@@ -358,10 +380,10 @@ export function getContact(db: ClientBase, memberId: string, today: string): Pro
       })),
       timelineTotal: total.rows[0].n,
     };
-  });
+  }, opts);
 }
 
-export function getPerson(db: ClientBase, personId: string): Promise<PersonDetail | null> {
+export function getPerson(db: ClientBase, personId: string, opts?: QueryOptions): Promise<PersonDetail | null> {
   if (!UUID_RE.test(personId ?? "")) return Promise.resolve(null);
   return readOnly(db, async () => {
     const r = (
@@ -392,13 +414,14 @@ export function getPerson(db: ClientBase, personId: string): Promise<PersonDetai
         ? ref(r.own_id, r.own_role, r.own_stage, "person")
         : ref(r.co_id, r.co_role, r.co_stage, "company"),
     };
-  });
+  }, opts);
 }
 
 export function listPipeline(
   db: ClientBase,
   filter: { stage?: string; role?: string; owner?: string; due?: DueBucket },
   today: string,
+  opts?: QueryOptions,
 ): Promise<{ rows: PipelineRow[]; total: number }> {
   return readOnly(db, async () => {
     const r = await db.query(
@@ -412,10 +435,10 @@ export function listPipeline(
     let members = r.rows as MemberRow[];
     if (filter.due) members = members.filter((m) => dueBucket(m, today) === filter.due);
     return { rows: await pipelineRows(db, members.slice(0, LIST_MAX), today), total: members.length };
-  });
+  }, opts);
 }
 
-export function pipelineSummary(db: ClientBase, today: string): Promise<Summary> {
+export function pipelineSummary(db: ClientBase, today: string, opts?: QueryOptions): Promise<Summary> {
   return readOnly(db, async () => {
     const r = await db.query(`SELECT ${MEMBER_COLUMNS} ${MEMBER_FROM} ${MEMBER_ORDER}`);
     const members = r.rows as MemberRow[];
@@ -432,6 +455,7 @@ export function pipelineSummary(db: ClientBase, today: string): Promise<Summary>
       byRole.set(m.role, (byRole.get(m.role) ?? 0) + 1);
       byDue[dueBucket(m, today)] += 1;
       const last = lastAction(touches.get(m.id) ?? []);
+      if (m.terminal) continue; // a relationship that has ended needs no action
       if (!last || last.at < c30) none30 += 1;
       if (!last || last.at < c90) none90 += 1;
     }
@@ -443,14 +467,15 @@ export function pipelineSummary(db: ClientBase, today: string): Promise<Summary>
       noActionIn30Days: none30,
       noActionIn90Days: none90,
     };
-  });
+  }, opts);
 }
 
 export function chaseList(
   db: ClientBase,
   filter: { owner?: string },
   today: string,
-): Promise<{ due: PipelineRow[]; stale: PipelineRow[] }> {
+  opts?: QueryOptions,
+): Promise<ChaseResult> {
   return readOnly(db, async () => {
     const r = await db.query(
       `SELECT ${MEMBER_COLUMNS} ${MEMBER_FROM}
@@ -471,7 +496,6 @@ export function chaseList(
           (a.row.nextActionDate ?? "").localeCompare(b.row.nextActionDate ?? "") ||
           a.row.name.localeCompare(b.row.name),
       )
-      .slice(0, LIST_MAX)
       .map((x) => x.row);
 
     const c30 = cutoffIso(today, 30);
@@ -486,107 +510,148 @@ export function chaseList(
         (a, b) =>
           (a.row.lastActionAt ?? "").localeCompare(b.row.lastActionAt ?? "") || a.row.name.localeCompare(b.row.name),
       )
-      .slice(0, LIST_MAX)
       .map((x) => x.row);
-    return { due, stale };
-  });
+    // The totals are counted before the 50-row cut.
+    return { due: due.slice(0, LIST_MAX), stale: stale.slice(0, LIST_MAX), dueTotal: due.length, staleTotal: stale.length };
+  }, opts);
 }
 
 function snippetAround(text: string, needle: string): string {
   const flat = text.replace(/\s+/g, " ").trim();
-  const idx = flat.toLowerCase().indexOf(needle.toLowerCase());
+  const flatNeedle = needle.replace(/\s+/g, " ").trim(); // collapsed the same way as the note, so a match is found
+  const idx = flat.toLowerCase().indexOf(flatNeedle.toLowerCase());
   if (idx < 0) return clip(flat, 160) as string;
   const start = Math.max(0, idx - 80);
-  const end = Math.min(flat.length, idx + needle.length + 80);
+  const end = Math.min(flat.length, idx + flatNeedle.length + 80);
   return (start > 0 ? "…" : "") + flat.slice(start, end) + (end < flat.length ? "…" : "");
 }
 
-export function searchNotes(db: ClientBase, text: string): Promise<NoteHit[]> {
+const NOTE_SOURCE_MAX = 10; // hits kept per source
+const NOTE_HITS_MAX = 30; // hits kept overall
+
+/**
+ * Search member notes, person notes, company notes and the timeline. Each source keeps its 10 newest
+ * matches (notes by the row's `updated_at`, timeline entries by `at`); the hits come back newest first,
+ * at most 30, and `total` counts every match in the four sources.
+ */
+export function searchNotes(db: ClientBase, text: string, opts?: QueryOptions): Promise<SearchResult> {
   const q = (text ?? "").trim();
-  if (q.length < 2) return Promise.resolve([]);
+  if (q.length < 2) return Promise.resolve({ hits: [], total: 0 });
   const pattern = escapeLike(q);
   return readOnly(db, async () => {
-    const hits: NoteHit[] = [];
+    const found: { hit: NoteHit; sortAt: number }[] = [];
+    let total = 0;
+    const at = (value: Date | string | null): number => (value ? new Date(value).getTime() : 0);
+    const take = (rows: Record<string, unknown>[]) => {
+      if (rows.length > 0) total += rows[0].total as number;
+    };
+
     const memberNotes = await db.query(
-      `SELECT ${MEMBER_COLUMNS}, m.notes AS body ${MEMBER_FROM}
-        WHERE m.notes ILIKE '%' || $1 || '%' ORDER BY m.id LIMIT 30`,
+      `SELECT ${MEMBER_COLUMNS}, m.notes AS body, m.updated_at AS sort_at, count(*) OVER ()::int AS total ${MEMBER_FROM}
+        WHERE m.notes ILIKE '%' || $1 || '%' ESCAPE '\\'
+        ORDER BY m.updated_at DESC NULLS LAST, m.id LIMIT ${NOTE_SOURCE_MAX}`,
       [pattern],
     );
+    take(memberNotes.rows);
     for (const r of memberNotes.rows) {
-      hits.push({
-        member: ref(r.id, r.role, r.stage, r.kind),
-        name: r.name,
-        company: r.company,
-        where: "member notes",
-        snippet: snippetAround(r.body, q),
-        at: null,
+      found.push({
+        sortAt: at(r.sort_at),
+        hit: {
+          member: ref(r.id, r.role, r.stage, r.kind),
+          personId: null,
+          name: r.name,
+          company: r.company,
+          where: "member notes",
+          snippet: snippetAround(r.body, q),
+          at: null,
+        },
       });
     }
     const personNotes = await db.query(
-      `SELECT p.name, p.notes AS body, po.name AS company,
+      `SELECT p.id AS person_id, p.name, p.notes AS body, p.updated_at AS sort_at, count(*) OVER ()::int AS total, po.name AS company,
               own.id AS own_id, own.role AS own_role, own.stage AS own_stage,
               cm.id AS co_id, cm.role AS co_role, cm.stage AS co_stage
          FROM people p
          LEFT JOIN orgs po ON po.id = p.org_id
          LEFT JOIN members own ON own.person_id = p.id
          LEFT JOIN members cm ON cm.org_id = p.org_id
-        WHERE p.notes ILIKE '%' || $1 || '%' ORDER BY p.name, p.id LIMIT 30`,
+        WHERE p.notes ILIKE '%' || $1 || '%' ESCAPE '\\'
+        ORDER BY p.updated_at DESC NULLS LAST, p.name, p.id LIMIT ${NOTE_SOURCE_MAX}`,
       [pattern],
     );
+    take(personNotes.rows);
     for (const r of personNotes.rows) {
-      hits.push({
-        member: r.own_id
-          ? ref(r.own_id, r.own_role, r.own_stage, "person")
-          : ref(r.co_id, r.co_role, r.co_stage, "company"),
-        name: r.name,
-        company: r.company,
-        where: "person notes",
-        snippet: snippetAround(r.body, q),
-        at: null,
+      found.push({
+        sortAt: at(r.sort_at),
+        hit: {
+          member: r.own_id
+            ? ref(r.own_id, r.own_role, r.own_stage, "person")
+            : ref(r.co_id, r.co_role, r.co_stage, "company"),
+          personId: r.person_id,
+          name: r.name,
+          company: r.company,
+          where: "person notes",
+          snippet: snippetAround(r.body, q),
+          at: null,
+        },
       });
     }
     const orgNotes = await db.query(
-      `SELECT o.name, o.notes AS body, m.id AS mid, m.role, m.stage
+      `SELECT o.name, o.notes AS body, o.updated_at AS sort_at, count(*) OVER ()::int AS total, m.id AS mid, m.role, m.stage
          FROM orgs o LEFT JOIN members m ON m.org_id = o.id
-        WHERE o.notes ILIKE '%' || $1 || '%' ORDER BY o.name, o.id LIMIT 30`,
+        WHERE o.notes ILIKE '%' || $1 || '%' ESCAPE '\\'
+        ORDER BY o.updated_at DESC NULLS LAST, o.name, o.id LIMIT ${NOTE_SOURCE_MAX}`,
       [pattern],
     );
+    take(orgNotes.rows);
     for (const r of orgNotes.rows) {
-      hits.push({
-        member: ref(r.mid, r.role, r.stage, "company"),
-        name: r.name,
-        company: null,
-        where: "company notes",
-        snippet: snippetAround(r.body, q),
-        at: null,
+      found.push({
+        sortAt: at(r.sort_at),
+        hit: {
+          member: ref(r.mid, r.role, r.stage, "company"),
+          personId: null,
+          name: r.name,
+          company: null,
+          where: "company notes",
+          snippet: snippetAround(r.body, q),
+          at: null,
+        },
       });
     }
     const timeline = await db.query(
-      `SELECT ${MEMBER_COLUMNS}, t.summary AS body, t.at AS touch_at
+      `SELECT ${MEMBER_COLUMNS}, t.summary AS body, t.at AS touch_at, count(*) OVER ()::int AS total
          FROM touches t
          JOIN members m ON m.id = t.member_id
          JOIN stages s ON s.key = m.stage
          LEFT JOIN people p ON p.id = m.person_id
          LEFT JOIN orgs po ON po.id = p.org_id
          LEFT JOIN orgs o ON o.id = m.org_id
-        WHERE t.summary ILIKE '%' || $1 || '%' ORDER BY t.at DESC, t.id DESC LIMIT 30`,
+        WHERE t.summary ILIKE '%' || $1 || '%' ESCAPE '\\'
+        ORDER BY t.at DESC, t.id DESC LIMIT ${NOTE_SOURCE_MAX}`,
       [pattern],
     );
+    take(timeline.rows);
     for (const r of timeline.rows) {
-      hits.push({
-        member: ref(r.id, r.role, r.stage, r.kind),
-        name: r.name,
-        company: r.company,
-        where: "timeline",
-        snippet: snippetAround(r.body, q),
-        at: iso(r.touch_at),
+      found.push({
+        sortAt: at(r.touch_at),
+        hit: {
+          member: ref(r.id, r.role, r.stage, r.kind),
+          personId: null,
+          name: r.name,
+          company: r.company,
+          where: "timeline",
+          snippet: snippetAround(r.body, q),
+          at: iso(r.touch_at),
+        },
       });
     }
-    return hits.slice(0, 30);
-  });
+    // Newest first; Array.sort is stable, so equal times keep the source order above.
+    found.sort((a, b) => b.sortAt - a.sortAt);
+    return { hits: found.slice(0, NOTE_HITS_MAX).map((f) => f.hit), total };
+  }, opts);
 }
 
-export function recentActivity(db: ClientBase, days: number, today: string): Promise<ActivityRow[]> {
+export function recentActivity(db: ClientBase, days: number, today: string, opts?: QueryOptions): Promise<ActivityRow[]> {
   const n = Number.isFinite(days) ? Math.min(90, Math.max(1, Math.trunc(days))) : 7;
   const since = cutoffIso(today, n);
   return readOnly(db, async () => {
@@ -613,5 +678,5 @@ export function recentActivity(db: ClientBase, days: number, today: string): Pro
       name: x.name,
       company: x.company,
     }));
-  });
+  }, opts);
 }

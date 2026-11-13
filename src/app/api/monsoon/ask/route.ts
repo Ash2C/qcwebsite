@@ -44,7 +44,9 @@ function cleanRefs(value: unknown): Ref[] {
     if (typeof r.name !== "string" || r.name.length === 0 || r.name.length > MAX_REF_TEXT) continue;
     if (r.kind !== "person" && r.kind !== "company") continue;
     if (r.company !== null && (typeof r.company !== "string" || r.company.length > MAX_REF_TEXT)) continue;
-    out.push({ memberId: r.memberId, name: r.name, company: r.company, kind: r.kind });
+    // A person id that is not UUID-shaped is dropped; the rest of the ref is kept.
+    const personId = typeof r.personId === "string" && UUID_RE.test(r.personId) ? r.personId : undefined;
+    out.push({ memberId: r.memberId, name: r.name, company: r.company, kind: r.kind, ...(personId ? { personId } : {}) });
     if (out.length >= MAX_REFS_PER_MESSAGE) break;
   }
   return out;
@@ -64,7 +66,7 @@ function parseMessages(value: unknown): AskMessage[] | string {
       out.push({ role: "user", content: m.content });
     } else if (m.role === "assistant") {
       const refs = cleanRefs(m.refs);
-      for (const r of refs) total += r.memberId.length + r.name.length + (r.company?.length ?? 0);
+      for (const r of refs) total += r.memberId.length + r.name.length + (r.company?.length ?? 0) + (r.personId?.length ?? 0);
       out.push({ role: "assistant", content: m.content, refs });
     } else {
       return "Invalid message";

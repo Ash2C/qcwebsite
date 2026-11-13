@@ -87,6 +87,12 @@ function sign(member: Resolved, estate: EstateKey, nowMs: number, extra?: { from
   return { proposal, signature: signProposal(proposal) };
 }
 
+/** True when `text` begins with `name` (any case) followed by something other than a letter, or by nothing. */
+function startsWithName(text: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, (c) => `\\${c}`);
+  return new RegExp(`^${escaped}(?![\\p{L}])`, "iu").test(text);
+}
+
 export async function proposeNote(
   db: ClientBase,
   estate: EstateKey,
@@ -102,7 +108,7 @@ export async function proposeNote(
   const signed = sign(found.member, estate, nowMs);
   const { about } = found.member;
   // The card shows this as the suggested text: about a person filed under a company, lead with their name.
-  signed.text = about && !note.startsWith(about) ? `${about}: ${note}` : note;
+  signed.text = about && !startsWithName(note, about) ? `${about}: ${note}` : note;
   return { ok: true, signed };
 }
 

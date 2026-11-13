@@ -6,7 +6,8 @@ import { Client } from "pg";
 
 const ADMIN_URL = process.env.MONSOON_TEST_DB ?? "postgresql://postgres:test@127.0.0.1:55433/postgres";
 // One database per vitest worker: test files run in parallel workers and each reset() drops the schema.
-const TEST_DB = `monsoon_test_w${process.env.VITEST_POOL_ID ?? "0"}`;
+const POOL_ID = /^\d+$/.test(process.env.VITEST_POOL_ID ?? "") ? (process.env.VITEST_POOL_ID as string) : "0";
+const TEST_DB = `monsoon_test_w${POOL_ID}`;
 const SCHEMA_SQL = join(__dirname, "0001_init.sql");
 
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);

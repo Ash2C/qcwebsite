@@ -156,6 +156,34 @@ describe("POST /api/monsoon/ask", () => {
     expect(ctorOptions).toEqual([{ timeout: 20_000, maxRetries: 0 }]);
   });
 
+  it("keeps a UUID-shaped personId on a ref and drops a malformed one, keeping the ref", async () => {
+    const P = "33333333-3333-4333-8333-333333333333";
+    const jane = { memberId: M1, name: "Jane", company: "Northwind", kind: "company" };
+    await POST(
+      post(
+        valid({
+          messages: [
+            user("who?"),
+            { role: "assistant", content: "Jane.", refs: [{ ...jane, personId: P }, { ...jane, personId: "nope" }, { ...jane, personId: 7 }, jane] },
+            user("note her"),
+          ],
+        }),
+      ),
+    );
+    const messages = runAsk.mock.calls[0][1];
+    expect(messages[1].refs).toEqual([{ ...jane, personId: P }, jane, jane, jane]);
+    expect(messages[1].refs[1]).not.toHaveProperty("personId");
+  });
+
+  it("counts a ref's person id toward the 60,000 character cap", async () => {
+    const P = "33333333-3333-4333-8333-333333333333";
+    const ref = (personId?: string) => ({ memberId: M1, name: "n", company: null, kind: "company", ...(personId ? { personId } : {}) });
+    // 2 user chars + 59,961 content + ref text (36 + 1) = 60,000: at the cap without a person id, over it with one
+    const turn = (r: unknown) => valid({ messages: [user("a"), { role: "assistant", content: "y".repeat(59_961), refs: [r] }, user("x")] });
+    expect((await POST(post(turn(ref())))).status).toBe(200);
+    expect((await POST(post(turn(ref(P))))).status).toBe(400);
+  });
+
   it("answers 502 and logs only the error name and status when the loop throws", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const err = Object.assign(new Error("secret question text postgres://u:pw@h"), { name: "APIError", status: 529 });

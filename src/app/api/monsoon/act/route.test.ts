@@ -219,6 +219,24 @@ describe("POST /api/monsoon/act", () => {
     expect((await res.json()).message).toBe("Li Wei is now in mystery; nothing changed.");
   });
 
+  it("answers 200 missing when the contact is gone (foreign-key violation) instead of 502", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    addNote.mockRejectedValue(Object.assign(new Error('insert or update on table "touches" violates foreign key constraint'), { code: "23503" }));
+    const res = await POST(post(signed(noteProposal(), { text: "hello" })));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "missing", message: "Northwind Capital is no longer on the pipeline; nothing changed." });
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("still answers 502 for any other database error code while adding a note", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    addNote.mockRejectedValue(Object.assign(new Error("boom"), { code: "57014" }));
+    const res = await POST(post(signed(noteProposal(), { text: "hello" })));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "Could not reach the Traxo CRM" });
+    expect(log).toHaveBeenCalledTimes(1);
+  });
+
   it("answers 502 without leaking details when the database call throws", async () => {
     const secretUrl = "postgresql://user:hunter2@db.internal.example:5432/x";
     const log = vi.spyOn(console, "error").mockImplementation(() => {});

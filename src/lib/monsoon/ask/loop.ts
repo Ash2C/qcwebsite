@@ -4,7 +4,7 @@ import type { ClientBase } from "pg";
 import type { EstateKey } from "../estates";
 import type { SignedProposal } from "./proposal";
 import { vocabulary, type Vocabulary } from "./queries";
-import { runTool, TOOLS, type Ref } from "./tools";
+import { refKey, runTool, TOOLS, type Ref } from "./tools";
 
 export type AskMessage =
   | { role: "user"; content: string }
@@ -20,12 +20,14 @@ export type ModelClient = {
 const MAX_ROUNDS = 6;
 const DEADLINE_MS = 50_000; // one deadline for all work, inside the route's 60 seconds
 const CALL_TIMEOUT_MS = 20_000;
-const MIN_ROUND_MS = 8_000; // less than this left: no new model round, no more tools
+const MIN_ROUND_MS = 8_000; // less than this left: no new model round
+const MIN_TOOL_MS = 15_000; // less than this left: no tool starts (a tool may run up to 8s, and the final call needs time after)
 const MIN_FINAL_MS = 5_000; // less than this left: no final call either
 const MAX_TOOLS_PER_REPLY = 8;
 const MAX_PROPOSALS = 4;
 const MAX_REFS = 30;
 const MAX_RESULT_CHARS = 24_000;
+const MAX_TOTAL_RESULT_CHARS = 120_000; // all tool output sent back to the model in one request
 
 const TOO_BIG_TURN = "Answer now from what you have, in a sentence or two, and say the question was too big to finish.";
 const TOO_BIG_ANSWER = "That question was too big to finish. Try a narrower one.";
@@ -34,6 +36,7 @@ const TOO_MANY = "Too many changes at once. Ask for them one or two at a time.";
 const TOO_MANY_LOOKUPS = "Too many lookups at once. Ask for fewer.";
 const OUT_OF_TIME = "Out of time.";
 const TOO_BIG_RESULT = "Too much to show. Narrow the question.";
+const ENOUGH = "Enough has been looked up. Answer from what you have.";
 
 export function resolveAskModel(): string {
   const model = process.env.MONSOON_ASK_MODEL || "claude-haiku-5-5";
@@ -69,6 +72,7 @@ Rules:
 - Never describe how the data is stored: no "member", "member record", "linked to a company member", "standalone person", and no ids. Say "on the pipeline" or "filed under <company>".
 - "Who should I chase" means the user's own contacts (owner VF) plus unassigned ones, unless he says the whole team. Say so: "yours and unassigned".
 - A person filed under a company is changed through that company's entry. Say so when it applies.
+- For a change about a person filed under a company, call the propose tool with person_id, never the company's member_id. If you do not have the person id, look the person up again first.
 - Use the ids from earlier tool results; never invent an id.`;
 }
 
@@ -82,7 +86,11 @@ function toModelMessages(messages: AskMessage[]): ModelMessage[] {
     if (m.refs && m.refs.length > 0) {
       const label = (r: Ref) =>
         r.kind === "company" ? `${r.name} (company)` : r.company ? `${r.name} (${r.company})` : r.name;
-      const list = m.refs.map((r) => `${label(r)} = member ${r.memberId}`).join("; ");
+      const line = (r: Ref) =>
+        r.personId
+          ? `${r.name} (filed under ${r.company ?? "their company"}) = person ${r.personId}, company member ${r.memberId}`
+          : `${label(r)} = member ${r.memberId}`;
+      const list = m.refs.map(line).join("; ");
       text += `\n[contacts referred to: ${list}]`;
     }
     return { role: "assistant", content: text };
@@ -103,8 +111,8 @@ function compact(value: unknown): string {
 
 function pushRefs(all: Map<string, Ref>, refs: Ref[]) {
   for (const r of refs) {
-    all.delete(r.memberId); // keep the most recent position
-    all.set(r.memberId, r);
+    all.delete(refKey(r)); // keep the most recent position
+    all.set(refKey(r), r);
   }
 }
 
@@ -132,6 +140,7 @@ export async function runAsk(
 
   const refs = new Map<string, Ref>();
   const proposals: SignedProposal[] = [];
+  let sentChars = 0; // tool output sent back to the model so far
   const finish = (answer: string): AskResult => ({
     answer: tidy(answer) === "" ? NO_ANSWER : tidy(answer),
     refs: [...refs.values()].slice(-MAX_REFS),
@@ -177,18 +186,21 @@ export async function runAsk(
       const name = String(use.name);
       let result: unknown = { error: TOO_MANY };
       if (i >= MAX_TOOLS_PER_REPLY) result = { error: TOO_MANY_LOOKUPS };
-      else if (remaining() < MIN_ROUND_MS) result = { error: OUT_OF_TIME };
+      else if (remaining() < MIN_TOOL_MS) result = { error: OUT_OF_TIME };
+      else if (sentChars > MAX_TOTAL_RESULT_CHARS) result = { error: ENOUGH };
       else if (!(name.startsWith("propose_") && proposals.length >= MAX_PROPOSALS)) {
-        const out = await runTool({ db, estate, today, nowMs: now() }, name, use.input);
+        const out = await runTool({ db, estate, today, nowMs: now(), remainingMs: remaining }, name, use.input);
         result = out.result;
         if (out.proposal) proposals.push(out.proposal);
         if (compact(result).length > MAX_RESULT_CHARS) result = { error: TOO_BIG_RESULT };
         else pushRefs(refs, out.refs);
       }
+      const content = compact(result);
+      sentChars += content.length;
       results.push({
         type: "tool_result",
         tool_use_id: use.id,
-        content: compact(result),
+        content,
         ...(isError(result) ? { is_error: true } : {}),
       });
     }
@@ -198,7 +210,13 @@ export async function runAsk(
 
 /** Safety net: the screen shows text as is, so strip emphasis and heading markers. */
 function tidy(answer: string): string {
-  return answer.replace(/\*\*/g, "").replace(/__/g, "").replace(/^#{1,6}[ \t]*/gm, "").trim();
+  return answer
+    .replace(/\*\*/g, "")
+    // __emphasis__ only: not inside an identifier or an email address such as a__b or jo__smith@x.com
+    .replace(/(?<![A-Za-z0-9_])__(?=\S)([^\n]*?\S)__(?![A-Za-z0-9_])/g, "$1")
+    // heading markers only when followed by a space: "#1 priority" stays
+    .replace(/^#{1,6}[ \t]+/gm, "")
+    .trim();
 }
 
 const isError = (r: unknown): boolean => typeof r === "object" && r !== null && "error" in r;

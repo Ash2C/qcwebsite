@@ -105,6 +105,20 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
       expect(r.ok && r.signed.text).toBe("Jane Tan: wants the deck");
     });
 
+    it("matches the name on a word boundary and without regard to case when prefixing", async () => {
+      const text = async (t: string) => {
+        const r = await proposeNote(db, "zeroone", { personId: id.jane }, t, NOW);
+        return r.ok ? r.signed.text : null;
+      };
+      expect(await text("Jane Tanaka wants the deck")).toBe("Jane Tan: Jane Tanaka wants the deck");
+      expect(await text("jane tan: wants the deck")).toBe("jane tan: wants the deck");
+      expect(await text("JANE TAN wants the deck")).toBe("JANE TAN wants the deck");
+      expect(await text("Jane Tan, wants the deck")).toBe("Jane Tan, wants the deck");
+      expect(await text("Jane Tan")).toBe("Jane Tan");
+      expect(await text("Jane Tanner called")).toBe("Jane Tan: Jane Tanner called");
+      expect(await text("Not Jane Tan")).toBe("Jane Tan: Not Jane Tan");
+    });
+
     it("uses the person's own member when there is one", async () => {
       const r = await proposeNote(db, "zeroone", { personId: id.liwei }, "hello", NOW);
       expect(r.ok && r.signed.proposal.memberId).toBe(id.mLi);

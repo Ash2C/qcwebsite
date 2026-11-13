@@ -183,6 +183,14 @@ describe.skipIf(!testDb.available)("Ask read queries (real Postgres)", () => {
       const [li] = await findContacts(db, "Li Wei");
       expect(li.member).toEqual({ memberId: id.mLi, memberKind: "person", role: "investor", stage: "contacted" });
     });
+    it("gives a person who is a member their own membership even when their company is a member too", async () => {
+      const mOmar = await addMember({ person: id.omar }, { stage: "contacted" });
+      const [omar] = await findContacts(db, "Omar");
+      expect(omar.member).toEqual({ memberId: mOmar, memberKind: "person", role: "investor", stage: "contacted" });
+      expect((await getPerson(db, id.omar))!.member).toEqual(omar.member);
+      await db.query("UPDATE people SET notes = 'omar likes ledgers' WHERE id = $1", [id.omar]);
+      expect((await searchNotes(db, "ledgers")).hits[0].member).toEqual(omar.member);
+    });
     it("returns member null for someone who is not in the pipeline", async () => {
       const [sam] = await findContacts(db, "Sam Ortiz");
       expect(sam.member).toBeNull();
@@ -416,6 +424,16 @@ describe.skipIf(!testDb.available)("Ask read queries (real Postgres)", () => {
       // Raj (never) and Old (91) lack a 90-day action
       expect(s.noActionIn90Days).toBe(2);
     });
+    it("counts only members in non-terminal stages as having no recent action", async () => {
+      const done = await addMember({ person: await addPerson("Closed Out", null) }, { stage: "client" });
+      await touch(done, ago(200), "email", "long ago");
+      await addMember({ person: await addPerson("Declined", null) }, { stage: "passed" });
+      const s = await pipelineSummary(db, TODAY);
+      expect(s.total).toBe(5);
+      // unchanged from the seed: Li Wei (40) and Raj (never) lack a 30-day action; Raj lacks a 90-day one
+      expect(s.noActionIn30Days).toBe(2);
+      expect(s.noActionIn90Days).toBe(1);
+    });
   });
 
   describe("chaseList", () => {
@@ -479,6 +497,15 @@ describe.skipIf(!testDb.available)("Ask read queries (real Postgres)", () => {
       expect(r.due).toHaveLength(50);
       expect(r.stale).toHaveLength(50);
     });
+    it("reports the true totals, counted before the 50-row cap", async () => {
+      for (let i = 0; i < 55; i++) await addMember({ person: await addPerson(`Due ${i}`, null) }, { action: "x", date: day(1) });
+      for (let i = 0; i < 55; i++) await addMember({ person: await addPerson(`Idle ${i}`, null) });
+      const r = await chaseList(db, {}, TODAY);
+      expect(r.dueTotal).toBe(57); // 55 + Northwind (overdue) + Li Wei (today)
+      expect(r.staleTotal).toBe(56); // 55 + Raj
+      const small = await chaseList(db, { owner: "VF" }, TODAY);
+      expect([small.dueTotal, small.staleTotal]).toEqual([56, 56]); // VF plus the unassigned
+    });
   });
 
   describe("searchNotes", () => {
@@ -487,9 +514,11 @@ describe.skipIf(!testDb.available)("Ask read queries (real Postgres)", () => {
       await db.query("UPDATE members SET notes = 'quantum angle via member' WHERE id = $1", [id.mRaj]);
       await db.query("UPDATE people SET notes = 'quantum fan' WHERE id = $1", [id.liwei]);
       await touch(id.mNw, ago(3), "note", "Mentioned QUANTUM computing at lunch", "VF");
-      const hits = await searchNotes(db, "quantum");
-      expect(hits.map((h) => h.where)).toEqual(["member notes", "person notes", "company notes", "timeline"]);
-      const [mem, per, org, tl] = hits;
+      const { hits, total } = await searchNotes(db, "quantum");
+      expect(total).toBe(4);
+      expect(hits.map((h) => h.where).sort()).toEqual(["company notes", "member notes", "person notes", "timeline"]);
+      const by = (w: string) => hits.find((h) => h.where === w)!;
+      const [mem, per, org, tl] = [by("member notes"), by("person notes"), by("company notes"), by("timeline")];
       expect(mem).toMatchObject({ name: "Raj Mehta", at: null });
       expect(mem.member).toEqual({ memberId: id.mRaj, memberKind: "person", role: "introducer", stage: "uncontacted" });
       expect(per).toMatchObject({ name: "Li Wei", company: "Acme Capital", at: null });
@@ -499,24 +528,60 @@ describe.skipIf(!testDb.available)("Ask read queries (real Postgres)", () => {
       expect(tl.snippet).toContain("QUANTUM");
     });
     it("carries the company's member for a person-note hit on Jane", async () => {
-      const hits = await searchNotes(db, "long-form");
+      const { hits, total } = await searchNotes(db, "long-form");
+      expect(total).toBe(1);
       expect(hits).toHaveLength(1);
       expect(hits[0]).toMatchObject({ name: "Jane Tan", company: "Northwind Capital", where: "person notes" });
       expect(hits[0].member).toEqual({ memberId: id.mNw, memberKind: "company", role: "investor", stage: "engaged" });
     });
     it("cuts the snippet to 80 characters either side with ellipses", async () => {
       await db.query("UPDATE members SET notes = $2 WHERE id = $1", [id.mRaj, `${"a".repeat(200)} NEEDLE ${"b".repeat(200)}`]);
-      const [h] = await searchNotes(db, "needle");
+      const [h] = (await searchNotes(db, "needle")).hits;
       expect(h.snippet).toBe(`…${"a".repeat(79)} NEEDLE ${"b".repeat(79)}…`);
       expect(h.snippet.replace(/…/g, "")).toContain("NEEDLE");
-      const [short] = await searchNotes(db, "family offices");
+      const [short] = (await searchNotes(db, "family offices")).hits;
       expect(short.snippet).toBe("family offices are the target");
     });
-    it("treats wildcards literally, ignores one-character queries, and caps at 30", async () => {
-      expect(await searchNotes(db, "q")).toEqual([]);
-      expect(await searchNotes(db, "fam%")).toEqual([]);
+    it("finds the match for a search text with runs of whitespace, as the note is collapsed", async () => {
+      await db.query("UPDATE members SET notes = $2 WHERE id = $1", [id.mRaj, `${"a".repeat(200)} need   le ${"b".repeat(200)}`]);
+      const [h] = (await searchNotes(db, "need   le")).hits;
+      expect(h.snippet).toBe(`…${"a".repeat(79)} need le ${"b".repeat(79)}…`);
+    });
+    it("treats wildcards and backslashes literally and ignores one-character queries", async () => {
+      expect(await searchNotes(db, "q")).toEqual({ hits: [], total: 0 });
+      expect((await searchNotes(db, "fam%")).hits).toEqual([]);
+      await db.query("UPDATE members SET notes = $2 WHERE id = $1", [id.mRaj, "saved to C:\\temp\\x and 100% sure"]);
+      expect((await searchNotes(db, "C:\\temp")).hits.map((h) => h.name)).toEqual(["Raj Mehta"]);
+      expect((await searchNotes(db, "100% sure")).hits.map((h) => h.name)).toEqual(["Raj Mehta"]);
+      expect((await searchNotes(db, "C:%temp")).hits).toEqual([]);
+    });
+    it("keeps the 10 newest per source and 30 overall, counts every match, newest first", async () => {
       for (let i = 0; i < 35; i++) await touch(id.mRaj, ago(i), "note", `bulk marker ${i}`);
-      expect(await searchNotes(db, "bulk marker")).toHaveLength(30);
+      const one = await searchNotes(db, "bulk marker");
+      expect(one.total).toBe(35);
+      expect(one.hits).toHaveLength(10);
+      expect(one.hits.map((h) => h.snippet)).toEqual(Array.from({ length: 10 }, (_, i) => `bulk marker ${i}`));
+
+      // 12 matches in each of the other three sources too: 4 x 10 = 40 candidates, cut to 30
+      for (let i = 0; i < 12; i++) {
+        const pid = await addPerson(`Bulk P${i}`, null, { notes: "bulk marker person" });
+        await addMember({ person: pid }, { notes: "bulk marker member" });
+        await db.query("INSERT INTO orgs (name, name_key, notes, source) VALUES ($1, $2, 'bulk marker org', 'test')", [`Bulk Org ${i}`, `bulk org ${i}`]);
+      }
+      const all = await searchNotes(db, "bulk marker");
+      expect(all.total).toBe(35 + 12 * 3);
+      expect(all.hits).toHaveLength(30);
+    });
+    it("orders notes by the row's updated_at and timeline entries by at, newest first", async () => {
+      for (const t of ["members", "people", "orgs"]) await db.query(`ALTER TABLE ${t} DISABLE TRIGGER USER`);
+      await db.query("UPDATE members SET notes = 'zeta mark one', updated_at = $2 WHERE id = $1", [id.mRaj, ago(5)]);
+      await db.query("UPDATE people SET notes = 'zeta mark two', updated_at = $2 WHERE id = $1", [id.liwei, ago(2)]);
+      await db.query("UPDATE orgs SET notes = 'zeta mark three', updated_at = $2 WHERE id = $1", [id.acme, ago(8)]);
+      await touch(id.mNw, ago(4), "note", "zeta mark four", "VF");
+      await touch(id.mNw, ago(1), "note", "zeta mark five", "VF");
+      const { hits } = await searchNotes(db, "zeta mark");
+      expect(hits.map((h) => h.snippet)).toEqual(["zeta mark five", "zeta mark two", "zeta mark four", "zeta mark one", "zeta mark three"]);
+      for (const t of ["members", "people", "orgs"]) await db.query(`ALTER TABLE ${t} ENABLE TRIGGER USER`);
     });
   });
 
@@ -601,6 +666,31 @@ describe.skipIf(!testDb.available)("Ask read queries (real Postgres)", () => {
     it("applies the 8 second statement timeout inside the transaction", async () => {
       const seen = await readOnly(db, async () => (await db.query("SHOW statement_timeout")).rows[0].statement_timeout);
       expect(seen).toBe("8s");
+    });
+
+    it("uses min(8s, timeoutMs) when given, never below one second", async () => {
+      const show = (timeoutMs?: number) =>
+        readOnly(db, async () => (await db.query("SHOW statement_timeout")).rows[0].statement_timeout, { timeoutMs });
+      expect(await show(undefined)).toBe("8s");
+      expect(await show(2500)).toBe("2500ms");
+      expect(await show(20_000)).toBe("8s");
+      expect(await show(200)).toBe("1s");
+      expect(await show(-5)).toBe("1s");
+      await outsideTransaction();
+    });
+
+    it("every query function accepts the optional last argument and still returns its normal result", async () => {
+      const o = { timeoutMs: 3000 };
+      expect((await vocabulary(db, o)).stages).toHaveLength(5);
+      expect(await findContacts(db, "Jane", o)).toHaveLength(1);
+      expect((await getContact(db, id.mNw, TODAY, o))!.name).toBe("Northwind Capital");
+      expect((await getPerson(db, id.jane, o))!.name).toBe("Jane Tan");
+      expect((await listPipeline(db, {}, TODAY, o)).total).toBe(3);
+      expect((await pipelineSummary(db, TODAY, o)).total).toBe(3);
+      expect((await chaseList(db, {}, TODAY, o)).dueTotal).toBe(2);
+      expect((await searchNotes(db, "family", o)).total).toBe(1);
+      expect(await recentActivity(db, 7, TODAY, o)).toHaveLength(2);
+      await outsideTransaction();
     });
   });
 });

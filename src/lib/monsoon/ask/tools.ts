@@ -17,8 +17,19 @@ import {
   type MemberKind,
 } from "./queries";
 
-export type Ref = { memberId: string; name: string; company: string | null; kind: MemberKind };
-export type ToolContext = { db: ClientBase; estate: EstateKey; today: string; nowMs: number };
+/**
+ * A contact the conversation has named. A person filed under their company carries the company's
+ * member id, the person's own name and, in `personId`, which person it is.
+ */
+export type Ref = { memberId: string; name: string; company: string | null; kind: MemberKind; personId?: string };
+export type ToolContext = {
+  db: ClientBase;
+  estate: EstateKey;
+  today: string;
+  nowMs: number;
+  /** Milliseconds left in the request; bounds each query's statement timeout. */
+  remainingMs?: () => number;
+};
 export type ToolOutcome = { result: unknown; refs: Ref[]; proposal?: SignedProposal };
 
 type Prop = { type: "string" | "integer"; description: string; enum?: string[] };
@@ -68,7 +79,7 @@ export const TOOLS: ToolDef[] = [
   tool("pipeline_summary", "Count pipeline members by stage, role and due bucket. Use it for how-many and overview questions.", {}),
   tool(
     "chase_list",
-    "List members whose next action is due or that have gone quiet, optionally for one owner . Passing owner includes unassigned contacts too (that owner plus unassigned); leave it out for the whole team. Use it for who to chase or follow up.",
+    "List members whose next action is due or that have gone quiet, optionally for one owner. Passing owner includes unassigned contacts too (that owner plus unassigned); leave it out for the whole team. Use it for who to chase or follow up.",
     { owner: { type: "string", description: "An owner key." } },
   ),
   tool(
@@ -130,6 +141,9 @@ function validate(name: string, input: unknown): { ok: true; args: Record<string
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
+/** Refs are unique by the person when there is one, else by the member. */
+export const refKey = (r: Ref): string => r.personId ?? r.memberId;
+
 /** Members named in a result, in order: objects with memberId + name, or a `member` object beside a name. */
 export function extractRefs(result: unknown): Ref[] {
   const out: Ref[] = [];
@@ -144,12 +158,18 @@ export function extractRefs(result: unknown): Ref[] {
       out.push({ memberId: node.memberId, name: node.name, company, kind });
     } else if (isObj(node.member) && typeof node.member.memberId === "string" && typeof node.name === "string") {
       const k = node.member.memberKind;
-      out.push({
-        memberId: node.member.memberId,
-        name: node.name,
-        company,
-        kind: k === "company" || k === "person" ? k : (node.kind as MemberKind) === "company" ? "company" : "person",
-      });
+      const personId = typeof node.personId === "string" ? node.personId : null;
+      if (k === "company" && personId !== null) {
+        // A person filed under their company: the company's member, labelled with the person.
+        out.push({ memberId: node.member.memberId, name: node.name, company, kind: "company", personId });
+      } else {
+        out.push({
+          memberId: node.member.memberId,
+          name: node.name,
+          company,
+          kind: k === "company" || k === "person" ? k : (node.kind as MemberKind) === "company" ? "company" : "person",
+        });
+      }
     }
     Object.values(node).forEach(visit);
   };
@@ -170,7 +190,6 @@ const TEXT_MAX = 160;
 const LIST_ROWS = 40;
 const CHASE_DUE_ROWS = 25;
 const CHASE_STALE_ROWS = 15;
-const QUERY_LIST_CAP = 50; // the queries cut each list at 50
 
 /** A row for the model: null and empty fields omitted, free text clipped, ids kept. */
 function slim(value: unknown): unknown {
@@ -185,11 +204,15 @@ function slim(value: unknown): unknown {
   return out;
 }
 
-const left = (total: number) =>
-  total >= QUERY_LIST_CAP ? `${QUERY_LIST_CAP} or more` : String(total);
+/** List rows for the model: an owner that is null is said outright, not left out. */
+function withOwner(rows: unknown[]): unknown[] {
+  return rows.map((r) => (isObj(r) && !r.owner ? { ...r, owner: "unassigned" } : r));
+}
 
 async function dispatch(ctx: ToolContext, name: string, a: Record<string, string | number>): Promise<ToolOutcome> {
   const { db, today } = ctx;
+  // Statement timeout for this lookup: what is left of the request minus 3 seconds, at least 1 second.
+  const opts = ctx.remainingMs ? { timeoutMs: Math.max(1000, ctx.remainingMs() - 3000) } : undefined;
   const read = (result: unknown): ToolOutcome => ({ result, refs: extractRefs(result) });
   const target: Target = {
     ...(typeof a.member_id === "string" ? { memberId: a.member_id } : {}),
@@ -197,13 +220,13 @@ async function dispatch(ctx: ToolContext, name: string, a: Record<string, string
   };
   switch (name) {
     case "find_contacts":
-      return read(slim(await findContacts(db, a.query as string)));
+      return read(slim(await findContacts(db, a.query as string, opts)));
     case "get_contact": {
-      const r = await getContact(db, a.member_id as string, today);
+      const r = await getContact(db, a.member_id as string, today, opts);
       return read(r ?? { error: "No such contact." });
     }
     case "get_person": {
-      const r = await getPerson(db, a.person_id as string);
+      const r = await getPerson(db, a.person_id as string, opts);
       return read(r ?? { error: "No such person." });
     }
     case "list_pipeline": {
@@ -216,8 +239,9 @@ async function dispatch(ctx: ToolContext, name: string, a: Record<string, string
           ...(a.due !== undefined ? { due: a.due as "overdue" } : {}),
         },
         today,
+        opts,
       );
-      const rows = slim(r.rows.slice(0, LIST_ROWS));
+      const rows = slim(withOwner(r.rows.slice(0, LIST_ROWS)));
       return read({
         rows,
         total: r.total,
@@ -225,29 +249,36 @@ async function dispatch(ctx: ToolContext, name: string, a: Record<string, string
       });
     }
     case "pipeline_summary":
-      return read(await pipelineSummary(db, today));
+      return read(await pipelineSummary(db, today, opts));
     case "chase_list": {
-      const r = await chaseList(db, a.owner !== undefined ? { owner: a.owner as string } : {}, today);
+      const r = await chaseList(db, a.owner !== undefined ? { owner: a.owner as string } : {}, today, opts);
       const due = r.due.slice(0, CHASE_DUE_ROWS);
       const stale = r.stale.slice(0, CHASE_STALE_ROWS);
-      const hidden = r.due.length - due.length + (r.stale.length - stale.length);
+      const hidden = r.dueTotal - due.length + (r.staleTotal - stale.length);
       return read({
-        due: slim(due),
-        stale: slim(stale),
-        // The query cuts each list at 50, so these are exact below 50 and a floor at 50.
-        dueTotal: r.due.length,
-        staleTotal: r.stale.length,
+        due: slim(withOwner(due)),
+        stale: slim(withOwner(stale)),
+        dueTotal: r.dueTotal,
+        staleTotal: r.staleTotal,
         ...(hidden > 0
           ? {
-              note: `Showing the ${due.length} most urgent due and ${stale.length} longest-quiet of ${left(r.due.length)} due and ${left(r.stale.length)} quiet; ${hidden} not shown.`,
+              note: `Showing the ${due.length} most urgent due and ${stale.length} longest-quiet of ${r.dueTotal} due and ${r.staleTotal} quiet; ${hidden} not shown.`,
             }
           : {}),
       });
     }
-    case "search_notes":
-      return read(slim(await searchNotes(db, a.text as string)));
+    case "search_notes": {
+      const r = await searchNotes(db, a.text as string, opts);
+      return read({
+        hits: slim(r.hits),
+        total: r.total,
+        ...(r.total > r.hits.length
+          ? { note: `Showing the ${r.hits.length} newest of ${r.total} matches; ${r.total - r.hits.length} not shown. Search for something narrower to see others.` }
+          : {}),
+      });
+    }
     case "recent_activity":
-      return read(slim(await recentActivity(db, a.days as number, today)));
+      return read(slim(await recentActivity(db, a.days as number, today, opts)));
     case "propose_note":
     case "propose_stage": {
       const r =
@@ -272,7 +303,14 @@ export async function runTool(ctx: ToolContext, name: string, input: unknown): P
   if (!v.ok) return fail(v.error);
   try {
     return await dispatch(ctx, name, v.args);
-  } catch {
+  } catch (err) {
+    // Tool name, error name and a numeric code or status only: never the message or the arguments.
+    const e = err as { code?: unknown; status?: unknown };
+    // A number, or a five-character Postgres code such as 57014; any other string could carry text.
+    const num = [e?.status, e?.code].find(
+      (x) => typeof x === "number" || (typeof x === "string" && /^[0-9A-Z]{5}$/.test(x)),
+    );
+    console.error("monsoon: ask tool failed", name, err instanceof Error ? err.name : "error", ...(num !== undefined ? [num] : []));
     return fail(FAILED);
   }
 }

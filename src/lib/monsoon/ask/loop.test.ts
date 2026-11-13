@@ -147,7 +147,7 @@ describe("runAsk", () => {
       expect(s.timeouts).toEqual([20_000, 14_000]);
     });
 
-    it("never starts a call under 5s left, and skips tools once under 8s are left", async () => {
+    it("never starts a call under 5s left, and skips tools once under 15s are left", async () => {
       runTool.mockResolvedValue({ result: { ok: 1 }, refs: [] });
       let t = 0;
       const advance = [30_000, 15_000, 0];
@@ -163,6 +163,59 @@ describe("runAsk", () => {
       expect(last[0]).toEqual({ type: "tool_result", tool_use_id: "b", content: JSON.stringify({ error: "Out of time." }), is_error: true });
       expect(s.calls[2].tool_choice).toEqual({ type: "none" });
       expect(out.answer).toBe("Too big.");
+    });
+
+    it("starts no tool with under 15s left, and starts one with exactly 15s left", async () => {
+      runTool.mockResolvedValue({ result: { ok: 1 }, refs: [] });
+      for (const [elapsed, runs] of [
+        [36_000, false], // 14s left
+        [35_001, false], // 14.999s left
+        [35_000, true], // exactly 15s left
+        [20_000, true],
+      ] as const) {
+        runTool.mockClear();
+        let t = 0;
+        const s = setup([use("a", "pipeline_summary"), text("done")], () => t, { onCreate: () => void (t += elapsed) });
+        // the first create advances the clock before the reply is used, so the tool starts at `elapsed`
+        const out = await s.run();
+        expect(runTool).toHaveBeenCalledTimes(runs ? 1 : 0);
+        if (!runs) {
+          const last = (s.calls[1].messages as { content: unknown }[]).at(-1)!.content as Record<string, unknown>[];
+          expect(last[0].content).toBe(JSON.stringify({ error: "Out of time." }));
+        }
+        expect(out.answer).toBe("done");
+      }
+    });
+
+    it("hands each tool the time left, so its query timeout follows the budget", async () => {
+      runTool.mockResolvedValue({ result: { ok: 1 }, refs: [] });
+      let t = 1_000;
+      const s = setup([use("a", "pipeline_summary"), text("done")], () => t, {
+        startedAt: 0,
+        onCreate: () => void (t += 5_000),
+      });
+      await s.run();
+      const ctx = runTool.mock.calls[0][0] as { remainingMs: () => number };
+      t = 6_000; // remainingMs reads the live clock
+      expect(ctx.remainingMs()).toBe(50_000 - 6_000);
+      t = 21_000;
+      expect(ctx.remainingMs()).toBe(29_000);
+    });
+
+    it("stops running tools once 120,000 characters have gone back to the model, answering the rest with an error", async () => {
+      runTool.mockResolvedValue({ result: { blob: "x".repeat(23_000) }, refs: [] });
+      const eight: Reply = {
+        stop_reason: "tool_use",
+        content: Array.from({ length: 8 }, (_, i) => ({ type: "tool_use", id: `u${i}`, name: "search_notes", input: { text: "ab" } })),
+      };
+      const s = setup([eight, text("ok")]);
+      await s.run();
+      expect(runTool).toHaveBeenCalledTimes(6); // 5 x 23,010 = 115,050 is under the cap; the sixth pushes it over
+      const last = (s.calls[1].messages as { content: unknown }[]).at(-1)!.content as Record<string, unknown>[];
+      for (const b of last.slice(6)) {
+        expect(b).toMatchObject({ content: JSON.stringify({ error: "Enough has been looked up. Answer from what you have." }), is_error: true });
+      }
+      expect(last.slice(0, 6).every((b) => b.is_error === undefined)).toBe(true);
     });
 
     it("skips the final call and gives the fixed sentence when under 5s are left", async () => {
@@ -211,6 +264,24 @@ describe("runAsk", () => {
     expect(out.answer).toBe(`Chase
 Jane and Li are due.
 - one`);
+  });
+
+  describe("tidy (D3)", () => {
+    const tidied = async (answer: string) => (await setup([text(answer)]).run()).answer;
+    it("always strips double asterisks", async () => {
+      expect(await tidied("**Jane** is **a b** and a**b**c.")).toBe("Jane is a b and abc.");
+    });
+    it("strips double underscores only around a word or phrase", async () => {
+      expect(await tidied("__Jane__ and __two words__ here")).toBe("Jane and two words here");
+      expect(await tidied("see a__b and jo__smith@x.com and my__var__name")).toBe("see a__b and jo__smith@x.com and my__var__name");
+      expect(await tidied("mail jo__smith@x.com or __Bob__ today")).toBe("mail jo__smith@x.com or Bob today");
+      expect(await tidied("a lone __ stays, so does x__")).toBe("a lone __ stays, so does x__");
+    });
+    it("strips heading markers only when a space follows", async () => {
+      expect(await tidied("# One\n## Two\n###### Six")).toBe("One\nTwo\nSix");
+      expect(await tidied("#1 priority\n#hashtag\n##tight")).toBe("#1 priority\n#hashtag\n##tight");
+      expect(await tidied("Rank #1 priority")).toBe("Rank #1 priority");
+    });
   });
 
   it("gives the fixed too-big message when the final call fails", async () => {
@@ -329,6 +400,26 @@ Jane and Li are due.
     ]);
   });
 
+  it("renders a person filed under a company with the person id and the company's member", async () => {
+    const jane2 = { memberId: "m-nw", name: "Jane Tan", company: "Northwind", kind: "company" as const, personId: "p-jane" };
+    const s = setup([text("Yes.")]);
+    await s.run([
+      { role: "user", content: "who is at Northwind?" },
+      { role: "assistant", content: "Jane Tan and Northwind.", refs: [jane2, { memberId: "m-nw", name: "Northwind", company: null, kind: "company" }] },
+      { role: "user", content: "add a note to her" },
+    ]);
+    expect((s.calls[0].messages as { content: string }[])[1].content).toBe(
+      "Jane Tan and Northwind.\n[contacts referred to: Jane Tan (filed under Northwind) = person p-jane, company member m-nw; Northwind (company) = member m-nw]",
+    );
+  });
+
+  it("keeps two people at one company as two refs, unique by person else member", async () => {
+    const at = (name: string, personId?: string) => ({ memberId: "m-nw", name, company: "Northwind", kind: "company" as const, ...(personId ? { personId } : {}) });
+    runTool.mockResolvedValue({ result: { n: 1 }, refs: [at("Jane", "p1"), at("Omar", "p2"), at("Jane", "p1"), { memberId: "m-nw", name: "Northwind", company: null, kind: "company" as const }] });
+    const out = await setup([use("t", "find_contacts"), text("ok")]).run();
+    expect(out.refs.map((r) => r.name)).toEqual(["Omar", "Jane", "Northwind"]);
+  });
+
   it("turns an empty answer into the fixed sentence", async () => {
     expect((await setup([text("   ")]).run()).answer).toBe("I couldn't find an answer to that.");
     expect((await setup([{ stop_reason: "end_turn", content: [] }]).run()).answer).toBe("I couldn't find an answer to that.");
@@ -375,6 +466,8 @@ describe("buildSystem", () => {
     expect(s).toContain("No asterisks");
     expect(s).toContain("yours and unassigned");
     expect(s).toContain("Never describe how the data is stored");
+    expect(s).toContain("call the propose tool with person_id, never the company's member_id");
+    expect(s).toContain("look the person up again first");
     expect(s).toContain("You cannot delete anything and you cannot change anything yourself; you can only prepare a change for the user to confirm.");
     expect(s.split(/\s+/).length).toBeLessThan(450);
   });

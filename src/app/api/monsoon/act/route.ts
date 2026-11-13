@@ -46,8 +46,16 @@ export async function POST(request: Request) {
   try {
     const result = await withEstateDb(estate, async (db) => {
       if (proposal.kind === "add_note") {
-        const { status } = await addNote(db, proposal.memberId, text);
-        return { status, message: `Done. Note added to ${proposal.memberName}.` };
+        try {
+          const { status } = await addNote(db, proposal.memberId, text);
+          return { status, message: `Done. Note added to ${proposal.memberName}.` };
+        } catch (err) {
+          // The contact was removed after the change was offered: a foreign-key violation, not an outage.
+          if ((err as { code?: unknown })?.code === "23503") {
+            return { status: "missing" as const, message: `${proposal.memberName} is no longer on the pipeline; nothing changed.` };
+          }
+          throw err;
+        }
       }
       const { stages } = await vocabulary(db);
       const label = (key: string | null) => stages.find((s) => s.key === key)?.label ?? key ?? "";
