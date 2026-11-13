@@ -8,7 +8,7 @@ import BatchReview, { makeBatch, type Batch } from "./BatchReview";
 import * as api from "./api";
 import type { EstateInfo } from "./api";
 
-vi.mock("./api", () => ({ saveCard: vi.fn() }));
+vi.mock("./api", () => ({ saveCard: vi.fn(), refineCard: vi.fn() }));
 const m = vi.mocked(api);
 
 const ESTATE: EstateInfo = {
@@ -316,5 +316,94 @@ describe("BatchReview", () => {
     expect(confirm).not.toHaveBeenCalled();
     expect(handlers.onClose).toHaveBeenCalledWith(null);
   });
-});
 
+  describe("spoken notes", () => {
+    const refined = (fields: Record<string, string>, notes: string) =>
+      ({ status: 200, body: { fields, notes } }) as never;
+    const JANE_FIELDS = { name: "Jane Tan", title: "", org: "Acme Capital", email: "", phone: "", linkedin: "" };
+
+    async function speak(user: ReturnType<typeof userEvent.setup>, text: string) {
+      await user.click(screen.getByRole("button", { name: "Speak notes" }));
+      await user.type(screen.getByPlaceholderText("Tap the microphone on the keyboard and talk"), text);
+      await user.click(screen.getByRole("button", { name: "Apply" }));
+    }
+
+    it("spoken notes on one card change only that card", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue(refined({ ...JANE_FIELDS, title: "CIO" }, "Now CIO.\nCall next week."));
+      m.saveCard.mockResolvedValue(added);
+      show([JANE, BOB]);
+      await open(user, "Jane Tan");
+      await speak(user, "she is CIO");
+      expect(m.refineCard).toHaveBeenCalledWith({
+        fields: JANE_FIELDS,
+        notes: "met at demo day",
+        spoken: "she is CIO",
+      });
+      await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("CIO"));
+      expect(screen.getByLabelText("Card notes")).toHaveValue("Now CIO.\nCall next week.");
+      expect(screen.getByText("was empty")).toBeInTheDocument();
+      expect(screen.getByLabelText("Title").closest("[data-changed]")).not.toBeNull();
+      expect(m.saveCard).not.toHaveBeenCalled();
+      await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+      await screen.findByText("2 saved to Traxo.");
+      const [jane, bob] = m.saveCard.mock.calls.map((c) => c[0]);
+      expect(jane.fields.title).toBe("CIO");
+      expect(jane.fields.notes).toBe("Now CIO.\nCall next week.");
+      expect(bob.fields.title).toBe("");
+      expect(bob.fields.notes).toBe("met at demo day");
+    });
+
+    it("Undo on a card restores it", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue(refined({ ...JANE_FIELDS, title: "CIO" }, "Now CIO."));
+      show([JANE]);
+      await open(user, "Jane Tan");
+      await speak(user, "she is CIO");
+      await user.click(await screen.findByRole("button", { name: "Undo" }));
+      expect(screen.getByLabelText("Title")).toHaveValue("");
+      expect(screen.getByLabelText("Card notes")).toHaveValue("");
+      expect(screen.getByLabelText("Card notes")).toHaveAttribute("placeholder", "Same as batch");
+      expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+      expect(screen.queryByText("was empty")).toBeNull();
+    });
+
+    it("editing a highlighted field by hand clears only its highlight", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue(refined({ ...JANE_FIELDS, title: "CIO", org: "Acme Group" }, "Now CIO."));
+      show([JANE]);
+      await open(user, "Jane Tan");
+      await speak(user, "x");
+      await screen.findByText("was: Acme Capital");
+      await user.type(screen.getByLabelText("Title"), "!");
+      expect(screen.getByLabelText("Title").closest("[data-changed]")).toBeNull();
+      expect(screen.getByLabelText("Company").closest("[data-changed]")).not.toBeNull();
+      expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+    });
+
+    it("applying returns a needs row to pending", async () => {
+      const user = userEvent.setup();
+      m.saveCard.mockResolvedValue({ status: 200, body: { outcome: "ambiguous", count: 2 } } as never);
+      m.refineCard.mockResolvedValue(refined({ ...JANE_FIELDS, org: "Acme Group" }, "met at demo day"));
+      show([JANE]);
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save all (0)" })).toBeDisabled());
+      await open(user, "Jane Tan");
+      await speak(user, "company is Acme Group");
+      expect(await screen.findByRole("button", { name: "Save all (1)" })).toBeEnabled();
+    });
+
+    it("a saved card offers no Speak notes, and an unsaved one is disabled during a save", async () => {
+      const user = userEvent.setup();
+      let resolve!: (v: never) => void;
+      m.saveCard.mockImplementationOnce(() => new Promise((r) => (resolve = r as never)));
+      show([JANE]);
+      await open(user, "Jane Tan");
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      expect(screen.getByRole("button", { name: "Speak notes" })).toBeDisabled();
+      resolve(added);
+      await screen.findByText("1 saved to Traxo.");
+      expect(screen.queryByRole("button", { name: "Speak notes" })).toBeNull();
+    });
+  });
+});

@@ -3,12 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CardFields } from "@/lib/monsoon/extract";
 import type { CaptureResult } from "@/lib/monsoon/capture";
+import type { RefineOutput } from "@/lib/monsoon/refine";
 import { loadEstates, readCards, saveCard, signIn, type EstateInfo, type SaveBody } from "./api";
 import { downsizeImage } from "./image";
 import BatchReview, { makeBatch, type Batch } from "./BatchReview";
 import { describeResult, type SavePrompt } from "./outcomes";
+import ContactFormFields, { type FormKey } from "./ContactFormFields";
 import PromptButtons from "./PromptButtons";
-import { card, fieldInput, fieldLabel, primaryButton, secondaryButton, FIELD_ROWS } from "./styles";
+import SpeakNotes from "./SpeakNotes";
+import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
 
 const STORAGE_KEY = "monsoon.estate";
 const DEFAULT_ESTATE = "traxo";
@@ -90,7 +93,13 @@ export default function MonsoonApp() {
   const [signingIn, setSigningIn] = useState(false);
   const [samePerson, setSamePerson] = useState<string | false | undefined>(undefined);
   const [batch, setBatch] = useState<Batch | null>(null);
+  // Spoken notes: the draft survives a 401; the snapshot lets Undo restore the form, and
+  // `changed` lists the fields still highlighted (a hand edit drops just that field).
+  const [spokenDraft, setSpokenDraft] = useState("");
+  const [beforeRefine, setBeforeRefine] = useState<{ form: Form; changed: FormKey[] } | null>(null);
   const savingRef = useRef(false);
+  const formRef = useRef(form);
+  formRef.current = form;
 
   const estate = estates.find((e) => e.key === estateKey);
   const batchStarted = batch?.rows.some((r) => r.status === "saved") ?? false;
@@ -128,6 +137,36 @@ export default function MonsoonApp() {
 
   function edit(key: keyof Form, value: string) {
     setForm((f) => ({ ...f, [key]: value }));
+    setBeforeRefine((b) => (b ? { ...b, changed: b.changed.filter((k) => k !== key) } : b));
+    dropPrompt();
+    setNewOrg(false);
+    setSamePerson(undefined);
+  }
+
+  function clearRefine() {
+    setBeforeRefine(null);
+    setSpokenDraft("");
+  }
+
+  // Nothing is saved here. The first snapshot is kept across repeated applies.
+  function applyRefine(next: RefineOutput) {
+    const cur = formRef.current;
+    const merged: Form = { ...cur, ...next.fields, notes: next.notes };
+    setForm(merged);
+    setBeforeRefine((prev) => {
+      const base = prev?.form ?? cur;
+      const keys = Object.keys(merged) as FormKey[];
+      return { form: base, changed: keys.filter((k) => merged[k] !== base[k]) };
+    });
+    dropPrompt();
+    setNewOrg(false);
+    setSamePerson(undefined);
+  }
+
+  function undoRefine() {
+    if (!beforeRefine) return;
+    setForm(beforeRefine.form);
+    setBeforeRefine(null);
     dropPrompt();
     setNewOrg(false);
     setSamePerson(undefined);
@@ -165,6 +204,7 @@ export default function MonsoonApp() {
     if (!file) return;
     setCaptureId(crypto.randomUUID());
     setExtracted(null);
+    clearRefine();
     setPrompt(null);
     setNewOrg(false);
     setSamePerson(undefined);
@@ -280,6 +320,7 @@ export default function MonsoonApp() {
   }
 
   function finish(text: string) {
+    clearRefine();
     setForm(EMPTY_FORM);
     setExtracted(null);
     setCaptureId(null);
@@ -323,6 +364,7 @@ export default function MonsoonApp() {
     if (summary) {
       finish(summary);
     } else {
+      clearRefine();
       setForm(EMPTY_FORM);
       setExtracted(null);
       setCaptureId(null);
@@ -511,57 +553,40 @@ export default function MonsoonApp() {
               </div>
             )}
 
-            <div className={`${card} divide-y divide-neutral-200 overflow-hidden dark:divide-white/10`}>
-              {FIELD_ROWS.map((r) => (
-                <div key={r.key}>
-                  <label htmlFor={`f-${r.key}`} className={fieldLabel}>
-                    {r.label}
-                  </label>
-                  <input
-                    id={`f-${r.key}`}
-                    type={r.type ?? "text"}
-                    inputMode={r.mode}
-                    autoComplete={r.auto}
-                    autoCapitalize={
-                      r.key === "name" || r.key === "title" || r.key === "org" ? "words" : "off"
-                    }
-                    autoCorrect="off"
-                    value={form[r.key]}
-                    onChange={(e) => edit(r.key, e.target.value)}
-                    className={fieldInput}
+            <ContactFormFields
+              form={form}
+              roles={estate?.roles ?? []}
+              role={role}
+              was={beforeRefine?.form ?? null}
+              changed={beforeRefine?.changed ?? []}
+              onEdit={edit}
+              onRole={setRole}
+              speak={
+                <div className="flex flex-col gap-2">
+                  <SpeakNotes
+                    fields={{
+                      name: form.name,
+                      title: form.title,
+                      org: form.org,
+                      email: form.email,
+                      phone: form.phone,
+                      linkedin: form.linkedin,
+                    }}
+                    notes={form.notes}
+                    draft={spokenDraft}
+                    onDraft={setSpokenDraft}
+                    onApply={applyRefine}
+                    onUnauthorized={() => setPhase("locked")}
+                    disabled={busy}
                   />
+                  {beforeRefine && (
+                    <button type="button" className={secondaryButton} onClick={undoRefine}>
+                      Undo
+                    </button>
+                  )}
                 </div>
-              ))}
-              <div>
-                <label htmlFor="f-role" className={fieldLabel}>
-                  Role
-                </label>
-                <select
-                  id="f-role"
-                  value={role}
-                  onChange={(e) => setRole(e.target.value)}
-                  className={`${fieldInput} appearance-none`}
-                >
-                  {(estate?.roles ?? []).map((r) => (
-                    <option key={r.key} value={r.key}>
-                      {r.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label htmlFor="f-notes" className={fieldLabel}>
-                  Notes
-                </label>
-                <textarea
-                  id="f-notes"
-                  rows={3}
-                  value={form.notes}
-                  onChange={(e) => edit("notes", e.target.value)}
-                  className={`${fieldInput} resize-none`}
-                />
-              </div>
-            </div>
+              }
+            />
 
             <div className="sticky bottom-0 -mx-4 mt-auto bg-[#f2f2f7]/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:bg-black/90">
               <button

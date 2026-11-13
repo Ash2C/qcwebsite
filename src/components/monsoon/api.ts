@@ -2,6 +2,7 @@
 // non-2xx status is data, not an exception. Only a network failure rejects.
 import type { CardFields } from "@/lib/monsoon/extract";
 import type { CaptureResult } from "@/lib/monsoon/capture";
+import type { RefineInput, RefineOutput } from "@/lib/monsoon/refine";
 
 export type EstateInfo = {
   key: string;
@@ -72,6 +73,18 @@ export async function saveCard(
 ): Promise<ApiResult<CaptureResult | { error: string }>> {
   return parse(
     await fetch("/api/monsoon/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+export async function refineCard(
+  body: RefineInput,
+): Promise<ApiResult<RefineOutput | { error: string }>> {
+  return parse(
+    await fetch("/api/monsoon/refine", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

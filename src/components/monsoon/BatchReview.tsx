@@ -2,9 +2,12 @@
 
 import { useRef, useState } from "react";
 import type { CardFields } from "@/lib/monsoon/extract";
+import type { RefineOutput } from "@/lib/monsoon/refine";
 import { saveCard, type EstateInfo, type SaveBody } from "./api";
+import { changedClass, notesRows, Was } from "./Highlight";
 import { describeResult, type SavePrompt } from "./outcomes";
 import PromptButtons from "./PromptButtons";
+import SpeakNotes from "./SpeakNotes";
 import { card, fieldInput, fieldLabel, FIELD_ROWS, primaryButton, secondaryButton, type FieldKey } from "./styles";
 
 export type BatchRow = {
@@ -19,6 +22,10 @@ export type BatchRow = {
   status: "pending" | "saving" | "saved" | "needs" | "failed";
   message?: string;
   prompt?: SavePrompt;
+  spoken?: string; // dictation draft for this card
+  // Snapshot taken by the first spoken-notes apply, for Undo. `notes` is the override then
+  // (undefined = the batch note); `changed` lists the fields still highlighted.
+  before?: { fields: Record<FieldKey, string>; notes?: string; changed: (FieldKey | "notes")[] };
 };
 export type Batch = { rows: BatchRow[]; role: string; note: string };
 
@@ -89,10 +96,12 @@ export default function BatchReview({
 
   function editField(row: BatchRow, key: FieldKey, value: string) {
     const fields = { ...row.fields, [key]: value };
+    const before = dropChanged(row, key);
     // A changed field is a fresh attempt: the old answer and message no longer apply.
     if (row.status === "needs" || row.status === "failed") {
       patchRow(row.id, {
         fields,
+        before,
         status: "pending",
         message: undefined,
         prompt: undefined,
@@ -100,8 +109,47 @@ export default function BatchReview({
         samePerson: undefined,
       });
     } else {
-      patchRow(row.id, { fields });
+      patchRow(row.id, { fields, before });
     }
+  }
+
+  function dropChanged(row: BatchRow, key: FieldKey | "notes"): BatchRow["before"] {
+    return row.before && { ...row.before, changed: row.before.changed.filter((k) => k !== key) };
+  }
+
+  // Nothing is saved here. The first snapshot is kept across repeated applies; a card that
+  // needed attention or failed is a fresh attempt, like after a hand edit.
+  function applyRefine(id: string, next: RefineOutput) {
+    onChange((prev) => ({
+      ...prev,
+      rows: prev.rows.map((r) => {
+        if (r.id !== id) return r;
+        const base = r.before ?? { fields: r.fields, notes: r.notes, changed: [] };
+        const nowNotes = r.notes ?? prev.note;
+        const wasNotes = base.notes ?? prev.note;
+        const changed: (FieldKey | "notes")[] = FIELD_ROWS.map((f) => f.key).filter(
+          (k) => next.fields[k] !== base.fields[k],
+        );
+        if (next.notes !== wasNotes) changed.push("notes");
+        const reset =
+          r.status === "needs" || r.status === "failed"
+            ? { status: "pending" as const, message: undefined, prompt: undefined, newOrg: undefined, samePerson: undefined }
+            : {};
+        return {
+          ...r,
+          ...reset,
+          fields: { ...next.fields },
+          // Notes equal to what the card already shows stay on "Same as batch".
+          notes: next.notes === nowNotes ? r.notes : next.notes,
+          before: { fields: base.fields, notes: base.notes, changed },
+        };
+      }),
+    }));
+  }
+
+  function undoRefine(row: BatchRow) {
+    if (!row.before) return;
+    patchRow(row.id, { fields: row.before.fields, notes: row.before.notes, before: undefined });
   }
 
   // Saves one row. Resolves false when the loop must stop (401).
@@ -264,9 +312,14 @@ export default function BatchReview({
                 row={row}
                 estate={estate}
                 running={running}
+                batchNote={batch.note}
                 onField={(key, value) => editField(row, key, value)}
                 onRole={(role) => patchRow(row.id, { role })}
-                onNotes={(notes) => patchRow(row.id, { notes })}
+                onNotes={(notes) => patchRow(row.id, { notes, before: dropChanged(row, "notes") })}
+                onDraft={(spoken) => patchRow(row.id, { spoken })}
+                onApply={(next) => applyRefine(row.id, next)}
+                onUndo={() => undoRefine(row)}
+                onUnauthorized={onUnauthorized}
                 onRemove={() => remove(row)}
               />
             )}
@@ -308,24 +361,35 @@ function RowEditor({
   row,
   estate,
   running,
+  batchNote,
   onField,
   onRole,
   onNotes,
+  onDraft,
+  onApply,
+  onUndo,
+  onUnauthorized,
   onRemove,
 }: {
   row: BatchRow;
   estate: EstateInfo;
   running: boolean;
+  batchNote: string;
   onField: (key: FieldKey, value: string) => void;
   onRole: (role: string | undefined) => void;
   onNotes: (notes: string | undefined) => void;
+  onDraft: (text: string) => void;
+  onApply: (next: RefineOutput) => void;
+  onUndo: () => void;
+  onUnauthorized: () => void;
   onRemove: () => void;
 }) {
   const locked = row.status === "saved" || row.status === "saving" || running;
+  const marked = (key: FieldKey | "notes") => row.before?.changed.includes(key) ?? false;
   return (
     <div className="divide-y divide-neutral-200 border-t border-neutral-200 dark:divide-white/10 dark:border-white/10">
       {FIELD_ROWS.map((f) => (
-        <div key={f.key}>
+        <div key={f.key} data-changed={marked(f.key) || undefined} className={marked(f.key) ? changedClass : undefined}>
           <label htmlFor={`${row.id}-${f.key}`} className={fieldLabel}>
             {f.label}
           </label>
@@ -341,6 +405,7 @@ function RowEditor({
             onChange={(e) => onField(f.key, e.target.value)}
             className={fieldInput}
           />
+          {row.before && marked(f.key) && <Was value={row.before.fields[f.key]} />}
         </div>
       ))}
       <div>
@@ -362,20 +427,39 @@ function RowEditor({
           ))}
         </select>
       </div>
-      <div>
+      <div data-changed={marked("notes") || undefined} className={marked("notes") ? changedClass : undefined}>
         <label htmlFor={`${row.id}-notes`} className={fieldLabel}>
           Card notes
         </label>
-        <input
+        <textarea
           id={`${row.id}-notes`}
-          type="text"
+          rows={notesRows(row.notes ?? "", 1)}
           placeholder="Same as batch"
           value={row.notes ?? ""}
           readOnly={locked}
           onChange={(e) => onNotes(e.target.value === "" ? undefined : e.target.value)}
-          className={fieldInput}
+          className={`${fieldInput} resize-none overflow-y-auto`}
         />
+        {row.before && marked("notes") && <Was value={row.before.notes ?? batchNote} />}
       </div>
+      {row.status !== "saved" && (
+        <div className="flex flex-col gap-2 p-3">
+          <SpeakNotes
+            fields={row.fields}
+            notes={row.notes ?? batchNote}
+            draft={row.spoken ?? ""}
+            onDraft={onDraft}
+            onApply={onApply}
+            onUnauthorized={onUnauthorized}
+            disabled={running || row.status === "saving"}
+          />
+          {row.before && (
+            <button type="button" disabled={running} className={secondaryButton} onClick={onUndo}>
+              Undo
+            </button>
+          )}
+        </div>
+      )}
       {row.status !== "saved" && (
         <div className="p-3">
           <button type="button" disabled={running} className={secondaryButton} onClick={onRemove}>

@@ -13,6 +13,7 @@ vi.mock("./api", () => ({
   loadEstates: vi.fn(),
   readCards: vi.fn(),
   saveCard: vi.fn(),
+  refineCard: vi.fn(),
 }));
 vi.mock("./image", () => ({
   downsizeImage: vi.fn(),
@@ -658,5 +659,141 @@ describe("MonsoonApp", () => {
     expect(screen.getByLabelText("Name")).toHaveValue("");
     expect(document.querySelector('input[type="file"]')).not.toBeNull();
     expect(screen.getByRole("button", { name: "Zero One" })).toBeEnabled();
+  });
+
+  describe("spoken notes", () => {
+    const FIELDS = { name: "Jane Tan", title: "Partner", org: "Acme Capital", email: "jane@acme.com", phone: "", linkedin: "" };
+    const refined = (fields: Record<string, string>, notes: string) =>
+      ({ status: 200, body: { fields, notes } }) as never;
+
+    async function loadCard(user: User) {
+      signedIn();
+      m.readCards.mockResolvedValue({ status: 200, body: { cards: [CARD] } });
+      render(<MonsoonApp />);
+      await ready();
+      await pickPhoto(user);
+      await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan"));
+    }
+
+    async function speak(user: User, text: string) {
+      if (!screen.queryByRole("textbox", { name: "Spoken notes" })) {
+        await user.click(screen.getByRole("button", { name: "Speak notes" }));
+      }
+      const box = screen.getByRole("textbox", { name: "Spoken notes" });
+      await user.clear(box);
+      await user.type(box, text);
+      await user.click(screen.getByRole("button", { name: "Apply" }));
+    }
+
+    it("applying spoken notes updates notes and a corrected field, highlighted with the old value", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue(refined({ ...FIELDS, title: "CIO" }, "Now CIO.\nCall next week."));
+      await loadCard(user);
+      await speak(user, "she is CIO now, call next week");
+      await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("CIO"));
+      expect(m.refineCard).toHaveBeenCalledWith({
+        fields: FIELDS,
+        notes: "",
+        spoken: "she is CIO now, call next week",
+      });
+      expect(screen.getByLabelText("Notes")).toHaveValue("Now CIO.\nCall next week.");
+      expect(screen.getByText("was: Partner")).toBeInTheDocument();
+      expect(screen.getByText("was empty")).toBeInTheDocument();
+      expect(screen.getByLabelText("Title").closest("[data-changed]")).not.toBeNull();
+      expect(screen.getByLabelText("Notes").closest("[data-changed]")).not.toBeNull();
+      expect(screen.getByLabelText("Name").closest("[data-changed]")).toBeNull();
+      expect(m.saveCard).not.toHaveBeenCalled();
+    });
+
+    it("Undo restores the form", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue(refined({ ...FIELDS, title: "CIO" }, "Now CIO."));
+      await loadCard(user);
+      await speak(user, "x");
+      await user.click(await screen.findByRole("button", { name: "Undo" }));
+      expect(screen.getByLabelText("Title")).toHaveValue("Partner");
+      expect(screen.getByLabelText("Notes")).toHaveValue("");
+      expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+      expect(screen.queryByText("was: Partner")).toBeNull();
+    });
+
+    it("editing a highlighted field clears only its highlight", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue(refined({ ...FIELDS, title: "CIO" }, "Now CIO."));
+      await loadCard(user);
+      await speak(user, "x");
+      await screen.findByText("was: Partner");
+      await user.type(screen.getByLabelText("Title"), "!");
+      expect(screen.getByLabelText("Title").closest("[data-changed]")).toBeNull();
+      expect(screen.queryByText("was: Partner")).toBeNull();
+      expect(screen.getByLabelText("Notes").closest("[data-changed]")).not.toBeNull();
+      expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+    });
+
+    it("a second apply keeps the original snapshot for Undo", async () => {
+      const user = userEvent.setup();
+      m.refineCard
+        .mockResolvedValueOnce(refined({ ...FIELDS, title: "CIO" }, "Now CIO."))
+        .mockResolvedValueOnce(refined({ ...FIELDS, title: "CEO" }, "Now CEO."));
+      await loadCard(user);
+      await speak(user, "first");
+      await screen.findByText("was: Partner");
+      await speak(user, "second");
+      await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("CEO"));
+      expect(m.refineCard).toHaveBeenLastCalledWith({
+        fields: { ...FIELDS, title: "CIO" },
+        notes: "Now CIO.",
+        spoken: "second",
+      });
+      expect(screen.getByText("was: Partner")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Undo" }));
+      expect(screen.getByLabelText("Title")).toHaveValue("Partner");
+      expect(screen.getByLabelText("Notes")).toHaveValue("");
+    });
+
+    it("spoken draft survives a 401", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue({ status: 401, body: { error: "unauthorized" } });
+      m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+      await loadCard(user);
+      await speak(user, "keep this");
+      await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
+      await user.click(screen.getByRole("button", { name: "Unlock" }));
+      await ready();
+      expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan");
+      await user.click(screen.getByRole("button", { name: "Speak notes" }));
+      expect(screen.getByRole("textbox", { name: "Spoken notes" })).toHaveValue("keep this");
+    });
+
+    it("the save body after an apply carries the refined fields and notes", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue(refined({ ...FIELDS, title: "CIO" }, "Now CIO.\nCall next week."));
+      m.saveCard.mockResolvedValue({ status: 200, body: { outcome: "added", person: "p", org: null } } as never);
+      await loadCard(user);
+      await speak(user, "x");
+      await screen.findByText("was: Partner");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(1));
+      const body = m.saveCard.mock.calls[0][0];
+      expect(body.fields).toMatchObject({ ...FIELDS, title: "CIO", notes: "Now CIO.\nCall next week." });
+      expect(body.extracted).toEqual(CARD);
+      // A successful save clears the highlights and the snapshot.
+      await screen.findByText(/Saved|saved|Added|added/);
+      expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    });
+
+    it("a new photo clears the snapshot and the draft", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue(refined({ ...FIELDS, title: "CIO" }, "Now CIO."));
+      await loadCard(user);
+      await speak(user, "x");
+      await screen.findByRole("button", { name: "Undo" });
+      await user.click(screen.getByRole("button", { name: "Speak notes" }));
+      await user.type(screen.getByRole("textbox", { name: "Spoken notes" }), "leftover");
+      await pickPhoto(user);
+      await waitFor(() => expect(m.readCards).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.queryByRole("button", { name: "Undo" })).toBeNull());
+      expect(screen.getByRole("textbox", { name: "Spoken notes" })).toHaveValue("");
+    });
   });
 });
