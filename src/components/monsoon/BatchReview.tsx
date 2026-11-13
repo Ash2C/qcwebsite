@@ -1,0 +1,388 @@
+"use client";
+
+import { useRef, useState } from "react";
+import type { CardFields } from "@/lib/monsoon/extract";
+import { saveCard, type EstateInfo, type SaveBody } from "./api";
+import { describeResult, type SavePrompt } from "./outcomes";
+import PromptButtons from "./PromptButtons";
+import { card, fieldInput, fieldLabel, FIELD_ROWS, primaryButton, secondaryButton, type FieldKey } from "./styles";
+
+export type BatchRow = {
+  id: string; // local key
+  captureId: string; // crypto.randomUUID(), fixed for the row's life
+  fields: Record<FieldKey, string>;
+  extracted: CardFields;
+  role?: string; // undefined = use the batch role
+  notes?: string; // undefined = use the batch note
+  newOrg?: boolean;
+  samePerson?: string | false;
+  status: "pending" | "saving" | "saved" | "needs" | "failed";
+  message?: string;
+  prompt?: SavePrompt;
+};
+export type Batch = { rows: BatchRow[]; role: string; note: string };
+
+export function makeBatch(cards: CardFields[], role: string, note: string): Batch {
+  return {
+    role,
+    note,
+    rows: cards.map((c) => ({
+      id: crypto.randomUUID(),
+      captureId: crypto.randomUUID(),
+      fields: {
+        name: c.name ?? "",
+        title: c.title ?? "",
+        org: c.org ?? "",
+        email: c.email ?? "",
+        phone: c.phone ?? "",
+        linkedin: c.linkedin ?? "",
+      },
+      extracted: c,
+      status: "pending",
+    })),
+  };
+}
+
+const SAVE_FAILED = "Could not save. Retry.";
+
+function isEligible(r: BatchRow): boolean {
+  return (r.status === "pending" || r.status === "failed") && r.fields.name.trim() !== "";
+}
+
+function summary(r: BatchRow): string {
+  const name = r.fields.name.trim() || "(no name)";
+  const second = r.fields.org.trim() || r.fields.email.trim();
+  return second ? `${name} · ${second}` : name;
+}
+
+function statusColour(status: BatchRow["status"]): string {
+  if (status === "saved") return "text-green-700 dark:text-green-400";
+  if (status === "failed") return "text-red-600 dark:text-red-400";
+  return "text-neutral-900 dark:text-white";
+}
+
+export default function BatchReview({
+  estate,
+  batch,
+  onChange,
+  onUnauthorized,
+  onClose,
+}: {
+  estate: EstateInfo;
+  batch: Batch;
+  onChange: (next: Batch | ((prev: Batch) => Batch)) => void;
+  onUnauthorized: () => void;
+  onClose: (summary: string | null) => void;
+}) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const runRef = useRef(false);
+
+  const eligible = batch.rows.filter(isEligible).length;
+  const savedCount = batch.rows.filter((r) => r.status === "saved").length;
+  const allSaved = savedCount > 0 && batch.rows.every((r) => r.status === "saved");
+  const savedText = `${savedCount} saved to ${estate.label}.`;
+
+  function patchRow(id: string, patch: Partial<BatchRow>) {
+    onChange((prev) => ({ ...prev, rows: prev.rows.map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
+  }
+
+  function editField(row: BatchRow, key: FieldKey, value: string) {
+    const fields = { ...row.fields, [key]: value };
+    // A changed field is a fresh attempt: the old answer and message no longer apply.
+    if (row.status === "needs" || row.status === "failed") {
+      patchRow(row.id, {
+        fields,
+        status: "pending",
+        message: undefined,
+        prompt: undefined,
+        newOrg: undefined,
+        samePerson: undefined,
+      });
+    } else {
+      patchRow(row.id, { fields });
+    }
+  }
+
+  // Saves one row. Resolves false when the loop must stop (401).
+  async function saveRow(row: BatchRow, b: { role: string; note: string }): Promise<boolean> {
+    patchRow(row.id, {
+      fields: row.fields,
+      newOrg: row.newOrg,
+      samePerson: row.samePerson,
+      status: "saving",
+      message: undefined,
+      prompt: undefined,
+    });
+    const role = row.role ?? b.role;
+    const body: SaveBody = {
+      estate: estate.key,
+      captureId: row.captureId,
+      role,
+      fields: { ...row.fields, notes: (row.notes ?? b.note) || undefined },
+      extracted: row.extracted,
+      newOrg: row.newOrg || undefined,
+      samePerson: row.samePerson,
+    };
+    const failed = (message: string) => patchRow(row.id, { status: "failed", message });
+    try {
+      const res = await saveCard(body);
+      if (res.status === 401) {
+        patchRow(row.id, { status: "pending" });
+        onUnauthorized();
+        return false;
+      }
+      if (res.status === 200 && "outcome" in res.body) {
+        const result = res.body;
+        if (result.outcome === "invalid") {
+          failed(result.error || SAVE_FAILED);
+          return true;
+        }
+        const out = describeResult(result, {
+          name: row.fields.name,
+          org: row.fields.org,
+          estateLabel: estate.label,
+          roleLabel: (key) => estate.roles.find((r) => r.key === key)?.label ?? key,
+        });
+        if (out.kind === "done") patchRow(row.id, { status: "saved", message: out.text });
+        else if (out.kind === "prompt") patchRow(row.id, { status: "needs", message: out.text, prompt: out.prompt });
+        else patchRow(row.id, { status: "needs", message: out.text });
+      } else if (res.status === 400) {
+        failed((res.body as { error?: string }).error || SAVE_FAILED);
+      } else {
+        failed(SAVE_FAILED);
+      }
+    } catch {
+      failed(SAVE_FAILED);
+    }
+    return true;
+  }
+
+  // One run at a time, whether it is Save all or a single prompt answer.
+  async function run(rows: BatchRow[]) {
+    if (runRef.current || rows.length === 0) return;
+    runRef.current = true;
+    setRunning(true);
+    try {
+      for (const row of rows) {
+        if (!(await saveRow(row, batch))) break;
+      }
+    } finally {
+      runRef.current = false;
+      setRunning(false);
+    }
+  }
+
+  function discard() {
+    if (batch.rows.some((r) => r.status !== "saved") && !window.confirm("Discard the unsaved cards?")) return;
+    onClose(null);
+  }
+
+  function remove(row: BatchRow) {
+    if (row.status === "saved" || running) return;
+    onChange((prev) => ({ ...prev, rows: prev.rows.filter((r) => r.id !== row.id) }));
+    if (openId === row.id) setOpenId(null);
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <h2 className="px-1 text-2xl font-bold tracking-tight">
+        {batch.rows.length} cards found
+      </h2>
+
+      <div className={`${card} divide-y divide-neutral-200 overflow-hidden dark:divide-white/10`}>
+        <div>
+          <label htmlFor="batch-role" className={fieldLabel}>
+            Role
+          </label>
+          <select
+            id="batch-role"
+            value={batch.role}
+            disabled={running}
+            onChange={(e) => onChange((prev) => ({ ...prev, role: e.target.value }))}
+            className={`${fieldInput} appearance-none`}
+          >
+            {estate.roles.map((r) => (
+              <option key={r.key} value={r.key}>
+                {r.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="batch-note" className={fieldLabel}>
+            Note
+          </label>
+          <input
+            id="batch-note"
+            type="text"
+            value={batch.note}
+            disabled={running}
+            onChange={(e) => onChange((prev) => ({ ...prev, note: e.target.value }))}
+            className={fieldInput}
+          />
+        </div>
+      </div>
+
+      <ul className="flex flex-col gap-3">
+        {batch.rows.map((row) => (
+          <li key={row.id} className={`${card} overflow-hidden`}>
+            <button
+              type="button"
+              aria-expanded={openId === row.id}
+              onClick={() => setOpenId(openId === row.id ? null : row.id)}
+              className="flex min-h-[56px] w-full flex-col items-start justify-center gap-0.5 px-4 py-2 text-left"
+            >
+              <span className="text-[17px] font-semibold">{summary(row)}</span>
+              {row.fields.name.trim() === "" && (
+                <span className="text-[14px] font-medium text-red-600 dark:text-red-400">Add a name</span>
+              )}
+              {row.status === "saving" && (
+                <span className="text-[14px] text-neutral-500 dark:text-neutral-400">Saving…</span>
+              )}
+            </button>
+            {row.message && (
+              <p className={`px-4 pb-3 text-[16px] font-medium leading-snug ${statusColour(row.status)}`}>
+                {row.message}
+              </p>
+            )}
+            {row.prompt && (
+              <div className="px-4 pb-3">
+                <PromptButtons
+                  prompt={row.prompt}
+                  disabled={running}
+                  onUseOrg={(org) =>
+                    void run([{ ...row, fields: { ...row.fields, org }, newOrg: undefined }])
+                  }
+                  onDifferentCompany={() => void run([{ ...row, newOrg: true }])}
+                  onSamePerson={(personId) => void run([{ ...row, samePerson: personId }])}
+                />
+              </div>
+            )}
+            {openId === row.id && (
+              <RowEditor
+                row={row}
+                estate={estate}
+                running={running}
+                onField={(key, value) => editField(row, key, value)}
+                onRole={(role) => patchRow(row.id, { role })}
+                onNotes={(notes) => patchRow(row.id, { notes })}
+                onRemove={() => remove(row)}
+              />
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {allSaved && (
+        <p role="status" className="px-1 text-[17px] font-medium text-green-700 dark:text-green-400">
+          {savedText}
+        </p>
+      )}
+
+      <div className="sticky bottom-0 -mx-4 mt-auto flex flex-col gap-2 bg-[#f2f2f7]/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:bg-black/90">
+        {allSaved ? (
+          <button type="button" className={primaryButton} onClick={() => onClose(savedText)}>
+            Done
+          </button>
+        ) : (
+          <button
+            type="button"
+            className={primaryButton}
+            disabled={eligible === 0 || running}
+            onClick={() => void run(batch.rows.filter(isEligible))}
+          >
+            {running ? "Saving…" : `Save all (${eligible})`}
+          </button>
+        )}
+        <button type="button" className={secondaryButton} onClick={discard}>
+          Discard batch
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// The editor under a tapped row. Kept self-contained so later controls can be added beside the Notes input.
+function RowEditor({
+  row,
+  estate,
+  running,
+  onField,
+  onRole,
+  onNotes,
+  onRemove,
+}: {
+  row: BatchRow;
+  estate: EstateInfo;
+  running: boolean;
+  onField: (key: FieldKey, value: string) => void;
+  onRole: (role: string | undefined) => void;
+  onNotes: (notes: string | undefined) => void;
+  onRemove: () => void;
+}) {
+  const locked = row.status === "saved" || row.status === "saving" || running;
+  return (
+    <div className="divide-y divide-neutral-200 border-t border-neutral-200 dark:divide-white/10 dark:border-white/10">
+      {FIELD_ROWS.map((f) => (
+        <div key={f.key}>
+          <label htmlFor={`${row.id}-${f.key}`} className={fieldLabel}>
+            {f.label}
+          </label>
+          <input
+            id={`${row.id}-${f.key}`}
+            type={f.type ?? "text"}
+            inputMode={f.mode}
+            autoComplete={f.auto}
+            autoCapitalize={f.key === "name" || f.key === "title" || f.key === "org" ? "words" : "off"}
+            autoCorrect="off"
+            value={row.fields[f.key]}
+            readOnly={locked}
+            onChange={(e) => onField(f.key, e.target.value)}
+            className={fieldInput}
+          />
+        </div>
+      ))}
+      <div>
+        <label htmlFor={`${row.id}-role`} className={fieldLabel}>
+          Card role
+        </label>
+        <select
+          id={`${row.id}-role`}
+          value={row.role ?? ""}
+          disabled={locked}
+          onChange={(e) => onRole(e.target.value || undefined)}
+          className={`${fieldInput} appearance-none`}
+        >
+          <option value="">Same as batch</option>
+          {estate.roles.map((r) => (
+            <option key={r.key} value={r.key}>
+              {r.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label htmlFor={`${row.id}-notes`} className={fieldLabel}>
+          Card notes
+        </label>
+        <input
+          id={`${row.id}-notes`}
+          type="text"
+          placeholder="Same as batch"
+          value={row.notes ?? ""}
+          readOnly={locked}
+          onChange={(e) => onNotes(e.target.value === "" ? undefined : e.target.value)}
+          className={fieldInput}
+        />
+      </div>
+      {row.status !== "saved" && (
+        <div className="p-3">
+          <button type="button" disabled={running} className={secondaryButton} onClick={onRemove}>
+            Remove
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

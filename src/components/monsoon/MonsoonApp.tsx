@@ -7,6 +7,7 @@ import { loadEstates, readCards, saveCard, signIn, type EstateInfo, type SaveBod
 import { downsizeImage } from "./image";
 import BatchReview, { makeBatch, type Batch } from "./BatchReview";
 import { describeResult, type SavePrompt } from "./outcomes";
+import PromptButtons from "./PromptButtons";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton, FIELD_ROWS } from "./styles";
 
 const STORAGE_KEY = "monsoon.estate";
@@ -492,57 +493,20 @@ export default function MonsoonApp() {
                 className={`${card} flex flex-col gap-3 p-4`}
               >
                 <p className={`text-[17px] font-medium leading-snug ${messageColour}`}>{message.text}</p>
-                {prompt?.kind === "org_lookalike" && (
-                  <div className="flex flex-col gap-2">
-                    {prompt.similar.map((s) => (
-                      <button
-                        key={s}
-                        type="button"
-                        disabled={saving}
-                        className={secondaryButton}
-                        onClick={() => {
-                          setForm((f) => ({ ...f, org: s }));
-                          void doSave({ org: s, newOrg: false });
-                        }}
-                      >
-                        Use {s}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      disabled={saving}
-                      className={secondaryButton}
-                      onClick={() => {
-                        setNewOrg(true);
-                        void doSave({ newOrg: true });
-                      }}
-                    >
-                      It&apos;s a different company
-                    </button>
-                  </div>
-                )}
-                {prompt?.kind === "same_name" && (
-                  <div className="flex flex-col gap-2">
-                    {prompt.matches.map((m) => (
-                      <button
-                        key={m.personId}
-                        type="button"
-                        disabled={saving}
-                        className={secondaryButton}
-                        onClick={() => void doSave({ samePerson: m.personId })}
-                      >
-                        Same person ({m.org ?? "no company"})
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      disabled={saving}
-                      className={secondaryButton}
-                      onClick={() => void doSave({ samePerson: false })}
-                    >
-                      Different person
-                    </button>
-                  </div>
+                {prompt && (
+                  <PromptButtons
+                    prompt={prompt}
+                    disabled={saving}
+                    onUseOrg={(org) => {
+                      setForm((f) => ({ ...f, org }));
+                      void doSave({ org, newOrg: false });
+                    }}
+                    onDifferentCompany={() => {
+                      setNewOrg(true);
+                      void doSave({ newOrg: true });
+                    }}
+                    onSamePerson={(personId) => void doSave({ samePerson: personId })}
+                  />
                 )}
               </div>
             )}

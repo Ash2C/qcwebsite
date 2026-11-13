@@ -543,4 +543,120 @@ describe("MonsoonApp", () => {
     expect(screen.queryByText("Acme Capital looks like a company already on file.")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "It's a different company" })).not.toBeInTheDocument();
   });
+
+  const BOB = { ...CARD, name: "Bob Lee", org: "", email: "bob@x.com", raw_text: "Bob Lee" };
+  const ADDED = { status: 200, body: { outcome: "added", person: "p", org: null } } as never;
+
+  async function openBatch(user: User) {
+    signedIn();
+    m.readCards.mockResolvedValue({ status: 200, body: { cards: [CARD, BOB] } });
+    render(<MonsoonApp />);
+    await ready();
+    await pickPhoto(user);
+    await screen.findByText("2 cards found");
+  }
+
+  it("two or more cards open the batch review", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.readCards.mockResolvedValue({ status: 200, body: { cards: [CARD, BOB] } });
+    render(<MonsoonApp />);
+    await ready();
+    await user.type(screen.getByLabelText("Notes"), "demo day");
+    await user.selectOptions(screen.getByLabelText("Role"), "introducer");
+    await pickPhoto(user);
+    expect(await screen.findByText("2 cards found")).toBeInTheDocument();
+    expect(screen.getByText("Jane Tan · Acme Capital")).toBeInTheDocument();
+    expect(screen.getByLabelText("Role")).toHaveValue("introducer");
+    expect(screen.getByLabelText("Note")).toHaveValue("demo day");
+    expect(screen.getByRole("group", { name: "Estate" })).toBeInTheDocument();
+    expect(document.querySelector('input[type="file"]')).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  });
+
+  it("one card still fills the single form", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.readCards.mockResolvedValue({ status: 200, body: { cards: [CARD] } });
+    render(<MonsoonApp />);
+    await ready();
+    await pickPhoto(user);
+    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan"));
+    expect(screen.queryByText(/cards found/)).toBeNull();
+  });
+
+  it("zero cards leaves the form usable", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.readCards.mockResolvedValue({ status: 200, body: { cards: [] } });
+    render(<MonsoonApp />);
+    await ready();
+    await user.type(screen.getByLabelText("Name"), "Old");
+    await user.type(screen.getByLabelText("Notes"), "keep me");
+    await pickPhoto(user);
+    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue(""));
+    expect(screen.getByLabelText("Notes")).toHaveValue("keep me");
+    expect(screen.queryByText(/cards found/)).toBeNull();
+    await typeName(user);
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("keeps the batch across a 401", async () => {
+    const user = userEvent.setup();
+    m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+    m.saveCard
+      .mockResolvedValueOnce(ADDED)
+      .mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never);
+    await openBatch(user);
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(await screen.findByText("2 cards found")).toBeInTheDocument();
+    expect(screen.getByText("Jane Tan added to Traxo.")).toBeInTheDocument();
+    expect(screen.getByText("Bob Lee · bob@x.com")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save all (1)" })).toBeEnabled();
+  });
+
+  it("estate buttons are disabled once a batch card is saved", async () => {
+    const user = userEvent.setup();
+    m.saveCard
+      .mockResolvedValueOnce(ADDED)
+      .mockResolvedValueOnce({ status: 400, body: { error: "bad" } } as never);
+    await openBatch(user);
+    expect(screen.getByRole("button", { name: "Zero One" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    await screen.findByText("bad");
+    expect(screen.getByRole("button", { name: "Zero One" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Traxo" })).toBeDisabled();
+  });
+
+  it("switching estate before saving resets the batch role", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(ADDED);
+    await openBatch(user);
+    await user.click(screen.getByRole("button", { name: /Jane Tan/ }));
+    await user.selectOptions(screen.getByLabelText("Card role"), "introducer");
+    await user.click(screen.getByRole("button", { name: "Zero One" }));
+    expect(screen.getByLabelText("Role")).toHaveValue("investor");
+    expect(screen.getByLabelText("Card role")).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    await screen.findByText("2 saved to Zero One.");
+    expect(m.saveCard.mock.calls.map((c) => [c[0].estate, c[0].role])).toEqual([
+      ["zeroone", "investor"],
+      ["zeroone", "investor"],
+    ]);
+  });
+
+  it("Done returns to the single form with the summary message", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(ADDED);
+    await openBatch(user);
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    await user.click(await screen.findByRole("button", { name: "Done" }));
+    expect(await screen.findByText("2 saved to Traxo.")).toBeInTheDocument();
+    expect(screen.queryByText(/cards found/)).toBeNull();
+    expect(screen.getByLabelText("Name")).toHaveValue("");
+    expect(document.querySelector('input[type="file"]')).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Zero One" })).toBeEnabled();
+  });
 });
