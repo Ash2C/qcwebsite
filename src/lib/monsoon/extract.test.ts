@@ -74,7 +74,7 @@ describe("extractCards", () => {
     create.mockResolvedValue(reply({ cards: [] }));
     await extractCards({ base64: "QUJD", mediaType: "image/png" });
     expect(create).toHaveBeenCalledTimes(1);
-    expect(ctorOptions.at(-1)).toEqual({ timeout: 25_000, maxRetries: 1 });
+    expect(ctorOptions.at(-1)).toEqual({ timeout: 25_000, maxRetries: 0 });
     const args = create.mock.calls[0][0];
     expect(args.model).toBe("claude-haiku-5-5");
     expect(args.max_tokens).toBe(8192);
@@ -141,10 +141,14 @@ describe("extractCards", () => {
     ["unparseable text", reply("no card here")],
     ["no text block", { stop_reason: "end_turn", content: [] }],
     ["a refusal", reply({ cards: [{ name: "Jane" }] }, "refusal")],
-    ["a max_tokens stop", reply('{"cards": [{"name": "Ja', "max_tokens")],
   ])("returns an empty list for %s", async (_label, response) => {
     create.mockResolvedValue(response);
     expect(await extractCards(IMG)).toEqual([]);
+  });
+
+  it("throws on a max_tokens stop so a truncated reply never loses cards silently", async () => {
+    create.mockResolvedValue(reply('{"cards": [{"name": "Ja', "max_tokens"));
+    await expect(extractCards(IMG)).rejects.toThrow("max_tokens");
   });
 
   it("lets an API error throw", async () => {

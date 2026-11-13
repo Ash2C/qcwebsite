@@ -40,7 +40,7 @@ export async function extractCards(image: {
 }): Promise<CardFields[]> {
   // Resolved per call so a bad MONSOON_MODEL fails the read, not the build.
   const model = resolveModel();
-  const client = new Anthropic({ timeout: 25_000, maxRetries: 1 });
+  const client = new Anthropic({ timeout: 25_000, maxRetries: 0 });
 
   const response = await client.messages.create({
     model,
@@ -87,10 +87,12 @@ export async function extractCards(image: {
     ],
   });
 
-  // A refusal, a max_tokens stop or unparseable JSON all read as "no cards found".
-  if (response.stop_reason === "refusal" || response.stop_reason === "max_tokens") {
-    return [];
+  // A truncated reply on a crowded photo would silently lose cards: fail the read instead.
+  if (response.stop_reason === "max_tokens") {
+    throw new Error("extract stopped: max_tokens");
   }
+  // A refusal or unparseable JSON reads as "no cards found".
+  if (response.stop_reason === "refusal") return [];
   const text = response.content.map((b) => (b.type === "text" ? b.text : "")).join("");
   let list: unknown;
   try {

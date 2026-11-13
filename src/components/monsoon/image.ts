@@ -34,6 +34,7 @@ export async function downsizeImage(
       blob = await encode(scale, 0.6);
     }
     if (blob.size > maxBytes) {
+      // If this third encode is still over the limit it is returned as is and the server answers 413.
       blob = await encode(scale * 0.75, 0.6);
     }
     return blob;

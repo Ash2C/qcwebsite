@@ -29,7 +29,7 @@ const JANE = cardOf("Jane Tan", "Acme Capital");
 const BOB = cardOf("Bob Lee", "", "bob@x.com");
 const CY = cardOf("Cy Wu", "Wu Co");
 
-type Handlers = { onUnauthorized: () => void; onClose: (s: string | null) => void };
+type Handlers = { onUnauthorized: () => void; onClose: (s: string | null) => void; onRunning?: (r: boolean) => void };
 
 let setBatchOutside: React.Dispatch<React.SetStateAction<Batch>>;
 
@@ -43,6 +43,7 @@ function Harness({ cards, handlers }: { cards: ReturnType<typeof cardOf>[]; hand
       onChange={(next) => setBatch((prev) => (typeof next === "function" ? next(prev) : next))}
       onUnauthorized={handlers.onUnauthorized}
       onClose={handlers.onClose}
+      onRunning={handlers.onRunning}
     />
   );
 }
@@ -56,7 +57,7 @@ const added = { status: 200, body: { outcome: "added", person: "p", org: null } 
 
 beforeEach(() => {
   vi.resetAllMocks();
-  handlers = { onUnauthorized: vi.fn(), onClose: vi.fn() };
+  handlers = { onUnauthorized: vi.fn(), onClose: vi.fn(), onRunning: vi.fn() };
 });
 afterEach(() => {
   cleanup();
@@ -227,19 +228,47 @@ describe("BatchReview", () => {
     expect(screen.getByRole("button", { name: "Save all (1)" })).toBeEnabled();
   });
 
-  it("Save all is ignored while a batch save is running", async () => {
-    const user = userEvent.setup();
-    let release: (v: never) => void = () => {};
-    m.saveCard.mockImplementation(() => new Promise((res) => (release = res as never)));
+  it("two Save all activations in the same tick save each card once (the ref guard)", async () => {
+    const resolvers: ((v: never) => void)[] = [];
+    m.saveCard.mockImplementation(() => new Promise((res) => resolvers.push(res as never)));
     show([JANE, BOB]);
     const button = screen.getByRole("button", { name: "Save all (2)" });
-    await user.click(button);
-    await user.click(screen.getByRole("button", { name: "Saving…" }));
+    // Both clicks land before React re-renders, so the button is not yet disabled for the second one.
+    act(() => {
+      button.click();
+      button.click();
+    });
     expect(m.saveCard).toHaveBeenCalledTimes(1);
-    m.saveCard.mockResolvedValue(added);
-    release(added);
+    resolvers[0](added);
+    await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(2));
+    resolvers[1](added);
     await screen.findByText("2 saved to Traxo.");
     expect(m.saveCard).toHaveBeenCalledTimes(2);
+    expect(m.saveCard.mock.calls.map((c) => c[0].fields.name)).toEqual(["Jane Tan", "Bob Lee"]);
+  });
+
+  it("Discard batch is disabled while a batch save is running, and reports running to the parent", async () => {
+    const user = userEvent.setup();
+    let release!: (v: never) => void;
+    m.saveCard.mockImplementation(() => new Promise((res) => (release = res as never)));
+    show([JANE]);
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    expect(screen.getByRole("button", { name: "Discard batch" })).toBeDisabled();
+    expect(handlers.onRunning).toHaveBeenLastCalledWith(true);
+    release(added);
+    await screen.findByText("1 saved to Traxo.");
+    expect(screen.getByRole("button", { name: "Discard batch" })).toBeEnabled();
+    expect(handlers.onRunning).toHaveBeenLastCalledWith(false);
+  });
+
+  it("releases the running report when the component unmounts mid-save", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockImplementation(() => new Promise(() => {}));
+    show([JANE]);
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    expect(handlers.onRunning).toHaveBeenLastCalledWith(true);
+    cleanup();
+    expect(handlers.onRunning).toHaveBeenLastCalledWith(false);
   });
 
   it("a 401 stops the batch and calls onUnauthorized", async () => {
@@ -253,6 +282,16 @@ describe("BatchReview", () => {
     expect(m.saveCard).toHaveBeenCalledTimes(2);
     // Jane saved; Bob (401) and Cy untouched, so both are still eligible.
     expect(screen.getByRole("button", { name: "Save all (2)" })).toBeEnabled();
+    expect(screen.getByText("Jane Tan added to Traxo.")).toBeInTheDocument();
+    expect(screen.queryByText("Bob Lee added to Traxo.")).toBeNull();
+    expect(screen.queryByText("Saving…")).toBeNull();
+    expect(handlers.onRunning).toHaveBeenLastCalledWith(false);
+    // The next Save all retries Bob (the row that got the 401) and Cy.
+    m.saveCard.mockReset();
+    m.saveCard.mockResolvedValue(added);
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    await screen.findByText("3 saved to Traxo.");
+    expect(m.saveCard.mock.calls.map((c) => c[0].fields.name)).toEqual(["Bob Lee", "Cy Wu"]);
   });
 
   it("editing a needs row makes it pending again and clears its buttons", async () => {
@@ -275,7 +314,7 @@ describe("BatchReview", () => {
     show([JANE, BOB]);
     await open(user, "Bob Lee");
     await user.click(screen.getByRole("button", { name: "Remove" }));
-    expect(screen.getByText("1 cards found")).toBeInTheDocument();
+    expect(screen.getByText("1 card found")).toBeInTheDocument();
     expect(screen.queryByText("Bob Lee · bob@x.com")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Save all (1)" }));
     await screen.findByText("1 saved to Traxo.");
@@ -429,6 +468,51 @@ describe("BatchReview", () => {
       expect(screen.getByLabelText("Title")).toHaveValue("");
       expect(screen.getByLabelText("Card notes")).toHaveValue("");
       expect(screen.getByLabelText("Card notes")).toHaveAttribute("placeholder", "Same as batch");
+    });
+
+    it("Undo after a tidy clears the answer buttons, message and answers of the row", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue(refined({ ...JANE_FIELDS, org: "Acme Group" }, "met at demo day"));
+      m.saveCard
+        .mockResolvedValueOnce({
+          status: 200,
+          body: { outcome: "same_name", matches: [{ personId: "pid-1", org: "Old Co" }] },
+        } as never)
+        .mockResolvedValueOnce(added);
+      show([JANE]);
+      await open(user, "Jane Tan");
+      await speak(user, "company is Acme Group");
+      await waitFor(() => expect(screen.getByLabelText("Company")).toHaveValue("Acme Group"));
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await screen.findByRole("button", { name: "Same person (Old Co)" });
+      await user.click(screen.getByRole("button", { name: "Undo" }));
+      expect(screen.getByLabelText("Company")).toHaveValue("Acme Capital");
+      expect(screen.queryByRole("button", { name: /Same person|Different person/ })).toBeNull();
+      expect(screen.queryByText(/already on file/)).toBeNull();
+      expect(screen.getByRole("button", { name: "Save all (1)" })).toBeEnabled();
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await screen.findByText("1 saved to Traxo.");
+      expect(m.saveCard.mock.calls[1][0].samePerson).toBeUndefined();
+      expect(m.saveCard.mock.calls[1][0].newOrg).toBeUndefined();
+    });
+
+    it("collapsing and reopening a row mid-tidy cannot start a second request for it", async () => {
+      const user = userEvent.setup();
+      let resolve!: (v: never) => void;
+      m.refineCard.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+      show([JANE, BOB]);
+      await open(user, "Jane Tan");
+      await user.click(screen.getByRole("button", { name: "Speak notes" }));
+      await user.type(screen.getByPlaceholderText("Tap the microphone on the keyboard and talk"), "x");
+      await user.click(screen.getByRole("button", { name: "Apply" }));
+      await waitFor(() => expect(m.refineCard).toHaveBeenCalledTimes(1));
+      await open(user, "Jane Tan"); // collapse
+      await open(user, "Jane Tan"); // reopen
+      expect(screen.getByRole("button", { name: "Speak notes" })).toBeDisabled();
+      expect(m.refineCard).toHaveBeenCalledTimes(1);
+      resolve(refined(JANE_FIELDS, "tidy") as never);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Speak notes" })).toBeEnabled());
+      expect(screen.getByRole("button", { name: "Save all (2)" })).toBeEnabled();
     });
 
     it("locks the card, Save all, Remove and Discard while a tidy is pending", async () => {

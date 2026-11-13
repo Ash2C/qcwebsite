@@ -661,6 +661,69 @@ describe("MonsoonApp", () => {
     expect(screen.getByRole("button", { name: "Zero One" })).toBeEnabled();
   });
 
+  it("the estate buttons are locked while a batch save is running and free again afterwards", async () => {
+    const user = userEvent.setup();
+    const resolvers: ((v: never) => void)[] = [];
+    m.saveCard.mockImplementation(() => new Promise((r) => resolvers.push(r as never)));
+    await openBatch(user);
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "Zero One" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Traxo" })).toBeDisabled();
+    const bad = { status: 400, body: { error: "bad" } } as never;
+    resolvers[0](bad);
+    await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "Zero One" })).toBeDisabled();
+    resolvers[1](bad);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Zero One" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Traxo" })).toBeEnabled();
+  });
+
+  it("the estate buttons are locked while a photo is being read", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    let resolve!: (v: never) => void;
+    m.readCards.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+    render(<MonsoonApp />);
+    await ready();
+    await pickPhoto(user);
+    await waitFor(() => expect(m.readCards).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "Zero One" })).toBeDisabled();
+    resolve({ status: 200, body: { cards: [CARD] } } as never);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Zero One" })).toBeEnabled());
+  });
+
+  it("a reload of estates keeps the estate an open batch was started in, even if it is now unavailable", async () => {
+    const user = userEvent.setup();
+    m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+    m.saveCard.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never);
+    await openBatch(user);
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
+    m.loadEstates.mockResolvedValue({
+      status: 200,
+      body: { estates: [{ ...ESTATES.estates[0], available: false }, ESTATES.estates[1]] },
+    });
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(await screen.findByText("2 cards found")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Traxo (unavailable)" })).toHaveAttribute("aria-pressed", "true");
+    m.saveCard.mockResolvedValue(ADDED);
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    await screen.findByText("2 saved to Traxo.");
+    expect(m.saveCard.mock.calls.at(-1)![0].estate).toBe("traxo");
+  });
+
+  it("with no batch open, a reload may pick another estate when the stored one is unavailable", async () => {
+    localStorage.setItem("monsoon.estate", "traxo");
+    m.loadEstates.mockResolvedValue({
+      status: 200,
+      body: { estates: [{ ...ESTATES.estates[0], available: false }, ESTATES.estates[1]] },
+    });
+    render(<MonsoonApp />);
+    await ready();
+    expect(screen.getByRole("button", { name: "Zero One" })).toHaveAttribute("aria-pressed", "true");
+  });
+
   describe("spoken notes", () => {
     const FIELDS = { name: "Jane Tan", title: "Partner", org: "Acme Capital", email: "jane@acme.com", phone: "", linkedin: "" };
     const refined = (fields: Record<string, string>, notes: string) =>
@@ -837,6 +900,44 @@ describe("MonsoonApp", () => {
       await waitFor(() => expect(screen.getByLabelText("Company")).toHaveValue("Acme Group"));
       expect(screen.getByLabelText("Title")).toHaveValue("Chief");
       expect(screen.getByLabelText("Notes")).toHaveValue("Tidy.");
+    });
+
+    it("the same-name answer buttons are disabled while a tidy is pending", async () => {
+      const user = userEvent.setup();
+      let resolve!: (v: never) => void;
+      m.refineCard.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+      m.saveCard.mockResolvedValueOnce({
+        status: 200,
+        body: { outcome: "same_name", matches: [{ personId: "p1", org: "Beta" }] },
+      } as never);
+      await loadCard(user);
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      const same = await screen.findByRole("button", { name: "Same person (Beta)" });
+      expect(same).toBeEnabled();
+      await user.click(screen.getByRole("button", { name: "Speak notes" }));
+      await user.type(screen.getByRole("textbox", { name: "Spoken notes" }), "x");
+      await user.click(screen.getByRole("button", { name: "Apply" }));
+      await waitFor(() => expect(m.refineCard).toHaveBeenCalled());
+      expect(screen.getByRole("button", { name: "Same person (Beta)" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Different person" })).toBeDisabled();
+      resolve({ status: 200, body: { fields: FIELDS, notes: "n" } } as never);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+    });
+
+    it("Undo is disabled while a tidy is pending", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValueOnce(refined({ ...FIELDS, title: "CIO" }, "Now CIO."));
+      await loadCard(user);
+      await speak(user, "first");
+      await screen.findByRole("button", { name: "Undo" });
+      expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled();
+      let resolve!: (v: never) => void;
+      m.refineCard.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+      await speak(user, "second");
+      await waitFor(() => expect(m.refineCard).toHaveBeenCalledTimes(2));
+      expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+      resolve({ status: 200, body: { fields: { ...FIELDS, title: "CIO" }, notes: "Now CIO." } } as never);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled());
     });
 
     it("a new photo clears the snapshot and the draft", async () => {

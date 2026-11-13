@@ -103,6 +103,10 @@ export default function MonsoonApp() {
   const genRef = useRef(0);
   const tidyGenRef = useRef(0);
   const savingRef = useRef(false);
+  // The estate an open batch was started in; a reload of estates must not move it.
+  const batchEstateRef = useRef<string | null>(null);
+  // True while a batch save run is in flight (reported by BatchReview).
+  const [batchRunning, setBatchRunning] = useState(false);
   const formRef = useRef(form);
   formRef.current = form;
 
@@ -115,8 +119,12 @@ export default function MonsoonApp() {
       if (res.status === 200 && "estates" in res.body) {
         const list = res.body.estates;
         const stored = readStoredEstate();
+        const kept = batchEstateRef.current;
         const pick =
-          list.find((e) => e.key === stored && e.available) ?? list.find((e) => e.available) ?? list[0];
+          (kept ? list.find((e) => e.key === kept) : undefined) ??
+          list.find((e) => e.key === stored && e.available) ??
+          list.find((e) => e.available) ??
+          list[0];
         setEstates(list);
         if (pick) {
           setEstateKey(pick.key);
@@ -202,6 +210,7 @@ export default function MonsoonApp() {
         : b,
     );
     storeEstate(e.key);
+    if (batchEstateRef.current) batchEstateRef.current = e.key;
     dropPrompt();
     setSamePerson(undefined);
   }
@@ -230,6 +239,7 @@ export default function MonsoonApp() {
         const cards = res.body.cards;
         if (cards.length >= 2) {
           setCaptureId(null);
+          batchEstateRef.current = estateKey;
           setBatch(makeBatch(cards, role, form.notes));
           return;
         }
@@ -369,6 +379,7 @@ export default function MonsoonApp() {
 
   // Done (summary) or Discard (null): back to the single form, cleared.
   function closeBatch(summary: string | null) {
+    batchEstateRef.current = null;
     setBatch(null);
     if (summary) {
       finish(summary);
@@ -492,7 +503,7 @@ export default function MonsoonApp() {
                 key={e.key}
                 type="button"
                 aria-pressed={selected}
-                disabled={!e.available || batchStarted || tidying}
+                disabled={!e.available || batchStarted || tidying || reading || batchRunning}
                 onClick={() => chooseEstate(e)}
                 className={`min-h-[44px] rounded-lg px-2 text-[16px] font-semibold disabled:opacity-40 ${
                   selected
@@ -513,6 +524,7 @@ export default function MonsoonApp() {
             onChange={onBatchChange}
             onUnauthorized={() => setPhase("locked")}
             onClose={closeBatch}
+            onRunning={setBatchRunning}
           />
         ) : (
           <>
@@ -547,7 +559,7 @@ export default function MonsoonApp() {
                 {prompt && (
                   <PromptButtons
                     prompt={prompt}
-                    disabled={saving}
+                    disabled={busy}
                     onUseOrg={(org) => {
                       setForm((f) => ({ ...f, org }));
                       void doSave({ org, newOrg: false });
@@ -594,7 +606,7 @@ export default function MonsoonApp() {
                     disabled={busy}
                   />
                   {beforeRefine && (
-                    <button type="button" className={secondaryButton} onClick={undoRefine}>
+                    <button type="button" disabled={tidying} className={secondaryButton} onClick={undoRefine}>
                       Undo
                     </button>
                   )}

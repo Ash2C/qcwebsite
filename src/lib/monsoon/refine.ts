@@ -25,7 +25,7 @@ const SYSTEM_PROMPT =
 export async function refineContact(input: RefineInput): Promise<RefineOutput> {
   // Resolved per call so a bad MONSOON_MODEL fails the request, not the build.
   const model = resolveModel();
-  const client = new Anthropic({ timeout: 25_000, maxRetries: 1 });
+  const client = new Anthropic({ timeout: 25_000, maxRetries: 0 });
 
   const response = await client.messages.create({
     model,

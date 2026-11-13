@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CardFields } from "@/lib/monsoon/extract";
 import type { RefineOutput } from "@/lib/monsoon/refine";
 import { saveCard, type EstateInfo, type SaveBody } from "./api";
@@ -75,19 +75,36 @@ export default function BatchReview({
   onChange,
   onUnauthorized,
   onClose,
+  onRunning,
 }: {
   estate: EstateInfo;
   batch: Batch;
   onChange: (next: Batch | ((prev: Batch) => Batch)) => void;
   onUnauthorized: () => void;
   onClose: (summary: string | null) => void;
+  // Reports whether a save run is in flight, so the parent can lock the estate buttons. Released on unmount.
+  onRunning?: (running: boolean) => void;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-  // Ids of rows with a tidy request in flight: those rows are read-only and nothing can be saved or dropped.
-  const [tidyIds, setTidyIds] = useState<string[]>([]);
-  const tidying = tidyIds.length > 0;
+  // Requests in flight per row id: those rows are read-only and nothing can be saved or dropped.
+  // A count, so a row is only released when no request for it remains.
+  const [tidyCounts, setTidyCounts] = useState<Record<string, number>>({});
+  const tidying = Object.keys(tidyCounts).length > 0;
   const runRef = useRef(false);
+
+  useEffect(() => {
+    onRunning?.(running);
+    return () => onRunning?.(false);
+  }, [running, onRunning]);
+
+  function setRowBusy(id: string, busy: boolean) {
+    setTidyCounts((counts) => {
+      const n = (counts[id] ?? 0) + (busy ? 1 : -1);
+      const { [id]: _gone, ...rest } = counts;
+      return n > 0 ? { ...rest, [id]: n } : rest;
+    });
+  }
 
   const eligible = batch.rows.filter(isEligible).length;
   const savedCount = batch.rows.filter((r) => r.status === "saved").length;
@@ -155,7 +172,12 @@ export default function BatchReview({
 
   function undoRefine(row: BatchRow) {
     if (!row.before) return;
-    patchRow(row.id, { fields: row.before.fields, notes: row.before.notes, before: undefined });
+    // Same reset as a hand edit: the answers and buttons belonged to the tidied values.
+    const reset =
+      row.status === "needs" || row.status === "failed"
+        ? { status: "pending" as const, message: undefined, prompt: undefined, newOrg: undefined, samePerson: undefined }
+        : {};
+    patchRow(row.id, { ...reset, fields: row.before.fields, notes: row.before.notes, before: undefined });
   }
 
   // Saves one row. Resolves false when the loop must stop (401).
@@ -241,7 +263,7 @@ export default function BatchReview({
   return (
     <div className="flex flex-col gap-4">
       <h2 className="px-1 text-2xl font-bold tracking-tight">
-        {batch.rows.length} cards found
+        {batch.rows.length === 1 ? "1 card found" : `${batch.rows.length} cards found`}
       </h2>
 
       <div className={`${card} divide-y divide-neutral-200 overflow-hidden dark:divide-white/10`}>
@@ -318,7 +340,7 @@ export default function BatchReview({
                 row={row}
                 estate={estate}
                 running={running}
-                tidying={tidyIds.includes(row.id)}
+                tidying={(tidyCounts[row.id] ?? 0) > 0}
                 anyTidying={tidying}
                 batchNote={batch.note}
                 onField={(key, value) => editField(row, key, value)}
@@ -326,9 +348,7 @@ export default function BatchReview({
                 onNotes={(notes) => patchRow(row.id, { notes, before: dropChanged(row, "notes") })}
                 onDraft={(spoken) => patchRow(row.id, { spoken })}
                 onApply={(next, sent) => applyRefine(row.id, next, sent)}
-                onBusy={(b) =>
-                  setTidyIds((ids) => (b ? [...ids, row.id] : ids.filter((x) => x !== row.id)))
-                }
+                onBusy={(b) => setRowBusy(row.id, b)}
                 onUndo={() => undoRefine(row)}
                 onUnauthorized={onUnauthorized}
                 onRemove={() => remove(row)}
@@ -359,7 +379,7 @@ export default function BatchReview({
             {running ? "Saving…" : `Save all (${eligible})`}
           </button>
         )}
-        <button type="button" disabled={tidying} className={secondaryButton} onClick={discard}>
+        <button type="button" disabled={running || tidying} className={secondaryButton} onClick={discard}>
           Discard batch
         </button>
       </div>
@@ -469,7 +489,7 @@ function RowEditor({
             onApply={onApply}
             onUnauthorized={onUnauthorized}
             onBusy={onBusy}
-            disabled={running || row.status === "saving"}
+            disabled={running || row.status === "saving" || tidying}
           />
           {row.before && (
             <button type="button" disabled={running || tidying} className={secondaryButton} onClick={onUndo}>

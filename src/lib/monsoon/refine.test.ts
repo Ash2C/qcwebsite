@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const create = vi.fn();
+const ctorOptions: unknown[] = [];
 vi.mock("@anthropic-ai/sdk", () => ({
   default: class {
-    constructor() {
+    constructor(options?: unknown) {
+      ctorOptions.push(options);
       if (!process.env.ANTHROPIC_API_KEY) throw new Error("missing api key");
     }
     messages = { create: (...args: unknown[]) => create(...args) };
@@ -48,6 +50,7 @@ describe("refineContact", () => {
   it("sends a structured-output request with no tools and the data as JSON", async () => {
     create.mockResolvedValue(reply(model()));
     await refineContact(INPUT);
+    expect(ctorOptions.at(-1)).toEqual({ timeout: 25_000, maxRetries: 0 });
     const req = create.mock.calls[0][0];
     expect(req.model).toBe("claude-haiku-5-5");
     expect(req.max_tokens).toBe(8192);

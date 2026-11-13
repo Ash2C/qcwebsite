@@ -19,7 +19,7 @@ let onUnauthorized: ReturnType<typeof vi.fn>;
 let lastDraft = "";
 
 // The parent owns the draft, so the harness does too.
-function Harness({ initial = "" }: { initial?: string }) {
+function Harness({ initial = "", disabled }: { initial?: string; disabled?: boolean }) {
   const [draft, setDraft] = useState(initial);
   lastDraft = draft;
   return (
@@ -31,6 +31,7 @@ function Harness({ initial = "" }: { initial?: string }) {
       onApply={onApply as never}
       onUnauthorized={onUnauthorized as never}
       onBusy={onBusy as never}
+      disabled={disabled}
     />
   );
 }
@@ -187,5 +188,40 @@ describe("SpeakNotes", () => {
       />,
     );
     expect(screen.getByRole("button", { name: "Speak notes" })).toBeDisabled();
+  });
+
+  it("Use as typed honours the disabled prop", async () => {
+    const user = userEvent.setup();
+    m.refineCard.mockResolvedValue({ status: 502, body: { error: "Could not tidy the notes" } });
+    const view = render(<Harness />);
+    await openIt(user);
+    await user.type(screen.getByRole("textbox"), "call her");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await screen.findByRole("button", { name: "Use as typed" });
+    view.rerender(<Harness disabled />);
+    const typed = screen.getByRole("button", { name: "Use as typed" });
+    expect(typed).toBeDisabled();
+    await user.click(typed);
+    expect(onApply).not.toHaveBeenCalled();
+    expect(onBusy.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it("limits the textarea to 4000 characters", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await openIt(user);
+    expect(screen.getByRole("textbox")).toHaveAttribute("maxlength", "4000");
+  });
+
+  it("a 400 shows the server's error instead of the generic text, and Use as typed is still offered", async () => {
+    const user = userEvent.setup();
+    m.refineCard.mockResolvedValue({ status: 400, body: { error: "Spoken notes are too long" } });
+    render(<Harness />);
+    await openIt(user);
+    await user.type(screen.getByRole("textbox"), "x");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    expect(await screen.findByText("Spoken notes are too long")).toBeInTheDocument();
+    expect(screen.queryByText("Could not tidy the notes.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Use as typed" })).toBeEnabled();
   });
 });

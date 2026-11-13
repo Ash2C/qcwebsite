@@ -6,6 +6,8 @@ import { refineCard } from "./api";
 import type { Snapshot } from "./merge";
 import { secondaryButton } from "./styles";
 
+const GENERIC_FAILURE = "Could not tidy the notes.";
+
 // Dictation happens with the iPhone keyboard microphone into a plain textarea; no audio is handled here.
 // The draft lives in the parent so it survives a 401 re-login. Applying only reports the result: the
 // parent decides how to show it, and nothing is saved from here.
@@ -32,13 +34,14 @@ export default function SpeakNotes({
 }) {
   const [open, setOpen] = useState(false);
   const [running, setRunning] = useState(false);
-  const [failed, setFailed] = useState(false);
+  // null = no failure; otherwise the message to show.
+  const [failure, setFailure] = useState<string | null>(null);
   const runRef = useRef(false);
 
   function finish(next: RefineOutput, sent: Snapshot) {
     onApply(next, sent);
     onDraft("");
-    setFailed(false);
+    setFailure(null);
     setOpen(false);
   }
 
@@ -46,7 +49,7 @@ export default function SpeakNotes({
     if (runRef.current || draft.trim() === "") return;
     runRef.current = true;
     setRunning(true);
-    setFailed(false);
+    setFailure(null);
     onBusy?.(true);
     const sent = { fields, notes };
     try {
@@ -55,11 +58,13 @@ export default function SpeakNotes({
         onUnauthorized();
       } else if (res.status === 200 && "fields" in res.body) {
         finish(res.body, sent);
+      } else if (res.status === 400 && typeof (res.body as { error?: unknown }).error === "string") {
+        setFailure((res.body as { error: string }).error);
       } else {
-        setFailed(true);
+        setFailure(GENERIC_FAILURE);
       }
     } catch {
-      setFailed(true);
+      setFailure(GENERIC_FAILURE);
     } finally {
       runRef.current = false;
       setRunning(false);
@@ -69,6 +74,7 @@ export default function SpeakNotes({
 
   // Applies the typed text without a request; bracketed as busy so the parent stamps it as current.
   function applyAsTyped() {
+    if (disabled) return;
     onBusy?.(true);
     finish({ fields, notes: [notes, draft].filter(Boolean).join("\n") }, { fields, notes });
     onBusy?.(false);
@@ -106,16 +112,18 @@ export default function SpeakNotes({
         rows={4}
         value={draft}
         disabled={running}
+        maxLength={4000}
         placeholder="Tap the microphone on the keyboard and talk"
         onChange={(e) => onDraft(e.target.value)}
         className="block w-full rounded-xl bg-neutral-100 px-4 py-2.5 text-[17px] text-neutral-900 placeholder:text-neutral-400 focus:outline-none dark:bg-white/10 dark:text-white dark:placeholder:text-neutral-500"
       />
-      {failed && (
+      {failure !== null && (
         <div role="alert" className="flex flex-col gap-2">
-          <p className="text-[15px] font-medium text-red-600 dark:text-red-400">Could not tidy the notes.</p>
+          <p className="text-[15px] font-medium text-red-600 dark:text-red-400">{failure}</p>
           <button
             type="button"
             className={secondaryButton}
+            disabled={disabled}
             onClick={applyAsTyped}
           >
             Use as typed
