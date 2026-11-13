@@ -44,17 +44,17 @@ export default function ChangeCard({
         : "text-neutral-600 dark:text-neutral-300";
 
   return (
-    <div className={`${cardClass} flex flex-col gap-3 p-4`}>
+    <div className={`${cardClass} flex min-w-0 flex-col gap-3 p-4`}>
       <p className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
         {isNote ? "Add note" : "Move stage"}
       </p>
-      <div className="flex flex-col">
-        <p className="text-[17px] font-semibold leading-snug">{p.memberName}</p>
-        {second && <p className="text-[15px] text-neutral-500 dark:text-neutral-400">{second}</p>}
-        {p.about && <p className="text-[15px] text-neutral-500 dark:text-neutral-400">About {p.about}</p>}
+      <div className="flex min-w-0 flex-col">
+        <p className="break-words text-[17px] font-semibold leading-snug">{p.memberName}</p>
+        {second && <p className="break-words text-[15px] text-neutral-500 dark:text-neutral-400">{second}</p>}
+        {p.about && <p className="break-words text-[15px] text-neutral-500 dark:text-neutral-400">About {p.about}</p>}
       </div>
       {p.kind === "move_stage" && (
-        <p className="text-[17px]">
+        <p className="break-words text-[17px]">
           {stageLabel(p.fromStage)} → {stageLabel(p.toStage)}
         </p>
       )}
@@ -70,7 +70,7 @@ export default function ChangeCard({
               value={card.text}
               disabled={working}
               onChange={(e) => onText(e.target.value)}
-              className="block w-full rounded-xl bg-neutral-100 px-4 py-2.5 text-[17px] text-neutral-900 focus:outline-none dark:bg-white/10 dark:text-white"
+              className="block w-full break-words rounded-xl bg-neutral-100 px-4 py-2.5 text-[17px] text-neutral-900 focus:outline-none dark:bg-white/10 dark:text-white"
             />
             {tooLong && (
               <p role="alert" className="text-[15px] font-medium text-red-600 dark:text-red-400">
@@ -79,11 +79,11 @@ export default function ChangeCard({
             )}
           </>
         ) : (
-          <p className="whitespace-pre-wrap text-[17px]">{card.text}</p>
+          <p className="whitespace-pre-wrap break-words text-[17px]">{card.text}</p>
         ))}
-      {card.state === "cancelled" && <p className={`text-[15px] font-medium ${tone}`}>Cancelled.</p>}
+      {card.state === "cancelled" && <p className={`break-words text-[15px] font-medium ${tone}`}>Cancelled.</p>}
       {card.message && card.state !== "cancelled" && (
-        <p role={card.state === "failed" ? "alert" : "status"} className={`text-[15px] font-medium ${tone}`}>
+        <p role={card.state === "failed" ? "alert" : "status"} className={`break-words text-[15px] font-medium ${tone}`}>
           {card.message}
         </p>
       )}

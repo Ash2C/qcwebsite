@@ -970,7 +970,7 @@ describe("MonsoonApp", () => {
 
     async function question(user: User, text: string) {
       await user.type(screen.getByRole("textbox", { name: "Your question" }), text);
-      await user.click(screen.getAllByRole("button", { name: "Ask" }).at(-1)!);
+      await user.click(screen.getByRole("button", { name: "Send question" }));
     }
 
     it("switches to Ask and back to Capture with the capture form intact", async () => {
@@ -1036,6 +1036,26 @@ describe("MonsoonApp", () => {
       await screen.findByText("Jane is hot.");
       await waitFor(() => expect(screen.getByRole("button", { name: "Zero One" })).toBeEnabled());
       expect(screen.getByRole("button", { name: "Capture" })).toBeEnabled();
+    });
+
+    it("clears the conversation when unlocking lands on a different estate, by any path", async () => {
+      const user = userEvent.setup();
+      m.askCrm.mockResolvedValueOnce(ANSWER);
+      await openAsk(user);
+      await question(user, "Who?");
+      await screen.findByText("Jane is hot.");
+      m.askCrm.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } });
+      await question(user, "Again?");
+      await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
+      m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+      m.loadEstates.mockResolvedValue({
+        status: 200,
+        body: { estates: [{ ...ESTATES.estates[0], available: false }, ESTATES.estates[1]] },
+      });
+      await user.click(screen.getByRole("button", { name: "Unlock" }));
+      await screen.findByRole("button", { name: "Capture" });
+      expect(screen.getByPlaceholderText("Ask about Zero One...")).toBeInTheDocument();
+      expect(screen.queryByText("Jane is hot.")).toBeNull();
     });
 
     it("the Ask switch is disabled while a capture read is in flight", async () => {

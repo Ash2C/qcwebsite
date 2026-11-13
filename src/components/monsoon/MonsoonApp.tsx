@@ -112,6 +112,14 @@ export default function MonsoonApp() {
   const [mode, setMode] = useState<"capture" | "ask">("capture");
   const [ask, setAsk] = useState<AskState>(EMPTY_ASK);
   const [askBusy, setAskBusy] = useState(false);
+  // The Ask conversation belongs to one estate: any path that changes the estate clears it.
+  const askEstateRef = useRef(estateKey);
+  useEffect(() => {
+    if (askEstateRef.current !== estateKey) {
+      askEstateRef.current = estateKey;
+      setAsk(EMPTY_ASK);
+    }
+  }, [estateKey]);
   const formRef = useRef(form);
   formRef.current = form;
 
@@ -202,7 +210,6 @@ export default function MonsoonApp() {
 
   function chooseEstate(e: EstateInfo) {
     if (!e.available || batchStarted || askBusy) return;
-    if (e.key !== estateKey) setAsk(EMPTY_ASK);
     setEstateKey(e.key);
     setRole(startRole(e));
     // Cards not yet saved follow the new estate: its start role, and no per-card role left over.

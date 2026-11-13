@@ -66,7 +66,7 @@ function Harness({
 
 async function ask(user: User, text: string) {
   await user.type(screen.getByRole("textbox", { name: "Your question" }), text);
-  await user.click(screen.getByRole("button", { name: "Ask" }));
+  await user.click(screen.getByRole("button", { name: "Send question" }));
 }
 
 beforeEach(() => {
@@ -89,7 +89,7 @@ describe("AskPanel", () => {
   it("has the estate placeholder and a disabled Ask while blank", async () => {
     render(<Harness />);
     expect(screen.getByPlaceholderText("Ask about Traxo...")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send question" })).toBeDisabled();
   });
 
   it("shows Looking... then the answer, sending the estate, the local date and the conversation", async () => {
@@ -162,8 +162,8 @@ describe("AskPanel", () => {
     render(<Harness />);
     await ask(user, "one");
     await user.type(screen.getByRole("textbox", { name: "Your question" }), "two");
-    expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "Ask" }));
+    expect(screen.getByRole("button", { name: "Send question" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Send question" }));
     expect(m.askCrm).toHaveBeenCalledTimes(1);
     resolve(answer("ok"));
     await screen.findByText("ok");
@@ -398,5 +398,121 @@ describe("AskPanel", () => {
     await screen.findByText(/<b>bold<\/b>/);
     expect(container.querySelector("b")).toBeNull();
     expect(container.querySelector("script")).toBeNull();
+  });
+
+  it("wraps long unbroken server text inside the card", () => {
+    const long = "x".repeat(300);
+    const signed = {
+      ...NOTE_PROPOSAL,
+      proposal: { ...NOTE_PROPOSAL.proposal, memberName: long, company: long, about: long },
+    };
+    const turns: AskTurn[] = [
+      {
+        id: "a",
+        role: "assistant",
+        content: "ok",
+        cards: [{ id: "c1", signed: signed as never, text: long, state: "done", message: long }],
+      },
+    ];
+    render(<Harness initial={{ turns, draft: "" }} />);
+    const hits = screen.getAllByText((_, el) => el?.tagName === "P" && (el.textContent ?? "").includes(long));
+    // member name, company, about, read-only note, card message
+    expect(hits.length).toBe(5);
+    for (const el of hits) expect(el).toHaveClass("break-words");
+  });
+
+  it("keeps what was typed while waiting and puts the failed question above it", async () => {
+    const user = userEvent.setup();
+    let resolve!: (v: never) => void;
+    m.askCrm.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+    render(<Harness />);
+    await ask(user, "First");
+    await user.type(screen.getByRole("textbox", { name: "Your question" }), "typed meanwhile");
+    resolve({ status: 502, body: { error: "x" } } as never);
+    await screen.findByText("Could not get an answer. Check signal and try again.");
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("First\ntyped meanwhile");
+  });
+
+  it("keeps what was typed on a 401 too", async () => {
+    const user = userEvent.setup();
+    let resolve!: (v: never) => void;
+    const onUnauthorized = vi.fn();
+    m.askCrm.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+    render(<Harness onUnauthorized={onUnauthorized} />);
+    await ask(user, "First");
+    await user.type(screen.getByRole("textbox", { name: "Your question" }), "more");
+    resolve({ status: 401, body: { error: "unauthorized" } } as never);
+    await waitFor(() => expect(onUnauthorized).toHaveBeenCalled());
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("First\nmore");
+  });
+
+  it("drops the oldest messages until the conversation is at most 50,000 characters", async () => {
+    const user = userEvent.setup();
+    const big = "y".repeat(20_000);
+    const turns: AskTurn[] = [
+      { id: "u1", role: "user", content: big },
+      { id: "a1", role: "assistant", content: big },
+      { id: "u2", role: "user", content: big },
+      { id: "a2", role: "assistant", content: big },
+    ];
+    m.askCrm.mockResolvedValue(answer("ok"));
+    render(<Harness initial={{ turns, draft: "" }} />);
+    await ask(user, "next");
+    await screen.findByText("ok");
+    const sent = m.askCrm.mock.calls[0][0].messages;
+    expect(sent.reduce((n, x) => n + x.content.length, 0)).toBeLessThanOrEqual(50_000);
+    expect(sent[0].role).toBe("user");
+    expect(sent[sent.length - 1]).toEqual({ role: "user", content: "next" });
+    // u1 dropped for size, then a1 so no assistant turn leads: u2, a2, next remain.
+    expect(sent.length).toBe(3);
+  });
+
+  describe("Clear", () => {
+    it("is hidden when empty, then clears the conversation", async () => {
+      const user = userEvent.setup();
+      m.askCrm.mockResolvedValue(answer("ok"));
+      render(<Harness />);
+      expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
+      await ask(user, "hi");
+      await screen.findByText("ok");
+      await user.click(screen.getByRole("button", { name: "Clear" }));
+      expect(screen.queryByText("ok")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
+    });
+
+    it("is disabled while a question is pending", async () => {
+      const user = userEvent.setup();
+      m.askCrm.mockImplementation(() => new Promise(() => {}));
+      render(<Harness />);
+      await ask(user, "hi");
+      expect(screen.getByRole("button", { name: "Clear" })).toBeDisabled();
+    });
+
+    it("asks once when a card is still open, and keeps the conversation on No", async () => {
+      const user = userEvent.setup();
+      m.askCrm.mockResolvedValue(answer("Sure.", [NOTE_PROPOSAL]));
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+      render(<Harness />);
+      await ask(user, "note");
+      await screen.findByText("Sure.");
+      await user.click(screen.getByRole("button", { name: "Clear" }));
+      expect(confirmSpy).toHaveBeenCalledWith("Clear the conversation? Unconfirmed changes will be dropped.");
+      expect(screen.getByText("Sure.")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Clear" }));
+      expect(screen.queryByText("Sure.")).toBeNull();
+      confirmSpy.mockRestore();
+    });
+
+    it("does not ask when no card is open", async () => {
+      const user = userEvent.setup();
+      m.askCrm.mockResolvedValue(answer("ok"));
+      const confirmSpy = vi.spyOn(window, "confirm");
+      render(<Harness />);
+      await ask(user, "hi");
+      await screen.findByText("ok");
+      await user.click(screen.getByRole("button", { name: "Clear" }));
+      expect(confirmSpy).not.toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
   });
 });

@@ -26,6 +26,7 @@ export type AskState = { turns: AskTurn[]; draft: string };
 export const EMPTY_ASK: AskState = { turns: [], draft: "" };
 
 const MAX_SENT = 24;
+const MAX_SENT_CHARS = 50_000;
 const ASK_FAILURE = "Could not get an answer. Check signal and try again.";
 const SAVE_FAILURE = "Could not save. Check signal and try again.";
 const SUGGESTIONS = ["Who should I chase this week?", "Summarise the pipeline", "Tell me about "];
@@ -47,7 +48,11 @@ function toMessages(turns: AskTurn[]): AskMessage[] {
         : { role: "assistant", content: t.content },
   );
   const last = all.slice(-MAX_SENT);
-  while (last.length > 0 && last[0].role === "assistant") last.shift();
+  let total = last.reduce((n, m) => n + m.content.length, 0);
+  // Drop the oldest until the total fits, never leaving an assistant turn first.
+  while (last.length > 0 && (last[0].role === "assistant" || total > MAX_SENT_CHARS)) {
+    total -= last.shift()!.content.length;
+  }
   return last;
 }
 
@@ -131,8 +136,13 @@ export default function AskPanel({
     const turn: AskTurn = { id: crypto.randomUUID(), role: "user", content: question.trim() };
     const messages = toMessages([...state.turns, turn]);
     onChange((prev) => ({ turns: [...prev.turns, turn], draft: "" }));
+    // Text typed while waiting is kept: the failed question goes back above it.
     const restore = () =>
-      onChange((prev) => ({ turns: prev.turns.filter((t) => t.id !== turn.id), draft: question }));
+      onChange((prev) => ({
+        turns: prev.turns.filter((t) => t.id !== turn.id),
+        draft: prev.draft.trim() === "" ? question : `${question}
+${prev.draft}`,
+      }));
     try {
       const res = await askCrm({ estate: estate.key, today: localDate(), messages });
       if (gen !== genRef.current) return;
@@ -168,8 +178,16 @@ export default function AskPanel({
     }
   }
 
+  function currentState(id: string): AskCard["state"] | undefined {
+    for (const t of state.turns) {
+      const found = t.cards?.find((x) => x.id === id);
+      if (found) return found.state;
+    }
+    return undefined;
+  }
+
   async function confirm(c: AskCard) {
-    if (cardRefs.current.has(c.id)) return;
+    if (currentState(c.id) !== "open" || cardRefs.current.has(c.id)) return;
     cardRefs.current.add(c.id);
     const gen = genRef.current;
     patchCard(c.id, { state: "working", message: undefined });
@@ -202,15 +220,34 @@ export default function AskPanel({
   }
 
   function cancel(c: AskCard) {
-    if (cardRefs.current.has(c.id)) return;
+    if (currentState(c.id) !== "open" || cardRefs.current.has(c.id)) return;
     patchCard(c.id, { state: "cancelled", message: undefined });
     addNote(`Change cancelled: ${describeChange(c)}`);
+  }
+
+  function clear() {
+    const anyOpen = state.turns.some((t) => t.cards?.some((c) => c.state === "open"));
+    if (anyOpen && !window.confirm("Clear the conversation? Unconfirmed changes will be dropped.")) return;
+    setFailure(null);
+    onChange(EMPTY_ASK);
   }
 
   const shown = state.turns.filter((t) => t.role !== "note");
 
   return (
     <div className="flex flex-1 flex-col gap-3">
+      {state.turns.length > 0 && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className="min-h-[44px] rounded-xl bg-neutral-100 px-4 text-[16px] font-medium text-blue-700 active:bg-neutral-200 disabled:opacity-50 dark:bg-white/10 dark:text-blue-300 dark:active:bg-white/20"
+            disabled={busy}
+            onClick={clear}
+          >
+            Clear
+          </button>
+        </div>
+      )}
       <div className="flex flex-1 flex-col gap-3" aria-label="Conversation">
         {shown.length === 0 && (
           <div className="flex flex-col gap-2 pt-2">
@@ -281,6 +318,7 @@ export default function AskPanel({
         <button
           type="button"
           className={`${primaryButton} !min-h-[44px] !w-auto shrink-0 !px-5`}
+          aria-label="Send question"
           disabled={busy || state.draft.trim() === ""}
           onClick={() => void send()}
         >
