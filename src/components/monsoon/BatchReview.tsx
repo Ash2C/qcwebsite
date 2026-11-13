@@ -93,10 +93,12 @@ export default function BatchReview({
   const tidying = Object.keys(tidyCounts).length > 0;
   const runRef = useRef(false);
 
+  // A save run and a spoken-notes tidy both lock the estate buttons and the mode switch.
+  const inFlight = running || tidying;
   useEffect(() => {
-    onRunning?.(running);
+    onRunning?.(inFlight);
     return () => onRunning?.(false);
-  }, [running, onRunning]);
+  }, [inFlight, onRunning]);
 
   function setRowBusy(id: string, busy: boolean) {
     setTidyCounts((counts) => {
@@ -204,7 +206,14 @@ export default function BatchReview({
     try {
       const res = await saveCard(body);
       if (res.status === 401) {
-        patchRow(row.id, { status: "pending" });
+        // The answer given in this attempt is not kept: a row that had a prompt shows it again,
+        // any other row is a plain pending one.
+        patchRow(
+          row.id,
+          row.prompt
+            ? { status: "needs", prompt: row.prompt, message: row.message, newOrg: undefined, samePerson: undefined }
+            : { status: "pending", newOrg: undefined, samePerson: undefined },
+        );
         onUnauthorized();
         return false;
       }

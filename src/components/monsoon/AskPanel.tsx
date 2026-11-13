@@ -27,6 +27,7 @@ export const EMPTY_ASK: AskState = { turns: [], draft: "" };
 
 const MAX_SENT = 24;
 const MAX_SENT_CHARS = 50_000;
+const MAX_DRAFT = 2000;
 const ASK_FAILURE = "Could not get an answer. Check signal and try again.";
 const SAVE_FAILURE = "Could not save. Check signal and try again.";
 const SUGGESTIONS = ["Who should I chase this week?", "Summarise the pipeline", "Tell me about "];
@@ -36,6 +37,15 @@ function localDate(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// What the server counts for a message: its text, plus the ids, names and companies of its refs.
+function size(m: AskMessage): number {
+  let n = m.content.length;
+  if (m.role === "assistant") {
+    for (const r of m.refs ?? []) n += r.memberId.length + r.name.length + (r.company?.length ?? 0) + (r.personId?.length ?? 0);
+  }
+  return n;
 }
 
 // Notes go to the model as assistant turns. Only the last 24 are sent, and never starting with an assistant turn.
@@ -48,10 +58,10 @@ function toMessages(turns: AskTurn[]): AskMessage[] {
         : { role: "assistant", content: t.content },
   );
   const last = all.slice(-MAX_SENT);
-  let total = last.reduce((n, m) => n + m.content.length, 0);
+  let total = last.reduce((n, m) => n + size(m), 0);
   // Drop the oldest until the total fits, never leaving an assistant turn first.
   while (last.length > 0 && (last[0].role === "assistant" || total > MAX_SENT_CHARS)) {
-    total -= last.shift()!.content.length;
+    total -= size(last.shift()!);
   }
   return last;
 }
@@ -128,7 +138,7 @@ export default function AskPanel({
 
   async function send() {
     const question = state.draft;
-    if (askRef.current || busy || question.trim() === "") return;
+    if (askRef.current || busy || question.trim() === "" || question.length > MAX_DRAFT) return;
     askRef.current = true;
     setAsking(true);
     setFailure(null);
@@ -136,12 +146,12 @@ export default function AskPanel({
     const turn: AskTurn = { id: crypto.randomUUID(), role: "user", content: question.trim() };
     const messages = toMessages([...state.turns, turn]);
     onChange((prev) => ({ turns: [...prev.turns, turn], draft: "" }));
-    // Text typed while waiting is kept: the failed question goes back above it.
+    // Text typed while waiting is kept: the failed question goes back above it, clipped to the draft limit.
     const restore = () =>
       onChange((prev) => ({
         turns: prev.turns.filter((t) => t.id !== turn.id),
-        draft: prev.draft.trim() === "" ? question : `${question}
-${prev.draft}`,
+        draft: (prev.draft.trim() === "" ? question : `${question}
+${prev.draft}`).slice(0, MAX_DRAFT),
       }));
     try {
       const res = await askCrm({ estate: estate.key, today: localDate(), messages });
@@ -229,7 +239,8 @@ ${prev.draft}`,
     const anyOpen = state.turns.some((t) => t.cards?.some((c) => c.state === "open"));
     if (anyOpen && !window.confirm("Clear the conversation? Unconfirmed changes will be dropped.")) return;
     setFailure(null);
-    onChange(EMPTY_ASK);
+    // Whatever is typed in the draft stays.
+    onChange((prev) => ({ turns: [], draft: prev.draft }));
   }
 
   const shown = state.turns.filter((t) => t.role !== "note");

@@ -201,6 +201,19 @@ describe("AskPanel", () => {
     expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Why?");
   });
 
+  it("a timed-out question releases the busy report and can be sent again", async () => {
+    const user = userEvent.setup();
+    const onBusy = vi.fn();
+    m.askCrm.mockRejectedValueOnce(new DOMException("The operation timed out.", "TimeoutError"));
+    render(<Harness onBusy={onBusy} />);
+    await ask(user, "Why?");
+    expect(await screen.findByText("Could not get an answer. Check signal and try again.")).toBeInTheDocument();
+    await waitFor(() => expect(onBusy).toHaveBeenLastCalledWith(false));
+    m.askCrm.mockResolvedValueOnce(answer("Because."));
+    await user.click(screen.getByRole("button", { name: "Send question" }));
+    expect(await screen.findByText("Because.")).toBeInTheDocument();
+  });
+
   it("a 401 restores the question and calls onUnauthorized", async () => {
     const user = userEvent.setup();
     const onUnauthorized = vi.fn();
@@ -346,6 +359,26 @@ describe("AskPanel", () => {
       expect(await screen.findByText("Saved.")).toBeInTheDocument();
     });
 
+    it("a confirm that fails by network or timeout reopens the card and releases the busy report", async () => {
+      const user = userEvent.setup();
+      const onBusy = vi.fn();
+      m.askCrm.mockResolvedValueOnce(answer("Sure.", [NOTE_PROPOSAL]));
+      render(<Harness onBusy={onBusy} />);
+      await ask(user, "Note it");
+      await screen.findByText("Sure.");
+      m.actOnCrm.mockRejectedValueOnce(new DOMException("The operation timed out.", "TimeoutError"));
+      await user.click(screen.getByRole("button", { name: "Confirm" }));
+      expect(await screen.findByText("Could not save. Check signal and try again.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+      await waitFor(() => expect(onBusy).toHaveBeenLastCalledWith(false));
+      // The lock is released: a second try goes through.
+      m.actOnCrm.mockResolvedValueOnce({ status: 200, body: { status: "ok", message: "Saved." } });
+      await user.click(screen.getByRole("button", { name: "Confirm" }));
+      expect(await screen.findByText("Saved.")).toBeInTheDocument();
+      expect(m.actOnCrm).toHaveBeenCalledTimes(2);
+    });
+
     it("a 401 on confirm reopens the card and calls onUnauthorized", async () => {
       const user = userEvent.setup();
       const onUnauthorized = vi.fn();
@@ -467,7 +500,75 @@ describe("AskPanel", () => {
     expect(sent.length).toBe(3);
   });
 
+  it("counts the ids, names and companies of refs toward the 50,000 characters, as the server does", async () => {
+    const user = userEvent.setup();
+    const ref = { memberId: "m".repeat(36), name: "n".repeat(200), company: "c".repeat(200), kind: "person" as const, personId: "p".repeat(36) };
+    const refs = Array.from({ length: 30 }, () => ref); // 30 x 472 = 14,160 characters of ref text
+    const content = "y".repeat(10_000);
+    const turns: AskTurn[] = [
+      { id: "u1", role: "user", content },
+      { id: "a1", role: "assistant", content, refs },
+      { id: "u2", role: "user", content },
+      { id: "a2", role: "assistant", content, refs },
+      { id: "u3", role: "user", content },
+      { id: "a3", role: "assistant", content, refs },
+    ];
+    // Text alone is 60,000 (+ "next"): the old count dropped two turns. With refs the total is far higher.
+    m.askCrm.mockResolvedValue(answer("ok"));
+    render(<Harness initial={{ turns, draft: "" }} />);
+    await ask(user, "next");
+    await screen.findByText("ok");
+    const sent = m.askCrm.mock.calls[0][0].messages;
+    const size = (x: (typeof sent)[number]) =>
+      x.content.length +
+      (x.role === "assistant" ? (x.refs ?? []).reduce((n, r) => n + r.memberId.length + r.name.length + (r.company?.length ?? 0) + (r.personId?.length ?? 0), 0) : 0);
+    expect(sent.reduce((n, x) => n + size(x), 0)).toBeLessThanOrEqual(50_000);
+    expect(sent[0].role).toBe("user");
+    expect(sent[sent.length - 1]).toEqual({ role: "user", content: "next" });
+    // Without counting refs, four turns of 10,000 (+ next) would have been sent; with them fewer fit.
+    expect(sent.length).toBeLessThan(5);
+  });
+
+  it("clips a restored draft to 2,000 characters", async () => {
+    const user = userEvent.setup();
+    let resolve!: (v: never) => void;
+    m.askCrm.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+    render(<Harness />);
+    const box = screen.getByRole("textbox", { name: "Your question" });
+    await user.click(box);
+    await user.paste("q".repeat(1990));
+    await user.click(screen.getByRole("button", { name: "Send question" }));
+    await user.type(box, "t".repeat(30));
+    resolve({ status: 502, body: { error: "x" } } as never);
+    await screen.findByText("Could not get an answer. Check signal and try again.");
+    const value = (box as HTMLTextAreaElement).value;
+    expect(value.length).toBe(2000);
+    expect(value.startsWith("q".repeat(1990))).toBe(true);
+  });
+
+  it("send does nothing for a draft over 2,000 characters", async () => {
+    const user = userEvent.setup();
+    const turns: AskTurn[] = [];
+    render(<Harness initial={{ turns, draft: "z".repeat(2001) }} />);
+    const send = screen.getByRole("button", { name: "Send question" });
+    await user.click(send);
+    expect(m.askCrm).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("z".repeat(2001));
+  });
+
   describe("Clear", () => {
+    it("keeps whatever is typed in the draft", async () => {
+      const user = userEvent.setup();
+      m.askCrm.mockResolvedValue(answer("ok"));
+      render(<Harness />);
+      await ask(user, "hi");
+      await screen.findByText("ok");
+      await user.type(screen.getByRole("textbox", { name: "Your question" }), "half a thought");
+      await user.click(screen.getByRole("button", { name: "Clear" }));
+      expect(screen.queryByText("ok")).toBeNull();
+      expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("half a thought");
+    });
+
     it("is hidden when empty, then clears the conversation", async () => {
       const user = userEvent.setup();
       m.askCrm.mockResolvedValue(answer("ok"));

@@ -135,6 +135,21 @@ describe("SpeakNotes", () => {
     expect(await screen.findByText("Could not tidy the notes.")).toBeInTheDocument();
   });
 
+  it("a timed-out or failed request releases the busy report and Apply works again", async () => {
+    const user = userEvent.setup();
+    m.refineCard.mockRejectedValueOnce(new DOMException("The operation timed out.", "TimeoutError"));
+    render(<Harness />);
+    await openIt(user);
+    await user.type(screen.getByRole("textbox"), "x");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    expect(await screen.findByText("Could not tidy the notes.")).toBeInTheDocument();
+    expect(onBusy.mock.calls.map((c) => c[0])).toEqual([true, false]);
+    expect(screen.getByRole("button", { name: "Apply" })).toBeEnabled();
+    m.refineCard.mockResolvedValueOnce({ status: 200, body: RESULT } as never);
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(onApply).toHaveBeenCalledTimes(1));
+  });
+
   it("Apply cannot be double-submitted", async () => {
     const user = userEvent.setup();
     let resolve!: (v: never) => void;

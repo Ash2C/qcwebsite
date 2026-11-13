@@ -191,6 +191,50 @@ describe("MonsoonApp", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   });
 
+  it("a photo read that fails by network or timeout shows the failure and releases the locks", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.readCards.mockRejectedValue(new DOMException("The operation timed out.", "TimeoutError"));
+    render(<MonsoonApp />);
+    await ready();
+    await pickPhoto(user);
+    expect(
+      await screen.findByText("Could not read the photo. Try again or type the details."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Zero One" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Ask" })).toBeEnabled();
+    expect(document.querySelector('input[type="file"]')).toBeEnabled();
+    expect(screen.getByText("Take photo")).toBeInTheDocument();
+  });
+
+  it("a save that fails by timeout shows the failure and the Save button works again", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.saveCard
+      .mockRejectedValueOnce(new DOMException("The operation timed out.", "TimeoutError"))
+      .mockResolvedValueOnce({ status: 200, body: { outcome: "added", person: "p", org: null } } as never);
+    render(<MonsoonApp />);
+    await ready();
+    await typeName(user);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Could not save. Check signal and try again.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Ask" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(2));
+  });
+
+  it("a sign-in that fails by timeout shows the message and the form works again", async () => {
+    const user = userEvent.setup();
+    m.loadEstates.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } });
+    m.signIn.mockRejectedValueOnce(new DOMException("The operation timed out.", "TimeoutError"));
+    render(<MonsoonApp />);
+    await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(await screen.findByText("Could not sign in. Check signal and try again.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unlock" })).toBeEnabled();
+  });
+
   it("saves and clears", async () => {
     const user = userEvent.setup();
     signedIn();
@@ -693,6 +737,28 @@ describe("MonsoonApp", () => {
     expect(screen.getByRole("button", { name: "Zero One" })).toBeDisabled();
     resolve({ status: 200, body: { cards: [CARD] } } as never);
     await waitFor(() => expect(screen.getByRole("button", { name: "Zero One" })).toBeEnabled());
+  });
+
+  it("a spoken-notes tidy on a batch card locks the Ask switch and the estate buttons until it finishes", async () => {
+    const user = userEvent.setup();
+    let resolve!: (v: never) => void;
+    m.refineCard.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+    await openBatch(user);
+    expect(screen.getByRole("button", { name: "Ask" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: /Jane Tan/ }));
+    await user.click(screen.getByRole("button", { name: "Speak notes" }));
+    await user.type(screen.getByRole("textbox", { name: "Spoken notes" }), "likes tea");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(m.refineCard).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled());
+    expect(screen.getByRole("button", { name: "Zero One" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Traxo" })).toBeDisabled();
+    resolve({
+      status: 200,
+      body: { fields: { name: "Jane Tan", title: "Partner", org: "Acme Capital", email: "jane@acme.com", phone: "", linkedin: "" }, notes: "likes tea" },
+    } as never);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Ask" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Zero One" })).toBeEnabled();
   });
 
   it("a reload of estates keeps the estate an open batch was started in, even if it is now unavailable", async () => {

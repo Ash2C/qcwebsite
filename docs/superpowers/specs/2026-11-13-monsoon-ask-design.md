@@ -156,9 +156,12 @@ Vincent described outcomes; the choice of A is Claude's call.
 - Session check first, as on every Monsoon route.
 - The server calls Claude with a system instruction, the conversation, and the tool list; runs the
   tools the model asks for against the selected estate's database; feeds results back; repeats until
-  the model answers in text. At most 6 rounds of tool use and 40 seconds in total, measured from the
-  start of the request including the database connection; past either, the model is asked once, with
-  no tools, to answer from what it has and say the question was too big. Each model call has its own
+  the model answers in text. At most 6 rounds of tool use, and a 50-second deadline measured from the
+  start of the request including the database connection. No new model round starts with under 8
+  seconds left and no tool starts with under 15 seconds left (each tool's statement timeout is also
+  held to what remains, minus 3 seconds); the final answer call is skipped with under 5 seconds left.
+  Past either limit, the model is asked once, with no tools, to answer from what it has and say the
+  question was too big. Each model call has its own
   timeout so the whole request ends inside the 60-second function limit. If the Vercel plan does not
   allow 60 seconds (checked at deploy), the limit is 30 and the budget 22.
 - The system instruction carries: today's date; the estate's label; its stages in order (with which
@@ -230,7 +233,10 @@ or cancelled on its own. Asking another question leaves open cards open.
   `<name> is now in <stage>; nothing changed.` (the pipeline moved since he asked).
 - **Double tap or retry:** the browser disables Confirm on the first tap. Server side, a stage move is
   naturally safe to repeat. For a note, `act` refuses to insert a second identical note (same member,
-  same text, by VF) within two minutes and reports the first as done.
+  same text, by VF) within two minutes and reports the first as done. A signed proposal can be
+  confirmed again within its 30 minutes (after a dropped connection, say); the two-minute identical-note
+  check and the stage check (a stage move whose member is already in the target stage, or has moved on
+  since, changes nothing) make that harmless.
 - Any stage is allowed, including terminal ones and moves backwards, because the core allows it; the
   card makes the move visible.
 

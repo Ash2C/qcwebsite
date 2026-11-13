@@ -187,6 +187,60 @@ describe("BatchReview", () => {
     expect(m.saveCard.mock.calls[1][0].samePerson).toBe(false);
   });
 
+  it("a 401 on a prompt answer puts the prompt back and drops the answer; a later edit and Save all send none", async () => {
+    const user = userEvent.setup();
+    const same = {
+      status: 200,
+      body: { outcome: "same_name", matches: [{ personId: "pid-1", org: "Old Co" }] },
+    } as never;
+    m.saveCard
+      .mockResolvedValueOnce(same)
+      .mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never);
+    show([JANE]);
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await user.click(await screen.findByRole("button", { name: "Same person (Old Co)" }));
+    await waitFor(() => expect(handlers.onUnauthorized).toHaveBeenCalledTimes(1));
+    expect(m.saveCard.mock.calls[1][0].samePerson).toBe("pid-1");
+    // After re-login the row shows its question again, with its buttons.
+    expect(screen.getByText("Jane Tan is already on file at Old Co. Same person?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Same person (Old Co)" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Different person" })).toBeEnabled();
+    expect(screen.queryByText("Saving…")).toBeNull();
+    expect(screen.getByRole("button", { name: "Save all (0)" })).toBeDisabled();
+    // A hand edit starts a fresh attempt, which carries no samePerson.
+    await open(user, "Jane Tan");
+    await user.type(screen.getByLabelText("Company"), "x");
+    expect(screen.queryByRole("button", { name: "Same person (Old Co)" })).toBeNull();
+    m.saveCard.mockResolvedValueOnce(added);
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await screen.findByText("1 saved to Traxo.");
+    expect(m.saveCard.mock.calls[2][0].samePerson).toBeUndefined();
+    expect(m.saveCard.mock.calls[2][0].newOrg).toBeUndefined();
+  });
+
+  it("a 401 on a row without a prompt leaves it pending with no answers", async () => {
+    const user = userEvent.setup();
+    m.saveCard
+      .mockResolvedValueOnce({ status: 200, body: { outcome: "org_lookalike", similar: ["Wu Company"] } } as never)
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never)
+      .mockResolvedValueOnce(added);
+    show([CY]);
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await user.click(await screen.findByRole("button", { name: "It's a different company" }));
+    await screen.findByText("Could not save. Retry.");
+    expect(m.saveCard.mock.calls[1][0].newOrg).toBe(true);
+    // The failed row kept its answer (newOrg) for a retry; the retry gets a 401.
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await waitFor(() => expect(handlers.onUnauthorized).toHaveBeenCalledTimes(1));
+    expect(m.saveCard.mock.calls[2][0].newOrg).toBe(true);
+    expect(screen.queryByText("Could not save. Retry.")).toBeNull();
+    // Pending again, and the next attempt no longer carries the answer.
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await screen.findByText("1 saved to Traxo.");
+    expect(m.saveCard.mock.calls[3][0].newOrg).toBeUndefined();
+  });
+
   it("an ambiguous card needs the company: message, no buttons", async () => {
     const user = userEvent.setup();
     m.saveCard.mockResolvedValue({ status: 200, body: { outcome: "ambiguous", count: 2 } } as never);
@@ -433,6 +487,48 @@ describe("BatchReview", () => {
       await open(user, "Jane Tan");
       await speak(user, "company is Acme Group");
       expect(await screen.findByRole("button", { name: "Save all (1)" })).toBeEnabled();
+    });
+
+    it("reports running to the parent while a tidy is pending, and releases it afterwards", async () => {
+      const user = userEvent.setup();
+      let resolve!: (v: never) => void;
+      m.refineCard.mockImplementation(() => new Promise((r) => (resolve = r as never)));
+      show([JANE]);
+      expect(handlers.onRunning).toHaveBeenLastCalledWith(false);
+      await open(user, "Jane Tan");
+      await user.click(screen.getByRole("button", { name: "Speak notes" }));
+      await user.type(screen.getByRole("textbox", { name: "Spoken notes" }), "likes tea");
+      await user.click(screen.getByRole("button", { name: "Apply" }));
+      await waitFor(() => expect(handlers.onRunning).toHaveBeenLastCalledWith(true));
+      resolve({ status: 200, body: { fields: JANE, notes: "n" } } as never);
+      await waitFor(() => expect(handlers.onRunning).toHaveBeenLastCalledWith(false));
+    });
+
+    it("releases the running report when the component unmounts mid-tidy", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockImplementation(() => new Promise(() => {}));
+      show([JANE]);
+      await open(user, "Jane Tan");
+      await user.click(screen.getByRole("button", { name: "Speak notes" }));
+      await user.type(screen.getByRole("textbox", { name: "Spoken notes" }), "likes tea");
+      await user.click(screen.getByRole("button", { name: "Apply" }));
+      await waitFor(() => expect(handlers.onRunning).toHaveBeenLastCalledWith(true));
+      cleanup();
+      expect(handlers.onRunning).toHaveBeenLastCalledWith(false);
+    });
+
+    it("a tidy that fails by network or timeout releases the card and the running report", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockRejectedValue(new Error("timed out"));
+      show([JANE]);
+      await open(user, "Jane Tan");
+      await user.click(screen.getByRole("button", { name: "Speak notes" }));
+      await user.type(screen.getByRole("textbox", { name: "Spoken notes" }), "likes tea");
+      await user.click(screen.getByRole("button", { name: "Apply" }));
+      expect(await screen.findByText("Could not tidy the notes.")).toBeInTheDocument();
+      await waitFor(() => expect(handlers.onRunning).toHaveBeenLastCalledWith(false));
+      expect(screen.getByRole("button", { name: "Save all (1)" })).toBeEnabled();
+      expect(screen.getByLabelText("Name")).not.toHaveAttribute("readonly");
     });
 
     it("a saved card offers no Speak notes, and an unsaved one is disabled during a save", async () => {
