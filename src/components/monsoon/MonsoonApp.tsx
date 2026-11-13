@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CardFields } from "@/lib/monsoon/extract";
 import type { CaptureResult } from "@/lib/monsoon/capture";
-import { loadEstates, readCard, saveCard, signIn, type EstateInfo, type SaveBody } from "./api";
+import { loadEstates, readCards, saveCard, signIn, type EstateInfo, type SaveBody } from "./api";
 import { downsizeImage } from "./image";
 
 const STORAGE_KEY = "monsoon.estate";
@@ -20,6 +20,7 @@ type Form = {
 };
 
 const EMPTY_FORM: Form = { name: "", title: "", org: "", email: "", phone: "", linkedin: "", notes: "" };
+const EMPTY_CARD: CardFields = { name: "", title: "", org: "", email: "", phone: "", linkedin: "", raw_text: "" };
 
 type Phase = "loading" | "locked" | "failed" | "app";
 type Message = { tone: "ok" | "info" | "error"; text: string };
@@ -156,13 +157,15 @@ export default function MonsoonApp() {
     setReading(true);
     try {
       const blob = await downsizeImage(file);
-      const res = await readCard(blob);
+      const res = await readCards(blob);
       if (res.status === 401) {
         setPhase("locked");
         return;
       }
-      if (res.status === 200 && "fields" in res.body) {
-        const f = res.body.fields;
+      if (res.status === 200 && "cards" in res.body) {
+        // Batch review comes later: for now the first card fills the form. No card
+        // found reads as an empty card, so the form is cleared for typing by hand.
+        const f = res.body.cards[0] ?? EMPTY_CARD;
         setExtracted(f);
         setForm((prev) => ({
           name: f.name ?? "",

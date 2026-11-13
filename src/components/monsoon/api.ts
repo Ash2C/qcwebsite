@@ -59,9 +59,9 @@ export async function loadEstates(): Promise<
   return parse(await fetch("/api/monsoon/estates", { cache: "no-store" }));
 }
 
-export async function readCard(
+export async function readCards(
   image: Blob,
-): Promise<ApiResult<{ fields: CardFields } | { error: string }>> {
+): Promise<ApiResult<{ cards: CardFields[] } | { error: string }>> {
   const form = new FormData();
   form.append("image", image, "card.jpg");
   return parse(await fetch("/api/monsoon/read", { method: "POST", body: form }));

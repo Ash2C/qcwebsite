@@ -1,5 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 
+// Upper bound on cards kept from one photo.
+export const MAX_CARDS = 12;
+
 export type CardFields = {
   name: string;
   title: string;
@@ -21,7 +24,7 @@ const KEYS: (keyof CardFields)[] = [
 ];
 
 const SYSTEM_PROMPT =
-  "You read one photo of a business card or conference name badge. Respond once with a JSON object containing the seven fields. Copy each value exactly as printed. If a value is not printed on the card, leave that field as an empty string; never guess or infer one. `name` is the person's name only. `org` is the company or organisation. `linkedin` is a LinkedIn URL or handle if printed. `raw_text` is all legible text on the card, line by line. If the photo is not a card or badge, or nothing is legible, return every field empty.";
+  "You read one photo that may show one or several business cards or conference name badges. Return one entry in `cards` for each separate card or badge, in reading order: top to bottom, then left to right. Never merge two cards into one entry and never split one card into two. Copy each value exactly as printed on that card. If a value is not printed on that card, leave that field as an empty string; never guess, infer, or borrow a value from another card. `name` is the person's name only. `org` is the company or organisation. `linkedin` is a LinkedIn URL or handle if printed. `raw_text` is all legible text on that card, line by line. If the photo shows no card or badge, or nothing is legible, return an empty `cards` list.";
 
 export function resolveModel(): string {
   const model = process.env.MONSOON_MODEL || "claude-haiku-5-5";
@@ -31,10 +34,10 @@ export function resolveModel(): string {
   return model;
 }
 
-export async function extractCard(image: {
+export async function extractCards(image: {
   base64: string;
   mediaType: "image/jpeg" | "image/png" | "image/webp";
-}): Promise<CardFields> {
+}): Promise<CardFields[]> {
   // Resolved per call so a bad MONSOON_MODEL fails the read, not the build.
   const model = resolveModel();
   const client = new Anthropic({ timeout: 25_000, maxRetries: 1 });
@@ -50,8 +53,18 @@ export async function extractCard(image: {
         type: "json_schema",
         schema: {
           type: "object",
-          properties: Object.fromEntries(KEYS.map((k) => [k, { type: "string" }])),
-          required: [...KEYS],
+          properties: {
+            cards: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: Object.fromEntries(KEYS.map((k) => [k, { type: "string" }])),
+                required: [...KEYS],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ["cards"],
           additionalProperties: false,
         },
       },
@@ -68,32 +81,41 @@ export async function extractCard(image: {
               data: image.base64,
             },
           },
-          { type: "text", text: "Read this card." },
+          { type: "text", text: "Read every card in this photo." },
         ],
       },
     ],
   });
 
-  // A refusal, a max_tokens stop or unparseable JSON all read as "nothing found".
-  let input: Record<string, unknown> = {};
-  if (response.stop_reason !== "refusal" && response.stop_reason !== "max_tokens") {
-    const text = response.content
-      .map((b) => (b.type === "text" ? b.text : ""))
-      .join("");
-    try {
-      const parsed: unknown = JSON.parse(text);
-      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-        input = parsed as Record<string, unknown>;
-      }
-    } catch {
-      // fall through with empty input
-    }
+  // A refusal, a max_tokens stop or unparseable JSON all read as "no cards found".
+  if (response.stop_reason === "refusal" || response.stop_reason === "max_tokens") {
+    return [];
   }
+  const text = response.content.map((b) => (b.type === "text" ? b.text : "")).join("");
+  let list: unknown;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    list =
+      typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as { cards?: unknown }).cards
+        : undefined;
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(list)) return [];
 
-  const out = {} as CardFields;
-  for (const k of KEYS) {
-    const v = input[k];
-    out[k] = typeof v === "string" ? v.trim() : "";
+  const cards: CardFields[] = [];
+  for (const item of list) {
+    if (cards.length >= MAX_CARDS) break;
+    if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+    const input = item as Record<string, unknown>;
+    const card = {} as CardFields;
+    for (const k of KEYS) {
+      const v = input[k];
+      card[k] = typeof v === "string" ? v.trim() : "";
+    }
+    // A card with all seven fields empty carries nothing; drop it.
+    if (KEYS.some((k) => card[k] !== "")) cards.push(card);
   }
-  return out;
+  return cards;
 }

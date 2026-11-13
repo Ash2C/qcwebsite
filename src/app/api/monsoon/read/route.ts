@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/monsoon/auth";
-import { extractCard } from "@/lib/monsoon/extract";
+import { extractCards } from "@/lib/monsoon/extract";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,11 +46,11 @@ export async function POST(request: Request) {
 
   try {
     const base64 = Buffer.from(await file.arrayBuffer()).toString("base64");
-    const fields = await extractCard({
+    const cards = await extractCards({
       base64,
       mediaType: file.type as MediaType,
     });
-    return NextResponse.json({ fields });
+    return NextResponse.json({ cards });
   } catch (err) {
     // Error name only: never the photo, the base64 or the card details.
     const status = (err as { status?: unknown })?.status;

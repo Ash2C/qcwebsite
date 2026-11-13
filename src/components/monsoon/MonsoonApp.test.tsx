@@ -11,7 +11,7 @@ import { downsizeImage } from "./image";
 vi.mock("./api", () => ({
   signIn: vi.fn(),
   loadEstates: vi.fn(),
-  readCard: vi.fn(),
+  readCards: vi.fn(),
   saveCard: vi.fn(),
 }));
 vi.mock("./image", () => ({
@@ -163,12 +163,12 @@ describe("MonsoonApp", () => {
   it("fills the form from a photo", async () => {
     const user = userEvent.setup();
     signedIn();
-    m.readCard.mockResolvedValue({ status: 200, body: { fields: CARD } });
+    m.readCards.mockResolvedValue({ status: 200, body: { cards: [CARD] } });
     render(<MonsoonApp />);
     await ready();
     await pickPhoto(user);
     await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan"));
-    expect(m.readCard).toHaveBeenCalledTimes(1);
+    expect(m.readCards).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText("Company")).toHaveValue("Acme Capital");
     expect(screen.getByLabelText("Email")).toHaveValue("jane@acme.com");
   });
@@ -176,7 +176,7 @@ describe("MonsoonApp", () => {
   it("read failure keeps the form usable", async () => {
     const user = userEvent.setup();
     signedIn();
-    m.readCard.mockResolvedValue({ status: 502, body: { error: "x" } });
+    m.readCards.mockResolvedValue({ status: 502, body: { error: "x" } });
     render(<MonsoonApp />);
     await ready();
     await pickPhoto(user);
@@ -191,7 +191,7 @@ describe("MonsoonApp", () => {
   it("saves and clears", async () => {
     const user = userEvent.setup();
     signedIn();
-    m.readCard.mockResolvedValue({ status: 200, body: { fields: CARD } });
+    m.readCards.mockResolvedValue({ status: 200, body: { cards: [CARD] } });
     m.saveCard.mockResolvedValue({
       status: 200,
       body: { outcome: "added", person: "6f1c2a3e-0000-4000-8000-000000000001", org: "Acme Capital", role: "lp_prospect", filled: [] },
@@ -514,7 +514,7 @@ describe("MonsoonApp", () => {
   it("a new photo keeps Notes the user already typed", async () => {
     const user = userEvent.setup();
     signedIn();
-    m.readCard.mockResolvedValue({ status: 200, body: { fields: CARD } });
+    m.readCards.mockResolvedValue({ status: 200, body: { cards: [CARD] } });
     render(<MonsoonApp />);
     await ready();
     await user.type(screen.getByLabelText("Notes"), "met at SFF");

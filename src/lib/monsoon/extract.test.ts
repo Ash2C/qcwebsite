@@ -13,7 +13,7 @@ vi.mock("@anthropic-ai/sdk", () => ({
   },
 }));
 
-import { extractCard, resolveModel } from "./extract";
+import { extractCards, resolveModel } from "./extract";
 
 const KEYS = ["name", "title", "org", "email", "phone", "linkedin", "raw_text"];
 const EMPTY = {
@@ -67,10 +67,12 @@ describe("resolveModel", () => {
   );
 });
 
-describe("extractCard", () => {
-  it("sends the image with a JSON-schema output format and no forced tool", async () => {
-    create.mockResolvedValue(reply({}));
-    await extractCard({ base64: "QUJD", mediaType: "image/png" });
+const IMG = { base64: "x", mediaType: "image/jpeg" } as const;
+
+describe("extractCards", () => {
+  it("sends the image with a cards-list JSON schema and no forced tool", async () => {
+    create.mockResolvedValue(reply({ cards: [] }));
+    await extractCards({ base64: "QUJD", mediaType: "image/png" });
     expect(create).toHaveBeenCalledTimes(1);
     expect(ctorOptions.at(-1)).toEqual({ timeout: 25_000, maxRetries: 1 });
     const args = create.mock.calls[0][0];
@@ -81,64 +83,84 @@ describe("extractCard", () => {
       type: "image",
       source: { type: "base64", media_type: "image/png", data: "QUJD" },
     });
+    expect(blocks).toContainEqual({ type: "text", text: "Read every card in this photo." });
     expect(args.tools).toBeUndefined();
     expect(args.tool_choice).toBeUndefined();
     expect(args.output_config.format.type).toBe("json_schema");
     const schema = args.output_config.format.schema;
-    expect(Object.keys(schema.properties).sort()).toEqual([...KEYS].sort());
-    for (const k of KEYS) expect(schema.properties[k].type).toBe("string");
-    expect([...schema.required].sort()).toEqual([...KEYS].sort());
-    expect(schema.additionalProperties).toBe(false);
+    expect(schema.type).toBe("object");
+    expect(Object.keys(schema.properties)).toEqual(["cards"]);
+    expect(schema.required).toEqual(["cards"]);
+    const cards = schema.properties.cards;
+    expect(cards.type).toBe("array");
+    const item = cards.items;
+    expect(item.type).toBe("object");
+    expect(Object.keys(item.properties).sort()).toEqual([...KEYS].sort());
+    for (const k of KEYS) expect(item.properties[k].type).toBe("string");
+    expect([...item.required].sort()).toEqual([...KEYS].sort());
+    expect(item.additionalProperties).toBe(false);
   });
 
-  it("trims values and fills absent keys with empty strings", async () => {
-    create.mockResolvedValue(reply({ name: " Jane Tan ", org: "Acme" }));
-    const out = await extractCard({ base64: "x", mediaType: "image/jpeg" });
-    expect(out).toEqual({ ...EMPTY, name: "Jane Tan", org: "Acme" });
+  it("passes through each card separately", async () => {
+    create.mockResolvedValue(
+      reply({
+        cards: [
+          { name: " Jane Tan ", org: "Acme" },
+          { name: "Raj Mehta", email: "raj@corvane.example" },
+        ],
+      })
+    );
+    expect(await extractCards(IMG)).toEqual([
+      { ...EMPTY, name: "Jane Tan", org: "Acme" },
+      { ...EMPTY, name: "Raj Mehta", email: "raj@corvane.example" },
+    ]);
   });
 
-  it("returns empty fields when the model finds nothing", async () => {
-    create.mockResolvedValue(reply({}));
-    expect(await extractCard({ base64: "x", mediaType: "image/jpeg" })).toEqual(EMPTY);
+  it("caps at 12 and drops empty or malformed entries", async () => {
+    const many = Array.from({ length: 15 }, (_, i) => ({ name: `P${i}` }));
+    create.mockResolvedValue(reply({ cards: many }));
+    const out = await extractCards(IMG);
+    expect(out).toHaveLength(12);
+    expect(out[0].name).toBe("P0");
+    expect(out[11].name).toBe("P11");
+
+    create.mockResolvedValue(reply({ cards: [{}, { name: "" }, "x", null, 5, { name: "A" }] }));
+    expect(await extractCards(IMG)).toEqual([{ ...EMPTY, name: "A" }]);
+  });
+
+  it("turns non-string values into empty strings", async () => {
+    create.mockResolvedValue(reply({ cards: [{ name: 5, title: null, org: "Acme" }] }));
+    expect(await extractCards(IMG)).toEqual([{ ...EMPTY, org: "Acme" }]);
   });
 
   it.each([
-    ["unparseable JSON", reply("no card here")],
-    ["a JSON array", reply("[1]")],
-    ["a refusal", reply({ name: "Jane" }, "refusal")],
-    ["a max_tokens stop", reply('{"name": "Ja', "max_tokens")],
+    ["an empty list", reply({ cards: [] })],
+    ["no cards key", reply({})],
+    ["a non-array cards value", reply({ cards: "x" })],
+    ["a top-level array", reply([{ name: "Jane" }])],
+    ["unparseable text", reply("no card here")],
     ["no text block", { stop_reason: "end_turn", content: [] }],
-  ])("returns empty fields for %s", async (_label, response) => {
+    ["a refusal", reply({ cards: [{ name: "Jane" }] }, "refusal")],
+    ["a max_tokens stop", reply('{"cards": [{"name": "Ja', "max_tokens")],
+  ])("returns an empty list for %s", async (_label, response) => {
     create.mockResolvedValue(response);
-    expect(await extractCard({ base64: "x", mediaType: "image/jpeg" })).toEqual(EMPTY);
+    expect(await extractCards(IMG)).toEqual([]);
   });
 
   it("lets an API error throw", async () => {
     create.mockRejectedValue(new Error("boom"));
-    await expect(
-      extractCard({ base64: "x", mediaType: "image/jpeg" })
-    ).rejects.toThrow("boom");
-  });
-
-  it("turns non-string values into empty strings", async () => {
-    create.mockResolvedValue(reply({ name: 5, title: null, org: "Acme" }));
-    const out = await extractCard({ base64: "x", mediaType: "image/webp" });
-    expect(out).toEqual({ ...EMPTY, org: "Acme" });
+    await expect(extractCards(IMG)).rejects.toThrow("boom");
   });
 
   it("fails when MONSOON_MODEL is refused, before calling the API", async () => {
     vi.stubEnv("MONSOON_MODEL", "claude-opus-5-5");
-    await expect(
-      extractCard({ base64: "x", mediaType: "image/jpeg" })
-    ).rejects.toThrow("Opus or Fable");
+    await expect(extractCards(IMG)).rejects.toThrow("Opus or Fable");
     expect(create).not.toHaveBeenCalled();
   });
 
   it("fails when ANTHROPIC_API_KEY is missing", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "");
-    await expect(
-      extractCard({ base64: "x", mediaType: "image/jpeg" })
-    ).rejects.toThrow();
+    await expect(extractCards(IMG)).rejects.toThrow();
     expect(create).not.toHaveBeenCalled();
   });
 });
