@@ -1,0 +1,78 @@
+import { describe, expect, it } from "vitest";
+import { describeResult } from "./outcomes";
+
+const ctx = {
+  name: "Jane Tan",
+  org: "Acme Capital",
+  estateLabel: "Traxo",
+  roleLabel: (k: string) => (k === "lp_prospect" ? "LP prospect" : k),
+};
+const PERSON = "6f1c2a3e-0000-4000-8000-000000000001";
+
+describe("describeResult", () => {
+  it("added", () => {
+    expect(
+      describeResult({ outcome: "added", person: PERSON, org: null, role: "lp_prospect", filled: [] }, ctx),
+    ).toEqual({ kind: "done", text: "Jane Tan added to Traxo." });
+  });
+
+  it("existing with filled fields", () => {
+    expect(
+      describeResult(
+        { outcome: "existing", person: PERSON, org: null, role: "lp_prospect", filled: ["email", "phone"] },
+        ctx,
+      ),
+    ).toEqual({ kind: "done", text: "Jane Tan is already in Traxo as LP prospect; filled in email, phone." });
+  });
+
+  it("existing with nothing new", () => {
+    expect(
+      describeResult({ outcome: "existing", person: PERSON, org: null, role: "lp_prospect", filled: [] }, ctx),
+    ).toEqual({ kind: "done", text: "Jane Tan is already in Traxo as LP prospect; nothing new." });
+  });
+
+  it("duplicate", () => {
+    expect(describeResult({ outcome: "duplicate", person: PERSON, org: null }, ctx)).toEqual({
+      kind: "done",
+      text: "Jane Tan saved to Traxo.",
+    });
+  });
+
+  it("org_lookalike with one similar names it", () => {
+    expect(describeResult({ outcome: "org_lookalike", similar: ["Acme Capital Ltd"] }, ctx)).toEqual({
+      kind: "prompt",
+      text: "Acme Capital looks like Acme Capital Ltd, already on file.",
+      prompt: { kind: "org_lookalike", similar: ["Acme Capital Ltd"] },
+    });
+  });
+
+  it("org_lookalike with several does not name them", () => {
+    expect(describeResult({ outcome: "org_lookalike", similar: ["A", "B"] }, ctx)).toEqual({
+      kind: "prompt",
+      text: "Acme Capital looks like a company already on file.",
+      prompt: { kind: "org_lookalike", similar: ["A", "B"] },
+    });
+  });
+
+  it("same_name", () => {
+    const matches = [{ personId: "p1", org: "Beta" }];
+    expect(describeResult({ outcome: "same_name", matches }, ctx)).toEqual({
+      kind: "prompt",
+      text: "Jane Tan is already on file at Beta. Same person?",
+      prompt: { kind: "same_name", matches },
+    });
+  });
+
+  it("same_name with no company on the first match", () => {
+    expect(describeResult({ outcome: "same_name", matches: [{ personId: "p1", org: null }] }, ctx)).toMatchObject({
+      text: "Jane Tan is already on file at no company. Same person?",
+    });
+  });
+
+  it("ambiguous", () => {
+    expect(describeResult({ outcome: "ambiguous", orgs: ["A", null] }, ctx)).toEqual({
+      kind: "info",
+      text: "Several people are named Jane Tan. Add the company to say which one.",
+    });
+  });
+});

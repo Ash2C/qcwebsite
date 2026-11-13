@@ -5,6 +5,9 @@ import type { CardFields } from "@/lib/monsoon/extract";
 import type { CaptureResult } from "@/lib/monsoon/capture";
 import { loadEstates, readCards, saveCard, signIn, type EstateInfo, type SaveBody } from "./api";
 import { downsizeImage } from "./image";
+import BatchReview, { makeBatch, type Batch } from "./BatchReview";
+import { describeResult, type SavePrompt } from "./outcomes";
+import { card, fieldInput, fieldLabel, primaryButton, secondaryButton, FIELD_ROWS } from "./styles";
 
 const STORAGE_KEY = "monsoon.estate";
 const DEFAULT_ESTATE = "traxo";
@@ -19,15 +22,27 @@ type Form = {
   notes: string;
 };
 
-const EMPTY_FORM: Form = { name: "", title: "", org: "", email: "", phone: "", linkedin: "", notes: "" };
-const EMPTY_CARD: CardFields = { name: "", title: "", org: "", email: "", phone: "", linkedin: "", raw_text: "" };
+const EMPTY_FORM: Form = {
+  name: "",
+  title: "",
+  org: "",
+  email: "",
+  phone: "",
+  linkedin: "",
+  notes: "",
+};
+const EMPTY_CARD: CardFields = {
+  name: "",
+  title: "",
+  org: "",
+  email: "",
+  phone: "",
+  linkedin: "",
+  raw_text: "",
+};
 
 type Phase = "loading" | "locked" | "failed" | "app";
 type Message = { tone: "ok" | "info" | "error"; text: string };
-type Prompt =
-  | { kind: "org"; org: string; similar: string[] }
-  | { kind: "same"; name: string; matches: { personId: string; org: string | null }[] }
-  | null;
 
 function readStoredEstate(): string {
   try {
@@ -50,22 +65,9 @@ function storeEstate(key: string) {
   }
 }
 
-const card =
-  "rounded-2xl bg-white dark:bg-[#1c1c1e] shadow-sm ring-1 ring-black/5 dark:ring-white/10";
-const fieldInput =
-  "block w-full min-h-[44px] bg-transparent px-4 py-2.5 text-[17px] text-neutral-900 dark:text-white placeholder:text-neutral-400 dark:placeholder:text-neutral-500 focus:outline-none focus-visible:outline-none";
-const fieldLabel =
-  "block px-4 pt-2 text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400";
-const primaryButton =
-  "min-h-[52px] w-full rounded-2xl bg-blue-600 px-6 text-[17px] font-semibold text-white active:bg-blue-700 disabled:bg-neutral-300 disabled:text-neutral-500 dark:bg-blue-500 dark:active:bg-blue-600 dark:disabled:bg-neutral-700 dark:disabled:text-neutral-500";
-const secondaryButton =
-  "min-h-[44px] w-full rounded-xl bg-neutral-100 px-4 text-[16px] font-medium text-blue-700 active:bg-neutral-200 disabled:opacity-50 dark:bg-white/10 dark:text-blue-300 dark:active:bg-white/20";
-
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-dvh bg-[#f2f2f7] text-neutral-900 dark:bg-black dark:text-white">
-      {children}
-    </div>
+    <div className="min-h-dvh bg-[#f2f2f7] text-neutral-900 dark:bg-black dark:text-white">{children}</div>
   );
 }
 
@@ -79,16 +81,18 @@ export default function MonsoonApp() {
   const [captureId, setCaptureId] = useState<string | null>(null);
   const [newOrg, setNewOrg] = useState(false);
   const [message, setMessage] = useState<Message | null>(null);
-  const [prompt, setPrompt] = useState<Prompt>(null);
+  const [prompt, setPrompt] = useState<SavePrompt | null>(null);
   const [reading, setReading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [passcode, setPasscode] = useState("");
   const [passError, setPassError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
   const [samePerson, setSamePerson] = useState<string | false | undefined>(undefined);
+  const [batch, setBatch] = useState<Batch | null>(null);
   const savingRef = useRef(false);
 
   const estate = estates.find((e) => e.key === estateKey);
+  const batchStarted = batch?.rows.some((r) => r.status === "saved") ?? false;
 
   const load = useCallback(async () => {
     try {
@@ -135,9 +139,19 @@ export default function MonsoonApp() {
   }
 
   function chooseEstate(e: EstateInfo) {
-    if (!e.available) return;
+    if (!e.available || batchStarted) return;
     setEstateKey(e.key);
     setRole(startRole(e));
+    // Cards not yet saved follow the new estate: its start role, and no per-card role left over.
+    setBatch((b) =>
+      b
+        ? {
+            ...b,
+            role: startRole(e),
+            rows: b.rows.map((r) => ({ ...r, role: undefined })),
+          }
+        : b,
+    );
     storeEstate(e.key);
     dropPrompt();
     setSamePerson(undefined);
@@ -163,9 +177,15 @@ export default function MonsoonApp() {
         return;
       }
       if (res.status === 200 && "cards" in res.body) {
-        // Batch review comes later: for now the first card fills the form. No card
-        // found reads as an empty card, so the form is cleared for typing by hand.
-        const f = res.body.cards[0] ?? EMPTY_CARD;
+        const cards = res.body.cards;
+        if (cards.length >= 2) {
+          setCaptureId(null);
+          setBatch(makeBatch(cards, role, form.notes));
+          return;
+        }
+        // One card fills the form. No card found reads as an empty card, so the form
+        // is cleared for typing by hand.
+        const f = cards[0] ?? EMPTY_CARD;
         setExtracted(f);
         setForm((prev) => ({
           name: f.name ?? "",
@@ -177,10 +197,16 @@ export default function MonsoonApp() {
           notes: prev.notes,
         }));
       } else {
-        setMessage({ tone: "error", text: "Could not read the photo. Try again or type the details." });
+        setMessage({
+          tone: "error",
+          text: "Could not read the photo. Try again or type the details.",
+        });
       }
     } catch {
-      setMessage({ tone: "error", text: "Could not read the photo. Try again or type the details." });
+      setMessage({
+        tone: "error",
+        text: "Could not read the photo. Try again or type the details.",
+      });
     } finally {
       setReading(false);
     }
@@ -221,18 +247,31 @@ export default function MonsoonApp() {
         setPhase("locked");
         return;
       }
+      if (res.status === 200 && "outcome" in res.body && res.body.outcome === "invalid") {
+        setMessage({ tone: "error", text: res.body.error });
+        return;
+      }
       if (res.status === 400) {
         const error = (res.body as { error?: string }).error;
-        setMessage({ tone: "error", text: error || "Could not save. Check the details and try again." });
+        setMessage({
+          tone: "error",
+          text: error || "Could not save. Check the details and try again.",
+        });
         return;
       }
       if (res.status !== 200 || !("outcome" in res.body)) {
-        setMessage({ tone: "error", text: "Could not save. Check signal and try again." });
+        setMessage({
+          tone: "error",
+          text: "Could not save. Check signal and try again.",
+        });
         return;
       }
-      applyResult(res.body as CaptureResult, estate, fields.org, wantNewOrg);
+      applyResult(res.body as Exclude<CaptureResult, { outcome: "invalid" }>, estate, fields.org, wantNewOrg);
     } catch {
-      setMessage({ tone: "error", text: "Could not save. Check signal and try again." });
+      setMessage({
+        tone: "error",
+        text: "Could not save. Check signal and try again.",
+      });
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -249,51 +288,44 @@ export default function MonsoonApp() {
     setMessage({ tone: "ok", text });
   }
 
-  function applyResult(result: CaptureResult, e: EstateInfo, org: string, wantNewOrg: boolean) {
+  function applyResult(
+    result: Exclude<CaptureResult, { outcome: "invalid" }>,
+    e: EstateInfo,
+    org: string,
+    wantNewOrg: boolean,
+  ) {
     const name = form.name.trim();
-    switch (result.outcome) {
-      case "added":
-        finish(`${name} added to ${e.label}.`);
-        break;
-      case "existing": {
-        const r = roleLabel(result.role);
-        finish(
-          result.filled.length > 0
-            ? `${name} is already in ${e.label} as ${r}; filled in ${result.filled.join(", ")}.`
-            : `${name} is already in ${e.label} as ${r}; nothing new.`,
-        );
-        break;
-      }
-      case "duplicate":
-        finish(`${name} saved to ${e.label}.`);
-        break;
-      case "org_lookalike":
-        setPrompt({ kind: "org", org: org.trim(), similar: result.similar });
-        setMessage({
-          tone: "info",
-          text:
-            result.similar.length === 1
-              ? `${org.trim()} looks like ${result.similar[0]}, already on file.`
-              : `${org.trim()} looks like a company already on file.`,
-        });
-        break;
-      case "same_name":
-        setNewOrg(wantNewOrg);
-        setPrompt({ kind: "same", name, matches: result.matches });
-        setMessage({
-          tone: "info",
-          text: `${name} is already on file at ${result.matches[0]?.org ?? "no company"}. Same person?`,
-        });
-        break;
-      case "ambiguous":
-        setMessage({
-          tone: "info",
-          text: `Several people are named ${name}. Add the company to say which one.`,
-        });
-        break;
-      case "invalid":
-        setMessage({ tone: "error", text: result.error });
-        break;
+    const out = describeResult(result, {
+      name,
+      org,
+      estateLabel: e.label,
+      roleLabel,
+    });
+    if (out.kind === "done") {
+      finish(out.text);
+      return;
+    }
+    if (out.kind === "prompt") {
+      if (out.prompt.kind === "same_name") setNewOrg(wantNewOrg);
+      setPrompt(out.prompt);
+    }
+    setMessage({ tone: "info", text: out.text });
+  }
+
+  function onBatchChange(next: Batch | ((prev: Batch) => Batch)) {
+    setBatch((prev) => (prev ? (typeof next === "function" ? next(prev) : next) : prev));
+  }
+
+  // Done (summary) or Discard (null): back to the single form, cleared.
+  function closeBatch(summary: string | null) {
+    setBatch(null);
+    if (summary) {
+      finish(summary);
+    } else {
+      setForm(EMPTY_FORM);
+      setExtracted(null);
+      setCaptureId(null);
+      setMessage(null);
     }
   }
 
@@ -391,21 +423,16 @@ export default function MonsoonApp() {
         ? "text-red-600 dark:text-red-400"
         : "text-neutral-900 dark:text-white";
 
-  const rows: { key: keyof Form; label: string; type?: string; mode?: "email" | "tel" | "url"; auto?: string }[] = [
-    { key: "name", label: "Name", auto: "off" },
-    { key: "title", label: "Title", auto: "off" },
-    { key: "org", label: "Company", auto: "off" },
-    { key: "email", label: "Email", type: "email", mode: "email", auto: "off" },
-    { key: "phone", label: "Phone", type: "tel", mode: "tel", auto: "off" },
-    { key: "linkedin", label: "LinkedIn", type: "url", mode: "url", auto: "off" },
-  ];
-
   return (
     <Shell>
       <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
         <h1 className="px-1 pt-2 text-4xl font-bold tracking-tight">Monsoon</h1>
 
-        <div role="group" aria-label="Estate" className="grid grid-cols-2 gap-1 rounded-xl bg-neutral-200/80 p-1 dark:bg-white/10">
+        <div
+          role="group"
+          aria-label="Estate"
+          className="grid grid-cols-2 gap-1 rounded-xl bg-neutral-200/80 p-1 dark:bg-white/10"
+        >
           {estates.map((e) => {
             const selected = e.key === estateKey;
             return (
@@ -413,7 +440,7 @@ export default function MonsoonApp() {
                 key={e.key}
                 type="button"
                 aria-pressed={selected}
-                disabled={!e.available}
+                disabled={!e.available || batchStarted}
                 onClick={() => chooseEstate(e)}
                 className={`min-h-[44px] rounded-lg px-2 text-[16px] font-semibold disabled:opacity-40 ${
                   selected
@@ -427,140 +454,163 @@ export default function MonsoonApp() {
           })}
         </div>
 
-        <label
-          className={`flex min-h-[64px] cursor-pointer items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-blue-600/50 bg-blue-600/5 text-[19px] font-semibold text-blue-700 active:bg-blue-600/10 dark:border-blue-400/50 dark:bg-blue-400/10 dark:text-blue-300 ${
-            busy ? "pointer-events-none opacity-50" : ""
-          }`}
-        >
-          <svg aria-hidden="true" viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 8h3l1.5-2h7L17 8h3v11H4z" />
-            <circle cx="12" cy="13" r="3.5" />
-          </svg>
-          <span>{reading ? "Reading card…" : "Take photo"}</span>
-          <input type="file" accept="image/*" hidden disabled={busy} onChange={onPhoto} />
-        </label>
-
-        {message && (
-          <div
-            role={message.tone === "error" ? "alert" : "status"}
-            className={`${card} flex flex-col gap-3 p-4`}
-          >
-            <p className={`text-[17px] font-medium leading-snug ${messageColour}`}>{message.text}</p>
-            {prompt?.kind === "org" && (
-              <div className="flex flex-col gap-2">
-                {prompt.similar.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    disabled={saving}
-                    className={secondaryButton}
-                    onClick={() => {
-                      setForm((f) => ({ ...f, org: s }));
-                      void doSave({ org: s, newOrg: false });
-                    }}
-                  >
-                    Use {s}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  disabled={saving}
-                  className={secondaryButton}
-                  onClick={() => {
-                    setNewOrg(true);
-                    void doSave({ newOrg: true });
-                  }}
-                >
-                  It&apos;s a different company
-                </button>
-              </div>
-            )}
-            {prompt?.kind === "same" && (
-              <div className="flex flex-col gap-2">
-                {prompt.matches.map((m) => (
-                  <button
-                    key={m.personId}
-                    type="button"
-                    disabled={saving}
-                    className={secondaryButton}
-                    onClick={() => void doSave({ samePerson: m.personId })}
-                  >
-                    Same person ({m.org ?? "no company"})
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  disabled={saving}
-                  className={secondaryButton}
-                  onClick={() => void doSave({ samePerson: false })}
-                >
-                  Different person
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className={`${card} divide-y divide-neutral-200 overflow-hidden dark:divide-white/10`}>
-          {rows.map((r) => (
-            <div key={r.key}>
-              <label htmlFor={`f-${r.key}`} className={fieldLabel}>
-                {r.label}
-              </label>
-              <input
-                id={`f-${r.key}`}
-                type={r.type ?? "text"}
-                inputMode={r.mode}
-                autoComplete={r.auto}
-                autoCapitalize={r.key === "name" || r.key === "title" || r.key === "org" ? "words" : "off"}
-                autoCorrect="off"
-                value={form[r.key]}
-                onChange={(e) => edit(r.key, e.target.value)}
-                className={fieldInput}
-              />
-            </div>
-          ))}
-          <div>
-            <label htmlFor="f-role" className={fieldLabel}>
-              Role
-            </label>
-            <select
-              id="f-role"
-              value={role}
-              onChange={(e) => setRole(e.target.value)}
-              className={`${fieldInput} appearance-none`}
+        {batch && estate ? (
+          <BatchReview
+            estate={estate}
+            batch={batch}
+            onChange={onBatchChange}
+            onUnauthorized={() => setPhase("locked")}
+            onClose={closeBatch}
+          />
+        ) : (
+          <>
+            <label
+              className={`flex min-h-[64px] cursor-pointer items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-blue-600/50 bg-blue-600/5 text-[19px] font-semibold text-blue-700 active:bg-blue-600/10 dark:border-blue-400/50 dark:bg-blue-400/10 dark:text-blue-300 ${
+                busy ? "pointer-events-none opacity-50" : ""
+              }`}
             >
-              {(estate?.roles ?? []).map((r) => (
-                <option key={r.key} value={r.key}>
-                  {r.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label htmlFor="f-notes" className={fieldLabel}>
-              Notes
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                className="h-6 w-6"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M4 8h3l1.5-2h7L17 8h3v11H4z" />
+                <circle cx="12" cy="13" r="3.5" />
+              </svg>
+              <span>{reading ? "Reading card…" : "Take photo"}</span>
+              <input type="file" accept="image/*" hidden disabled={busy} onChange={onPhoto} />
             </label>
-            <textarea
-              id="f-notes"
-              rows={3}
-              value={form.notes}
-              onChange={(e) => edit("notes", e.target.value)}
-              className={`${fieldInput} resize-none`}
-            />
-          </div>
-        </div>
 
-        <div className="sticky bottom-0 -mx-4 mt-auto bg-[#f2f2f7]/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:bg-black/90">
-          <button
-            type="button"
-            className={primaryButton}
-            disabled={busy || !form.name.trim()}
-            onClick={() => void doSave()}
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
-        </div>
+            {message && (
+              <div
+                role={message.tone === "error" ? "alert" : "status"}
+                className={`${card} flex flex-col gap-3 p-4`}
+              >
+                <p className={`text-[17px] font-medium leading-snug ${messageColour}`}>{message.text}</p>
+                {prompt?.kind === "org_lookalike" && (
+                  <div className="flex flex-col gap-2">
+                    {prompt.similar.map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        disabled={saving}
+                        className={secondaryButton}
+                        onClick={() => {
+                          setForm((f) => ({ ...f, org: s }));
+                          void doSave({ org: s, newOrg: false });
+                        }}
+                      >
+                        Use {s}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      disabled={saving}
+                      className={secondaryButton}
+                      onClick={() => {
+                        setNewOrg(true);
+                        void doSave({ newOrg: true });
+                      }}
+                    >
+                      It&apos;s a different company
+                    </button>
+                  </div>
+                )}
+                {prompt?.kind === "same_name" && (
+                  <div className="flex flex-col gap-2">
+                    {prompt.matches.map((m) => (
+                      <button
+                        key={m.personId}
+                        type="button"
+                        disabled={saving}
+                        className={secondaryButton}
+                        onClick={() => void doSave({ samePerson: m.personId })}
+                      >
+                        Same person ({m.org ?? "no company"})
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      disabled={saving}
+                      className={secondaryButton}
+                      onClick={() => void doSave({ samePerson: false })}
+                    >
+                      Different person
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className={`${card} divide-y divide-neutral-200 overflow-hidden dark:divide-white/10`}>
+              {FIELD_ROWS.map((r) => (
+                <div key={r.key}>
+                  <label htmlFor={`f-${r.key}`} className={fieldLabel}>
+                    {r.label}
+                  </label>
+                  <input
+                    id={`f-${r.key}`}
+                    type={r.type ?? "text"}
+                    inputMode={r.mode}
+                    autoComplete={r.auto}
+                    autoCapitalize={
+                      r.key === "name" || r.key === "title" || r.key === "org" ? "words" : "off"
+                    }
+                    autoCorrect="off"
+                    value={form[r.key]}
+                    onChange={(e) => edit(r.key, e.target.value)}
+                    className={fieldInput}
+                  />
+                </div>
+              ))}
+              <div>
+                <label htmlFor="f-role" className={fieldLabel}>
+                  Role
+                </label>
+                <select
+                  id="f-role"
+                  value={role}
+                  onChange={(e) => setRole(e.target.value)}
+                  className={`${fieldInput} appearance-none`}
+                >
+                  {(estate?.roles ?? []).map((r) => (
+                    <option key={r.key} value={r.key}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="f-notes" className={fieldLabel}>
+                  Notes
+                </label>
+                <textarea
+                  id="f-notes"
+                  rows={3}
+                  value={form.notes}
+                  onChange={(e) => edit("notes", e.target.value)}
+                  className={`${fieldInput} resize-none`}
+                />
+              </div>
+            </div>
+
+            <div className="sticky bottom-0 -mx-4 mt-auto bg-[#f2f2f7]/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:bg-black/90">
+              <button
+                type="button"
+                className={primaryButton}
+                disabled={busy || !form.name.trim()}
+                onClick={() => void doSave()}
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </>
+        )}
       </main>
     </Shell>
   );
