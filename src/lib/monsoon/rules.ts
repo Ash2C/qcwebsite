@@ -100,3 +100,46 @@ export function similarOrgNames(name: string, existing: string[]): string[] {
   }
   return out;
 }
+
+export type DueBucket = "overdue" | "today" | "week" | "later" | "undated" | "none";
+
+function isoDay(value: string | Date): string {
+  return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
+}
+
+function addDays(day: string, days: number): string {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** When a member's next action is due, relative to `today` (YYYY-MM-DD). Week = within 7 days. */
+export function dueBucket(
+  member: { next_action?: string | null; next_action_date?: string | Date | null },
+  today: string,
+): DueBucket {
+  if (!(member.next_action ?? "").trim()) return "none";
+  const raw = member.next_action_date;
+  if (!raw) return "undated";
+  const due = isoDay(raw);
+  if (due < today) return "overdue";
+  if (due === today) return "today";
+  return due <= addDays(today, 7) ? "week" : "later";
+}
+
+export const ACTION_KINDS = ["note", "email", "call", "meeting"] as const;
+
+/** The newest call, meeting, email or note, compared on String(at) as the Python does. First wins a tie. */
+export function lastAction<T extends { kind: string; at: string | Date }>(touches: T[]): T | null {
+  let best: T | null = null;
+  let bestAt = "";
+  for (const t of touches) {
+    if (!(ACTION_KINDS as readonly string[]).includes(t.kind)) continue;
+    const at = String(t.at || "");
+    if (best === null || at > bestAt) {
+      best = t;
+      bestAt = at;
+    }
+  }
+  return best;
+}

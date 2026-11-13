@@ -289,5 +289,173 @@
       ],
       "out": []
     }
+  ],
+  "due_bucket": [
+    {
+      "member": {},
+      "today": "2026-11-13",
+      "out": "none"
+    },
+    {
+      "member": {
+        "next_action": "  ",
+        "next_action_date": "2026-11-12"
+      },
+      "today": "2026-11-13",
+      "out": "none"
+    },
+    {
+      "member": {
+        "next_action": "Send deck"
+      },
+      "today": "2026-11-13",
+      "out": "undated"
+    },
+    {
+      "member": {
+        "next_action": "Send deck",
+        "next_action_date": null
+      },
+      "today": "2026-11-13",
+      "out": "undated"
+    },
+    {
+      "member": {
+        "next_action": "Send deck",
+        "next_action_date": "2026-11-12"
+      },
+      "today": "2026-11-13",
+      "out": "overdue"
+    },
+    {
+      "member": {
+        "next_action": "Send deck",
+        "next_action_date": "2026-11-13"
+      },
+      "today": "2026-11-13",
+      "out": "today"
+    },
+    {
+      "member": {
+        "next_action": "Send deck",
+        "next_action_date": "2026-11-14"
+      },
+      "today": "2026-11-13",
+      "out": "week"
+    },
+    {
+      "member": {
+        "next_action": "Send deck",
+        "next_action_date": "2026-11-20"
+      },
+      "today": "2026-11-13",
+      "out": "week"
+    },
+    {
+      "member": {
+        "next_action": "Send deck",
+        "next_action_date": "2026-11-21"
+      },
+      "today": "2026-11-13",
+      "out": "later"
+    },
+    {
+      "member": {
+        "next_action": "Send deck",
+        "next_action_date": "2027-01-05"
+      },
+      "today": "2026-11-13",
+      "out": "later"
+    },
+    {
+      "member": {
+        "next_action": "Send deck",
+        "next_action_date": "2026-11-13T23:30:00+00:00"
+      },
+      "today": "2026-11-13",
+      "out": "today"
+    }
+  ],
+  "last_action": [
+    {
+      "touches": [],
+      "out": null
+    },
+    {
+      "touches": [
+        {
+          "kind": "stage",
+          "at": "2026-11-10T09:00:00+00:00"
+        },
+        {
+          "kind": "system",
+          "at": "2026-11-11T09:00:00+00:00"
+        }
+      ],
+      "out": null
+    },
+    {
+      "touches": [
+        {
+          "kind": "call",
+          "at": "2026-11-01T09:00:00+00:00",
+          "summary": "intro"
+        },
+        {
+          "kind": "email",
+          "at": "2026-11-05T09:00:00+00:00",
+          "summary": "follow-up"
+        },
+        {
+          "kind": "stage",
+          "at": "2026-11-12T09:00:00+00:00",
+          "summary": "to Warm"
+        }
+      ],
+      "out": 1
+    },
+    {
+      "touches": [
+        {
+          "kind": "note",
+          "at": "2026-11-09T08:00:00+00:00"
+        },
+        {
+          "kind": "meeting",
+          "at": "2026-10-20T08:00:00+00:00"
+        }
+      ],
+      "out": 0
+    },
+    {
+      "touches": [
+        {
+          "kind": "meeting",
+          "at": "2026-11-05T10:00:00"
+        },
+        {
+          "kind": "call",
+          "at": "2026-11-05T10:00:00+00:00"
+        },
+        {
+          "kind": "email",
+          "at": "2026-11-05T09:59:59Z"
+        }
+      ],
+      "out": 1
+    },
+    {
+      "touches": [
+        {
+          "kind": "note",
+          "at": "2026-11-05T10:00:00+00:00"
+        },
+        {
+          "kind": "call",
+          "at": "2026-11-05T10:00:00+00:00"
+        }
+      ],
+      "out": 0
+    }
   ]
 }

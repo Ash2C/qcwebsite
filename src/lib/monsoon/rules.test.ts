@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import fixtures from "./rules.fixtures.json";
 import {
+  dueBucket,
+  lastAction,
   mergeFillEmpty,
   nameKey,
   orgNameCores,
@@ -42,5 +44,22 @@ describe("similarOrgNames", () => {
     expect(similarOrgNames("Abcde", ["Abcdf"])).toEqual([]); // cores shorter than six
     // Ratio is 0.909 (above 0.85), so only the six-character minimum rejects it.
     expect(similarOrgNames("Abcde", ["Abcdef"])).toEqual([]);
+  });
+});
+
+describe("dueBucket", () => {
+  it.each(fixtures.due_bucket)("matches Python for %j", (c) => {
+    expect(dueBucket(c.member, c.today)).toEqual(c.out);
+  });
+
+  it("accepts a Date for next_action_date", () => {
+    expect(dueBucket({ next_action: "x", next_action_date: new Date("2026-11-14T00:00:00Z") }, "2026-11-13")).toBe("week");
+  });
+});
+
+describe("lastAction", () => {
+  it.each(fixtures.last_action)("matches Python for %j", (c) => {
+    const got = lastAction(c.touches);
+    expect(got).toBe(c.out === null ? null : c.touches[c.out]);
   });
 });
