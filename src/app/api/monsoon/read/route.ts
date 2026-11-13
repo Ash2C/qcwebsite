@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
-const MAX_BYTES = 4_000_000;
+const MAX_BYTES = 3_700_000;
 // Allowance for multipart boundaries and headers around the file.
 const MULTIPART_OVERHEAD = 100_000;
 const TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
@@ -53,7 +53,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ fields });
   } catch (err) {
     // Error name only: never the photo, the base64 or the card details.
-    console.error("monsoon: read failed", err instanceof Error ? err.name : "error");
+    const status = (err as { status?: unknown })?.status;
+    console.error(
+      "monsoon: read failed",
+      err instanceof Error ? err.name : "error",
+      typeof status === "number" ? status : ""
+    );
     return NextResponse.json({ error: "Could not read the photo" }, { status: 502 });
   }
 }

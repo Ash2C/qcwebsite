@@ -11,12 +11,16 @@ export function clientConfig(url: string): ClientConfig {
     // Never echo the value: it may be a connection string with a password.
     throw new Error("Invalid database URL");
   }
-  parsed.searchParams.delete("sslmode");
+  // Nothing in the URL may weaken or override the TLS settings applied below.
+  for (const name of [...parsed.searchParams.keys()]) {
+    if (name.toLowerCase().startsWith("ssl")) parsed.searchParams.delete(name);
+  }
 
   const config: ClientConfig = {
     connectionString: parsed.toString(),
     connectionTimeoutMillis: 8000,
-    statement_timeout: 10000,
+    // Client-side: poolers in transaction mode may reject a startup statement_timeout.
+    query_timeout: 10000,
   };
   if (!LOCAL_HOSTS.has(parsed.hostname)) {
     const ca = process.env.MONSOON_DB_CA_CERT;

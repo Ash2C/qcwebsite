@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const create = vi.fn();
+const ctorOptions: unknown[] = [];
 vi.mock("@anthropic-ai/sdk", () => ({
   default: class {
-    constructor() {
+    constructor(options?: unknown) {
+      ctorOptions.push(options);
       // The real client throws when no API key is configured.
       if (!process.env.ANTHROPIC_API_KEY) throw new Error("missing api key");
     }
@@ -70,6 +72,7 @@ describe("extractCard", () => {
     create.mockResolvedValue(reply({}));
     await extractCard({ base64: "QUJD", mediaType: "image/png" });
     expect(create).toHaveBeenCalledTimes(1);
+    expect(ctorOptions.at(-1)).toEqual({ timeout: 25_000, maxRetries: 1 });
     const args = create.mock.calls[0][0];
     expect(args.model).toBe("claude-haiku-5-5");
     expect(args.max_tokens).toBe(8192);

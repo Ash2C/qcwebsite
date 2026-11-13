@@ -37,7 +37,7 @@ export async function extractCard(image: {
 }): Promise<CardFields> {
   // Resolved per call so a bad MONSOON_MODEL fails the read, not the build.
   const model = resolveModel();
-  const client = new Anthropic();
+  const client = new Anthropic({ timeout: 25_000, maxRetries: 1 });
 
   const response = await client.messages.create({
     model,

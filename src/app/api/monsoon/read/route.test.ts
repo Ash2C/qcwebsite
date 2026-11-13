@@ -81,8 +81,8 @@ describe("POST /api/monsoon/read", () => {
     expect(extractCard).not.toHaveBeenCalled();
   });
 
-  it("returns 413 for a file over 4,000,000 bytes", async () => {
-    const big = new Blob([new Uint8Array(4_000_001)], { type: "image/jpeg" });
+  it("returns 413 for a file over 3,700,000 bytes", async () => {
+    const big = new Blob([new Uint8Array(3_700_001)], { type: "image/jpeg" });
     const res = await POST(await post(formWith(big)));
     expect(res.status).toBe(413);
     expect(extractCard).not.toHaveBeenCalled();
@@ -97,7 +97,7 @@ describe("POST /api/monsoon/read", () => {
 
   it("returns 413 from Content-Length alone, before parsing the body", async () => {
     const file = formWith(new Blob(["a"], { type: "image/jpeg" }));
-    const req = await post(file, true, "4100001");
+    const req = await post(file, true, "3800001");
     const spy = vi.spyOn(req, "formData");
     const res = await POST(req);
     expect(res.status).toBe(413);
@@ -124,5 +124,20 @@ describe("POST /api/monsoon/read", () => {
     expect(await res.json()).toEqual({ error: "Could not read the photo" });
     expect(spy).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(spy.mock.calls)).not.toContain("secret detail");
+  });
+
+  it("logs the numeric status when the error has one, still without the message", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    extractCard.mockRejectedValue(Object.assign(new Error("secret detail"), { status: 429 }));
+    const res = await POST(await post(formWith(new Blob(["ABC"], { type: "image/png" }))));
+    expect(res.status).toBe(502);
+    expect(spy.mock.calls[0]).toContain(429);
+    expect(JSON.stringify(spy.mock.calls)).not.toContain("secret detail");
+  });
+
+  it("accepts a file of exactly 3,700,000 bytes", async () => {
+    extractCard.mockResolvedValue(FIELDS);
+    const ok = new Blob([new Uint8Array(3_700_000)], { type: "image/jpeg" });
+    expect((await POST(await post(formWith(ok)))).status).toBe(200);
   });
 });

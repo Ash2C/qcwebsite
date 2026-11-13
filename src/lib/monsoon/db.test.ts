@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { clientConfig, withEstateDb } from "./db";
 import { ESTATES } from "./estates";
+import { testDb } from "./testing/db";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -16,7 +17,17 @@ describe("clientConfig", () => {
     expect(config.connectionString).not.toContain("sslmode");
     expect(config.connectionString).toContain("db.example.com:6543");
     expect(config.connectionTimeoutMillis).toBe(8000);
-    expect(config.statement_timeout).toBe(10000);
+    expect(config.query_timeout).toBe(10000);
+    expect("statement_timeout" in config).toBe(false);
+  });
+
+  it("strips every ssl* query parameter so nothing overrides verification", () => {
+    const config = clientConfig(
+      "postgresql://u:p@db.example.com:6543/postgres?sslmode=disable&ssl=0&sslrootcert=x&SSLCert=y&application_name=m"
+    );
+    expect(config.ssl).toEqual({ rejectUnauthorized: true });
+    expect(config.connectionString).not.toMatch(/ssl/i);
+    expect(config.connectionString).toContain("application_name=m");
   });
 
   it("adds the CA certificate when MONSOON_DB_CA_CERT is set", () => {
@@ -54,7 +65,7 @@ describe("withEstateDb", () => {
     );
   });
 
-  it("runs fn against a connected client and ends it", async () => {
+  it.skipIf(!testDb.available)("runs fn against a connected client and ends it", async () => {
     vi.stubEnv(
       "TRAXO_CRM_DATABASE_URL",
       "postgresql://postgres:test@127.0.0.1:55433/postgres"

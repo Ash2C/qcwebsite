@@ -234,8 +234,9 @@ export async function capture(db: ClientBase, input: CaptureInput): Promise<Capt
     };
   }
 
-  await db.query("BEGIN");
+  await db.query("BEGIN ISOLATION LEVEL READ COMMITTED");
   try {
+    await db.query("SET LOCAL statement_timeout = '10s'");
     const result = await run();
     await db.query(result.outcome === "added" || result.outcome === "existing" ? "COMMIT" : "ROLLBACK");
     return result;

@@ -77,3 +77,10 @@ describe("GET /api/monsoon/estates", () => {
     expect(log).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("route config", () => {
+  it("caps the function at 30 seconds", async () => {
+    const mod = await import("./route");
+    expect(mod.maxDuration).toBe(30);
+  });
+});

@@ -38,6 +38,11 @@ export async function POST(request: Request) {
   if (typeof b.captureId !== "string") return invalid("captureId must be a string");
 
   const f = b.fields as Record<string, unknown>;
+  if (!(str(f.name) ?? "").trim()) return invalid("Name is required");
+  for (const key of ["name", "title", "org", "email", "phone", "linkedin"]) {
+    if ((str(f[key]) ?? "").length > 300) return invalid("Field too long");
+  }
+  if ((str(f.notes) ?? "").length > 2000) return invalid("Field too long");
   const extracted = b.extracted;
   const rawText =
     typeof extracted === "object" && extracted !== null

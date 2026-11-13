@@ -21,7 +21,7 @@ type Form = {
 
 const EMPTY_FORM: Form = { name: "", title: "", org: "", email: "", phone: "", linkedin: "", notes: "" };
 
-type Phase = "loading" | "locked" | "app";
+type Phase = "loading" | "locked" | "failed" | "app";
 type Message = { tone: "ok" | "info" | "error"; text: string };
 type Prompt =
   | { kind: "org"; org: string; similar: string[] }
@@ -34,6 +34,11 @@ function readStoredEstate(): string {
   } catch {
     return DEFAULT_ESTATE;
   }
+}
+
+// The default role when the estate offers it, else its first role, so the dropdown and the saved role agree.
+function startRole(e: EstateInfo): string {
+  return e.roles.some((r) => r.key === e.defaultRole) ? e.defaultRole : (e.roles[0]?.key ?? e.defaultRole);
 }
 
 function storeEstate(key: string) {
@@ -79,6 +84,7 @@ export default function MonsoonApp() {
   const [passcode, setPasscode] = useState("");
   const [passError, setPassError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
+  const [samePerson, setSamePerson] = useState<string | false | undefined>(undefined);
   const savingRef = useRef(false);
 
   const estate = estates.find((e) => e.key === estateKey);
@@ -94,15 +100,20 @@ export default function MonsoonApp() {
         setEstates(list);
         if (pick) {
           setEstateKey(pick.key);
-          setRole(pick.defaultRole);
+          // A reload keeps the role the user already chose when this estate still offers it.
+          setRole((current) => (pick.roles.some((r) => r.key === current) ? current : startRole(pick)));
         }
         setPhase("app");
         return;
       }
+      if (res.status === 401) {
+        setPhase("locked");
+        return;
+      }
     } catch {
-      // fall through to the passcode screen
+      // network error: fall through to the retry screen
     }
-    setPhase("locked");
+    setPhase("failed");
   }, []);
 
   useEffect(() => {
@@ -111,16 +122,24 @@ export default function MonsoonApp() {
 
   function edit(key: keyof Form, value: string) {
     setForm((f) => ({ ...f, [key]: value }));
-    setPrompt(null);
+    dropPrompt();
     setNewOrg(false);
+    setSamePerson(undefined);
+  }
+
+  // Clears a showing lookalike / same-name prompt together with its message text.
+  function dropPrompt() {
+    if (prompt) setMessage(null);
+    setPrompt(null);
   }
 
   function chooseEstate(e: EstateInfo) {
     if (!e.available) return;
     setEstateKey(e.key);
-    setRole(e.defaultRole);
+    setRole(startRole(e));
     storeEstate(e.key);
-    setPrompt(null);
+    dropPrompt();
+    setSamePerson(undefined);
   }
 
   async function onPhoto(event: React.ChangeEvent<HTMLInputElement>) {
@@ -132,6 +151,7 @@ export default function MonsoonApp() {
     setExtracted(null);
     setPrompt(null);
     setNewOrg(false);
+    setSamePerson(undefined);
     setMessage(null);
     setReading(true);
     try {
@@ -144,15 +164,15 @@ export default function MonsoonApp() {
       if (res.status === 200 && "fields" in res.body) {
         const f = res.body.fields;
         setExtracted(f);
-        setForm({
+        setForm((prev) => ({
           name: f.name ?? "",
           title: f.title ?? "",
           org: f.org ?? "",
           email: f.email ?? "",
           phone: f.phone ?? "",
           linkedin: f.linkedin ?? "",
-          notes: "",
-        });
+          notes: prev.notes,
+        }));
       } else {
         setMessage({ tone: "error", text: "Could not read the photo. Try again or type the details." });
       }
@@ -185,7 +205,12 @@ export default function MonsoonApp() {
     };
     const wantNewOrg = overrides?.newOrg ?? newOrg;
     if (wantNewOrg) body.newOrg = true;
-    if (overrides?.samePerson !== undefined) body.samePerson = overrides.samePerson;
+    // An earlier same-name answer survives a later company-lookalike re-save.
+    const answer = overrides?.samePerson ?? samePerson;
+    if (answer !== undefined) {
+      body.samePerson = answer;
+      setSamePerson(answer);
+    }
 
     try {
       const res = await saveCard(body);
@@ -216,6 +241,7 @@ export default function MonsoonApp() {
     setExtracted(null);
     setCaptureId(null);
     setNewOrg(false);
+    setSamePerson(undefined);
     setPrompt(null);
     setMessage({ tone: "ok", text });
   }
@@ -240,7 +266,13 @@ export default function MonsoonApp() {
         break;
       case "org_lookalike":
         setPrompt({ kind: "org", org: org.trim(), similar: result.similar });
-        setMessage({ tone: "info", text: `${org.trim()} looks like a company already on file.` });
+        setMessage({
+          tone: "info",
+          text:
+            result.similar.length === 1
+              ? `${org.trim()} looks like ${result.similar[0]}, already on file.`
+              : `${org.trim()} looks like a company already on file.`,
+        });
         break;
       case "same_name":
         setNewOrg(wantNewOrg);
@@ -287,6 +319,29 @@ export default function MonsoonApp() {
     return (
       <Shell>
         <p className="px-6 pt-[max(6rem,env(safe-area-inset-top))] text-center text-neutral-500">Loading…</p>
+      </Shell>
+    );
+  }
+
+  if (phase === "failed") {
+    return (
+      <Shell>
+        <div className="mx-auto flex min-h-dvh max-w-md flex-col justify-center gap-5 px-6">
+          <h1 className="text-4xl font-bold tracking-tight">Monsoon</h1>
+          <p role="alert" className="text-[17px] font-medium text-red-600 dark:text-red-400">
+            Could not load. Check signal.
+          </p>
+          <button
+            type="button"
+            className={primaryButton}
+            onClick={() => {
+              setPhase("loading");
+              void load();
+            }}
+          >
+            Retry
+          </button>
+        </div>
       </Shell>
     );
   }
@@ -379,7 +434,7 @@ export default function MonsoonApp() {
             <circle cx="12" cy="13" r="3.5" />
           </svg>
           <span>{reading ? "Reading card…" : "Take photo"}</span>
-          <input type="file" accept="image/*" capture="environment" hidden disabled={busy} onChange={onPhoto} />
+          <input type="file" accept="image/*" hidden disabled={busy} onChange={onPhoto} />
         </label>
 
         {message && (

@@ -95,6 +95,35 @@ describe("POST /api/monsoon/save", () => {
     expect(withEstateDb).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["name missing", { name: undefined }],
+    ["name blank", { name: "   " }],
+  ])("returns 400 Name is required before connecting when %s", async (_l, fields) => {
+    const res = await POST(post(validBody({ fields: { ...validBody().fields, ...fields } })));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ outcome: "invalid", error: "Name is required" });
+    expect(withEstateDb).not.toHaveBeenCalled();
+  });
+
+  it.each(["name", "title", "org", "email", "phone", "linkedin"])(
+    "returns 400 Field too long when %s exceeds 300 characters",
+    async (key) => {
+      const res = await POST(post(validBody({ fields: { ...validBody().fields, [key]: "x".repeat(301) } })));
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ outcome: "invalid", error: "Field too long" });
+      expect(withEstateDb).not.toHaveBeenCalled();
+    },
+  );
+
+  it("limits notes to 2000 characters but allows exactly 2000 and 300", async () => {
+    capture.mockResolvedValue({ outcome: "added", person: "p", org: null, role: "investor", filled: [] });
+    const long = await POST(post(validBody({ fields: { name: "Ada", notes: "x".repeat(2001) } })));
+    expect(long.status).toBe(400);
+    expect(await long.json()).toEqual({ outcome: "invalid", error: "Field too long" });
+    const ok = await POST(post(validBody({ fields: { name: "x".repeat(300), notes: "y".repeat(2000) } })));
+    expect(ok.status).toBe(200);
+  });
+
   it("maps the body onto capture and returns its result", async () => {
     const result = { outcome: "added", person: "p1", org: "o", role: "investor", filled: [] };
     capture.mockResolvedValue(result);

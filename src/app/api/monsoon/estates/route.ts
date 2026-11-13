@@ -5,6 +5,7 @@ import { ESTATES } from "@/lib/monsoon/estates";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 type Role = { key: string; label: string };
 

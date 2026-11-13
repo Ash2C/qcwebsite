@@ -264,7 +264,7 @@ describe("MonsoonApp", () => {
     await typeName(user);
     await user.type(screen.getByLabelText("Company"), "Acme Capital");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByText("Acme Capital looks like a company already on file.")).toBeInTheDocument();
+    expect(await screen.findByText("Acme Capital looks like Acme Capital Ltd, already on file.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Use Acme Capital Ltd" }));
     await screen.findByText("Jane Tan added to Traxo.");
     const [first, second] = m.saveCard.mock.calls.map((c) => c[0]);
@@ -407,5 +407,140 @@ describe("MonsoonApp", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByText("unknown role: x")).toBeInTheDocument();
     expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan");
+  });
+
+  it("a non-401 estates failure shows Retry, not the passcode form; Retry reloads", async () => {
+    const user = userEvent.setup();
+    m.loadEstates.mockResolvedValueOnce({ status: 502, body: { error: "x" } });
+    render(<MonsoonApp />);
+    expect(await screen.findByText("Could not load. Check signal.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Passcode")).not.toBeInTheDocument();
+    signedIn();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await ready();
+  });
+
+  it("a network error on load also shows Retry", async () => {
+    m.loadEstates.mockRejectedValueOnce(new Error("offline"));
+    render(<MonsoonApp />);
+    expect(await screen.findByText("Could not load. Check signal.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Passcode")).not.toBeInTheDocument();
+  });
+
+  it("after sign-in, a non-401 reload failure shows the retry message", async () => {
+    const user = userEvent.setup();
+    m.loadEstates.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } });
+    m.loadEstates.mockResolvedValueOnce({ status: 500, body: { error: "x" } });
+    m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+    render(<MonsoonApp />);
+    await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(await screen.findByText("Could not load. Check signal.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Passcode")).not.toBeInTheDocument();
+  });
+
+  it("the file input offers the photo library: no capture attribute", async () => {
+    signedIn();
+    render(<MonsoonApp />);
+    await ready();
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(input).not.toHaveAttribute("capture");
+    expect(input).toHaveAttribute("accept", "image/*");
+    expect(input).toHaveAttribute("hidden");
+  });
+
+  it("re-login keeps the chosen role when it is still offered", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.saveCard.mockResolvedValue({ status: 401, body: { error: "unauthorized" } });
+    m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+    render(<MonsoonApp />);
+    await ready();
+    await typeName(user);
+    await user.selectOptions(screen.getByLabelText("Role"), "introducer");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    await ready();
+    expect(screen.getByLabelText("Role")).toHaveValue("introducer");
+  });
+
+  it("selects roles[0] when the estate default role is not in its list", async () => {
+    const user = userEvent.setup();
+    m.loadEstates.mockResolvedValue({
+      status: 200,
+      body: {
+        estates: [
+          { ...ESTATES.estates[0], defaultRole: "gone" },
+          ESTATES.estates[1],
+        ],
+      },
+    });
+    m.saveCard.mockResolvedValue({
+      status: 200,
+      body: { outcome: "added", person: "6f1c2a3e-0000-4000-8000-000000000001", org: null, role: "lp_prospect", filled: [] },
+    });
+    render(<MonsoonApp />);
+    await ready();
+    expect(screen.getByLabelText("Role")).toHaveValue("lp_prospect");
+    await typeName(user);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Jane Tan added to Traxo.");
+    expect(m.saveCard.mock.calls[0][0].role).toBe("lp_prospect");
+  });
+
+  it("keeps an earlier same-name answer when re-saving from the company prompt", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.saveCard
+      .mockResolvedValueOnce({ status: 200, body: { outcome: "same_name", matches: [{ personId: "p1", org: "Beta" }] } })
+      .mockResolvedValueOnce({ status: 200, body: { outcome: "org_lookalike", similar: ["Acme Capital Ltd"] } })
+      .mockResolvedValueOnce({
+        status: 200,
+        body: { outcome: "added", person: "6f1c2a3e-0000-4000-8000-000000000001", org: "Acme Capital Ltd", role: "lp_prospect", filled: [] },
+      });
+    render(<MonsoonApp />);
+    await ready();
+    await typeName(user);
+    await user.type(screen.getByLabelText("Company"), "Acme Capital");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(await screen.findByRole("button", { name: "Different person" }));
+    await user.click(await screen.findByRole("button", { name: "Use Acme Capital Ltd" }));
+    await screen.findByText("Jane Tan added to Traxo.");
+    expect(m.saveCard.mock.calls[1][0]).toMatchObject({ samePerson: false });
+    expect(m.saveCard.mock.calls[2][0]).toMatchObject({ samePerson: false });
+  });
+
+  it("a new photo keeps Notes the user already typed", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.readCard.mockResolvedValue({ status: 200, body: { fields: CARD } });
+    render(<MonsoonApp />);
+    await ready();
+    await user.type(screen.getByLabelText("Notes"), "met at SFF");
+    await pickPhoto(user);
+    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan"));
+    expect(screen.getByLabelText("Notes")).toHaveValue("met at SFF");
+  });
+
+  it("editing a field or changing estate clears the prompt message and its buttons", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.saveCard.mockResolvedValue({ status: 200, body: { outcome: "org_lookalike", similar: ["Acme Capital Ltd", "Acme Cap"] } });
+    render(<MonsoonApp />);
+    await ready();
+    await typeName(user);
+    await user.type(screen.getByLabelText("Company"), "Acme Capital");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Acme Capital looks like a company already on file.")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Title"), "x");
+    expect(screen.queryByText("Acme Capital looks like a company already on file.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Use Acme Capital Ltd" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Acme Capital looks like a company already on file.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Zero One" }));
+    expect(screen.queryByText("Acme Capital looks like a company already on file.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "It's a different company" })).not.toBeInTheDocument();
   });
 });

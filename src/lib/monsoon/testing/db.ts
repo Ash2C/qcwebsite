@@ -8,6 +8,23 @@ const ADMIN_URL = process.env.MONSOON_TEST_DB ?? "postgresql://postgres:test@127
 const TEST_DB = "monsoon_test";
 const SCHEMA_SQL = join(__dirname, "0001_init.sql");
 
+const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+function assertLocalAdminUrl(): void {
+  // reset() drops the public schema: never allow it near a remote server.
+  let host: string;
+  try {
+    host = new URL(ADMIN_URL).hostname;
+  } catch {
+    throw new Error("MONSOON_TEST_DB is not a valid URL");
+  }
+  if (!LOCAL_HOSTS.has(host)) {
+    throw new Error("refusing to run the test harness against a non-local host");
+  }
+}
+
+assertLocalAdminUrl();
+
 function testUrl(): string {
   const url = new URL(ADMIN_URL);
   url.pathname = `/${TEST_DB}`;
@@ -37,6 +54,7 @@ async function probe(): Promise<{ available: boolean; reason: string }> {
 
 // Probed once at import so `describe.skipIf(!testDb.available)` can read it synchronously.
 const state = await probe();
+if (!state.available) console.info(`monsoon: DB tests skipped, ${state.reason}`);
 
 export const testDb = {
   available: state.available,

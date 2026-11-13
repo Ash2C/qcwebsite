@@ -32,6 +32,18 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
     return (await db.query("SELECT summary FROM touches ORDER BY at")).rows.map((r) => r.summary);
   }
 
+  it("opens a READ COMMITTED transaction and sets a local statement timeout first", async () => {
+    const seen: string[] = [];
+    const orig = db.query.bind(db) as (...a: unknown[]) => Promise<unknown>;
+    (db as unknown as { query: unknown }).query = (...a: unknown[]) => {
+      if (typeof a[0] === "string") seen.push(a[0]);
+      return orig(...a);
+    };
+    await capture(db, input());
+    expect(seen[0]).toBe("BEGIN ISOLATION LEVEL READ COMMITTED");
+    expect(seen[1]).toBe("SET LOCAL statement_timeout = '10s'");
+  });
+
   it("adds a new person, org, member, capture row and meeting touch", async () => {
     const r = await capture(db, input({ org: "Acme Capital", email: "jane@acme.com", notes: "met at SFF" }));
     expect(r.outcome).toBe("added");
@@ -147,6 +159,7 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
     const first = await capture(db, input({ org: "Acme Capital" }));
     const r = await capture(db, input({ phone: "9" }));
     expect(r).toMatchObject({ outcome: "existing", org: "Acme Capital", filled: ["phone"] });
+    expect(first.outcome).toBe("added");
     if (first.outcome === "added" && r.outcome === "existing") expect(r.person).toBe(first.person);
     expect(await count("people")).toBe(1);
   });
@@ -185,6 +198,7 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
     const first = await capture(db, i);
     const second = await capture(db, i);
     expect(second.outcome).toBe("duplicate");
+    expect(first.outcome).toBe("added");
     if (first.outcome === "added" && second.outcome === "duplicate") {
       expect(second.person).toBe(first.person);
       expect(second.org).toBe("Acme Capital");

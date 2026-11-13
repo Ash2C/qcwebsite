@@ -40,5 +40,7 @@ describe("similarOrgNames", () => {
   it("treats the 0.85 threshold as inclusive, behind a six-character minimum", () => {
     expect(similarOrgNames("Corvanne", ["Corvane"])).toEqual(["Corvane"]);
     expect(similarOrgNames("Abcde", ["Abcdf"])).toEqual([]); // cores shorter than six
+    // Ratio is 0.909 (above 0.85), so only the six-character minimum rejects it.
+    expect(similarOrgNames("Abcde", ["Abcdef"])).toEqual([]);
   });
 });
