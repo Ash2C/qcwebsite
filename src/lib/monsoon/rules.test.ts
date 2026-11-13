@@ -53,7 +53,7 @@ describe("dueBucket", () => {
   });
 
   it("accepts a Date for next_action_date", () => {
-    expect(dueBucket({ next_action: "x", next_action_date: new Date("2026-11-14T00:00:00Z") }, "2026-11-13")).toBe("week");
+    expect(dueBucket({ next_action: "x", next_action_date: new Date(2026, 10, 14) }, "2026-11-13")).toBe("week");
   });
 });
 
@@ -61,5 +61,36 @@ describe("lastAction", () => {
   it.each(fixtures.last_action)("matches Python for %j", (c) => {
     const got = lastAction(c.touches);
     expect(got).toBe(c.out === null ? null : c.touches[c.out]);
+  });
+});
+
+describe("dueBucket with local-midnight Dates", () => {
+  it("reads the local calendar day, like the string form", () => {
+    const member = (d: string | Date) => ({ next_action: "x", next_action_date: d });
+    expect(dueBucket(member(new Date(2026, 10, 14)), "2026-11-13")).toBe(dueBucket(member("2026-11-14"), "2026-11-13"));
+    expect(dueBucket(member(new Date(2026, 10, 13)), "2026-11-13")).toBe("today");
+    expect(dueBucket(member(new Date(2026, 10, 12)), "2026-11-13")).toBe("overdue");
+  });
+});
+
+describe("lastAction with Date values", () => {
+  it("a later Date beats an earlier one", () => {
+    const early = { kind: "call", at: new Date("2026-02-01T00:00:00Z") };
+    const late = { kind: "note", at: new Date("2026-11-13T00:00:00Z") };
+    expect(lastAction([late, early])).toBe(late);
+    expect(lastAction([early, late])).toBe(late);
+  });
+
+  it("a Date tie keeps the first", () => {
+    const a = { kind: "call", at: new Date("2026-05-05T10:00:00Z") };
+    const b = { kind: "email", at: new Date("2026-05-05T10:00:00Z") };
+    expect(lastAction([a, b])).toBe(a);
+  });
+
+  it("only action kinds count", () => {
+    const call = { kind: "call", at: new Date("2026-01-01T00:00:00Z") };
+    const stage = { kind: "stage", at: new Date("2026-12-01T00:00:00Z") };
+    expect(lastAction([stage, call])).toBe(call);
+    expect(lastAction([stage])).toBeNull();
   });
 });

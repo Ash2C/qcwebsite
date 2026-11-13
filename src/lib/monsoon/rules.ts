@@ -104,7 +104,13 @@ export function similarOrgNames(name: string, existing: string[]): string[] {
 export type DueBucket = "overdue" | "today" | "week" | "later" | "undated" | "none";
 
 function isoDay(value: string | Date): string {
-  return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
+  if (value instanceof Date) {
+    // node-pg parses a DATE column to local midnight, so read the local calendar day.
+    const mm = String(value.getMonth() + 1).padStart(2, "0");
+    const dd = String(value.getDate()).padStart(2, "0");
+    return `${value.getFullYear()}-${mm}-${dd}`;
+  }
+  return String(value).slice(0, 10);
 }
 
 function addDays(day: string, days: number): string {
@@ -135,7 +141,7 @@ export function lastAction<T extends { kind: string; at: string | Date }>(touche
   let bestAt = "";
   for (const t of touches) {
     if (!(ACTION_KINDS as readonly string[]).includes(t.kind)) continue;
-    const at = String(t.at || "");
+    const at = t.at instanceof Date ? t.at.toISOString() : String(t.at ?? "");
     if (best === null || at > bestAt) {
       best = t;
       bestAt = at;
