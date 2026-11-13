@@ -148,9 +148,16 @@ describe("POST /api/monsoon/act", () => {
   });
 
   it("refuses a bad body shape", async () => {
-    for (const body of [null, [], "x", { estate: "traxo" }, { estate: "traxo", proposal: 5, signature: 5 }]) {
-      const res = await POST(post(body as unknown));
-      expect([400, 403]).toContain(res.status);
+    const cases: [unknown, number][] = [
+      [null, 400],
+      [[], 400],
+      ["x", 400],
+      [{ estate: "traxo" }, 403],
+      [{ estate: "traxo", proposal: 5, signature: 5 }, 403],
+    ];
+    for (const [body, status] of cases) {
+      const res = await POST(post(body));
+      expect(res.status, JSON.stringify(body)).toBe(status);
     }
     nothingCalled();
   });

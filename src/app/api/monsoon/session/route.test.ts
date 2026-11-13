@@ -80,16 +80,6 @@ describe("POST", () => {
     const res = await POST(post("{"));
     expect(res.status).toBe(400);
   });
-});
-
-describe("DELETE", () => {
-  it("clears the cookie", async () => {
-    const res = await DELETE();
-    expect(res.status).toBe(200);
-    const cookie = res.headers.get("set-cookie") ?? "";
-    expect(cookie).toContain("monsoon_session=");
-    expect(cookie).toContain("Max-Age=0");
-  });
 
   it("returns 413 for an over-cap body, streamed or declared, before any passcode check", async () => {
     vi.useFakeTimers();
@@ -103,5 +93,15 @@ describe("DELETE", () => {
       headers: { "Content-Length": "999999" },
     });
     expect((await POST(declared)).status).toBe(413);
+  });
+});
+
+describe("DELETE", () => {
+  it("clears the cookie", async () => {
+    const res = await DELETE();
+    expect(res.status).toBe(200);
+    const cookie = res.headers.get("set-cookie") ?? "";
+    expect(cookie).toContain("monsoon_session=");
+    expect(cookie).toContain("Max-Age=0");
   });
 });

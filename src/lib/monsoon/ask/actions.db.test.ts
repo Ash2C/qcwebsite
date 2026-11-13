@@ -260,6 +260,20 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
       ]);
     });
 
+    it("stamps only this move's entry, never another stage entry", async () => {
+      await db.query(
+        `INSERT INTO touches (member_id, at, kind, by_whom, summary)
+         VALUES ($1, now() + interval '1 hour', 'stage', NULL, 'passed -> uncontacted')`,
+        [id.mLi],
+      );
+      await moveStage(db, id.mLi, "contacted", "engaged");
+      const t = await db.query("SELECT summary, by_whom FROM touches WHERE member_id = $1 ORDER BY summary", [id.mLi]);
+      expect(t.rows).toEqual([
+        { summary: "contacted -> engaged", by_whom: "VF" },
+        { summary: "passed -> uncontacted", by_whom: null },
+      ]);
+    });
+
     it("a stale from-stage writes nothing", async () => {
       const before = await snapshot();
       expect(await moveStage(db, id.mLi, "uncontacted", "client")).toEqual({ status: "changed", stage: "contacted" });

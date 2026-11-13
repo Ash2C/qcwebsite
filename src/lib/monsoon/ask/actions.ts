@@ -174,12 +174,14 @@ export function moveStage(
     if (current === toStage) return { value: { status: "already" as const, stage: current }, commit: false };
     if (current !== fromStage) return { value: { status: "changed" as const, stage: current }, commit: false };
     // The stage trigger writes the timeline entry; here it only gets the mover's name, as Crm.set_stage does.
+    // The summary match ties the stamp to this move, so an older entry is never restamped.
     await db.query("UPDATE members SET stage = $1 WHERE id = $2", [toStage, memberId]);
     await db.query(
       `UPDATE touches SET by_whom = $2
-        WHERE id = (SELECT id FROM touches WHERE member_id = $1 AND kind = 'stage'
+        WHERE id = (SELECT id FROM touches
+                     WHERE member_id = $1 AND kind = 'stage' AND summary = $3::text || ' -> ' || $4::text
                      ORDER BY at DESC, id DESC LIMIT 1)`,
-      [memberId, OWNER],
+      [memberId, OWNER, fromStage, toStage],
     );
     return { value: { status: "moved" as const, stage: toStage }, commit: true };
   });
