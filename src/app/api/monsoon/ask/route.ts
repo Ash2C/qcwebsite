@@ -1,0 +1,107 @@
+import Anthropic from "@anthropic-ai/sdk";
+import { NextResponse } from "next/server";
+import { runAsk, type AskMessage, type ModelClient } from "@/lib/monsoon/ask/loop";
+import type { Ref } from "@/lib/monsoon/ask/tools";
+import { requireSession } from "@/lib/monsoon/auth";
+import { readJson } from "@/lib/monsoon/body";
+import { withEstateDb } from "@/lib/monsoon/db";
+import { estateByKey } from "@/lib/monsoon/estates";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
+const MAX_BODY = 262_144;
+const MAX_MESSAGES = 30;
+const MAX_TOTAL_CHARS = 60_000;
+const MAX_USER_CHARS = 2000;
+const MAX_REFS_PER_MESSAGE = 30;
+const DAY_MS = 86_400_000;
+
+function bad(error: string) {
+  return NextResponse.json({ error }, { status: 400 });
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** The client's date when it is within one day of the server's UTC date, else the server's. */
+function resolveToday(value: unknown, nowMs: number): string {
+  const server = new Date(nowMs).toISOString().slice(0, 10);
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return server;
+  const t = Date.parse(`${value}T00:00:00Z`);
+  if (Number.isNaN(t) || new Date(t).toISOString().slice(0, 10) !== value) return server;
+  return Math.abs(t - Date.parse(`${server}T00:00:00Z`)) <= DAY_MS ? value : server;
+}
+
+/** Malformed refs are dropped silently, never rejected. */
+function cleanRefs(value: unknown): Ref[] {
+  if (!Array.isArray(value)) return [];
+  const out: Ref[] = [];
+  for (const r of value) {
+    if (!isObj(r) || typeof r.memberId !== "string" || typeof r.name !== "string") continue;
+    if (r.kind !== "person" && r.kind !== "company") continue;
+    if (r.company !== null && typeof r.company !== "string") continue;
+    out.push({ memberId: r.memberId, name: r.name, company: r.company, kind: r.kind });
+    if (out.length >= MAX_REFS_PER_MESSAGE) break;
+  }
+  return out;
+}
+
+function parseMessages(value: unknown): AskMessage[] | string {
+  if (!Array.isArray(value) || value.length === 0) return "messages must be a non-empty array";
+  if (value.length > MAX_MESSAGES) return "Too many messages";
+  const out: AskMessage[] = [];
+  let total = 0;
+  for (const m of value) {
+    if (!isObj(m) || typeof m.content !== "string") return "Invalid message";
+    total += m.content.length;
+    if (m.role === "user") {
+      if (m.content.trim().length < 1) return "Message is empty";
+      if (m.content.length > MAX_USER_CHARS) return "Message is too long";
+      out.push({ role: "user", content: m.content });
+    } else if (m.role === "assistant") {
+      out.push({ role: "assistant", content: m.content, refs: cleanRefs(m.refs) });
+    } else {
+      return "Invalid message";
+    }
+  }
+  if (total > MAX_TOTAL_CHARS) return "Conversation is too long";
+  if (out[out.length - 1].role !== "user") return "The last message must be from the user";
+  return out;
+}
+
+export async function POST(request: Request) {
+  const denied = requireSession(request);
+  if (denied) return denied;
+
+  const read = await readJson(request, MAX_BODY);
+  if (!read.ok) return read.response;
+  if (!isObj(read.body)) return bad("Invalid body");
+  const b = read.body;
+
+  const estate = estateByKey(b.estate);
+  if (!estate) return bad("Unknown estate");
+  const messages = parseMessages(b.messages);
+  if (typeof messages === "string") return bad(messages);
+  const today = resolveToday(b.today, Date.now());
+
+  try {
+    const result = await withEstateDb(estate, async (db) => {
+      const client = new Anthropic({ timeout: 20_000, maxRetries: 0 }).messages as unknown as ModelClient;
+      return runAsk(
+        { db, estate: estate.key, estateLabel: estate.label, today, client, now: () => Date.now() },
+        messages,
+      );
+    });
+    return NextResponse.json(result);
+  } catch (err) {
+    // Name and status only: messages can carry questions, contact data or connection details.
+    const status = (err as { status?: unknown })?.status;
+    console.error(
+      `monsoon: ask failed for ${estate.key}`,
+      err instanceof Error ? err.name : "error",
+      typeof status === "number" ? status : "",
+    );
+    return NextResponse.json({ error: "Could not get an answer" }, { status: 502 });
+  }
+}
