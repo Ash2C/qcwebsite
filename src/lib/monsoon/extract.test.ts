@@ -24,8 +24,14 @@ const EMPTY = {
   raw_text: "",
 };
 
-function toolUse(input: unknown) {
-  return { content: [{ type: "tool_use", name: "record_card", id: "t1", input }] };
+function reply(input: unknown, stop_reason = "end_turn") {
+  return {
+    stop_reason,
+    content: [
+      { type: "thinking", thinking: "", signature: "s" },
+      { type: "text", text: typeof input === "string" ? input : JSON.stringify(input) },
+    ],
+  };
 }
 
 beforeEach(() => {
@@ -60,40 +66,59 @@ describe("resolveModel", () => {
 });
 
 describe("extractCard", () => {
-  it("sends the image with a forced record_card tool call", async () => {
-    create.mockResolvedValue(toolUse({}));
+  it("sends the image with a JSON-schema output format and no forced tool", async () => {
+    create.mockResolvedValue(reply({}));
     await extractCard({ base64: "QUJD", mediaType: "image/png" });
     expect(create).toHaveBeenCalledTimes(1);
     const args = create.mock.calls[0][0];
     expect(args.model).toBe("claude-haiku-5-5");
+    expect(args.max_tokens).toBe(8192);
     const blocks = args.messages[0].content;
     expect(blocks).toContainEqual({
       type: "image",
       source: { type: "base64", media_type: "image/png", data: "QUJD" },
     });
-    expect(args.tools).toHaveLength(1);
-    expect(args.tools[0].name).toBe("record_card");
-    const props = args.tools[0].input_schema.properties;
-    expect(Object.keys(props).sort()).toEqual([...KEYS].sort());
-    for (const k of KEYS) expect(props[k].type).toBe("string");
-    expect(args.tool_choice).toEqual({ type: "tool", name: "record_card" });
+    expect(args.tools).toBeUndefined();
+    expect(args.tool_choice).toBeUndefined();
+    expect(args.output_config.format.type).toBe("json_schema");
+    const schema = args.output_config.format.schema;
+    expect(Object.keys(schema.properties).sort()).toEqual([...KEYS].sort());
+    for (const k of KEYS) expect(schema.properties[k].type).toBe("string");
+    expect([...schema.required].sort()).toEqual([...KEYS].sort());
+    expect(schema.additionalProperties).toBe(false);
   });
 
   it("trims values and fills absent keys with empty strings", async () => {
-    create.mockResolvedValue(toolUse({ name: " Jane Tan ", org: "Acme" }));
+    create.mockResolvedValue(reply({ name: " Jane Tan ", org: "Acme" }));
     const out = await extractCard({ base64: "x", mediaType: "image/jpeg" });
     expect(out).toEqual({ ...EMPTY, name: "Jane Tan", org: "Acme" });
   });
 
   it("returns empty fields when the model finds nothing", async () => {
-    create.mockResolvedValue(toolUse({}));
-    expect(await extractCard({ base64: "x", mediaType: "image/jpeg" })).toEqual(EMPTY);
-    create.mockResolvedValue({ content: [{ type: "text", text: "no card" }] });
+    create.mockResolvedValue(reply({}));
     expect(await extractCard({ base64: "x", mediaType: "image/jpeg" })).toEqual(EMPTY);
   });
 
+  it.each([
+    ["unparseable JSON", reply("no card here")],
+    ["a JSON array", reply("[1]")],
+    ["a refusal", reply({ name: "Jane" }, "refusal")],
+    ["a max_tokens stop", reply('{"name": "Ja', "max_tokens")],
+    ["no text block", { stop_reason: "end_turn", content: [] }],
+  ])("returns empty fields for %s", async (_label, response) => {
+    create.mockResolvedValue(response);
+    expect(await extractCard({ base64: "x", mediaType: "image/jpeg" })).toEqual(EMPTY);
+  });
+
+  it("lets an API error throw", async () => {
+    create.mockRejectedValue(new Error("boom"));
+    await expect(
+      extractCard({ base64: "x", mediaType: "image/jpeg" })
+    ).rejects.toThrow("boom");
+  });
+
   it("turns non-string values into empty strings", async () => {
-    create.mockResolvedValue(toolUse({ name: 5, title: null, org: "Acme" }));
+    create.mockResolvedValue(reply({ name: 5, title: null, org: "Acme" }));
     const out = await extractCard({ base64: "x", mediaType: "image/webp" });
     expect(out).toEqual({ ...EMPTY, org: "Acme" });
   });

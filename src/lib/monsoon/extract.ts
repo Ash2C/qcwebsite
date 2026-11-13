@@ -21,7 +21,7 @@ const KEYS: (keyof CardFields)[] = [
 ];
 
 const SYSTEM_PROMPT =
-  "You read one photo of a business card or conference name badge. Call record_card once. Copy each value exactly as printed. If a value is not printed on the card, leave that field as an empty string; never guess or infer one. `name` is the person's name only. `org` is the company or organisation. `linkedin` is a LinkedIn URL or handle if printed. `raw_text` is all legible text on the card, line by line. If the photo is not a card or badge, or nothing is legible, return every field empty.";
+  "You read one photo of a business card or conference name badge. Respond once with a JSON object containing the seven fields. Copy each value exactly as printed. If a value is not printed on the card, leave that field as an empty string; never guess or infer one. `name` is the person's name only. `org` is the company or organisation. `linkedin` is a LinkedIn URL or handle if printed. `raw_text` is all legible text on the card, line by line. If the photo is not a card or badge, or nothing is legible, return every field empty.";
 
 export function resolveModel(): string {
   const model = process.env.MONSOON_MODEL || "claude-haiku-5-5";
@@ -41,20 +41,21 @@ export async function extractCard(image: {
 
   const response = await client.messages.create({
     model,
-    max_tokens: 1024,
+    // Thinking tokens count against max_tokens on these models; leave room.
+    max_tokens: 8192,
     system: SYSTEM_PROMPT,
-    tools: [
-      {
-        name: "record_card",
-        description: "Record the fields printed on the card or badge.",
-        input_schema: {
+    // Native structured output: no forced tool_choice (400s on several models).
+    output_config: {
+      format: {
+        type: "json_schema",
+        schema: {
           type: "object",
           properties: Object.fromEntries(KEYS.map((k) => [k, { type: "string" }])),
           required: [...KEYS],
+          additionalProperties: false,
         },
       },
-    ],
-    tool_choice: { type: "tool", name: "record_card" },
+    },
     messages: [
       {
         role: "user",
@@ -73,13 +74,21 @@ export async function extractCard(image: {
     ],
   });
 
-  const block = response.content.find(
-    (b) => b.type === "tool_use" && b.name === "record_card"
-  );
-  const input =
-    block && block.type === "tool_use" && typeof block.input === "object" && block.input
-      ? (block.input as Record<string, unknown>)
-      : {};
+  // A refusal, a max_tokens stop or unparseable JSON all read as "nothing found".
+  let input: Record<string, unknown> = {};
+  if (response.stop_reason !== "refusal" && response.stop_reason !== "max_tokens") {
+    const text = response.content
+      .map((b) => (b.type === "text" ? b.text : ""))
+      .join("");
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        input = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // fall through with empty input
+    }
+  }
 
   const out = {} as CardFields;
   for (const k of KEYS) {

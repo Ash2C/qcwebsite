@@ -7,12 +7,24 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 const MAX_BYTES = 4_000_000;
+// Allowance for multipart boundaries and headers around the file.
+const MULTIPART_OVERHEAD = 100_000;
 const TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
 type MediaType = (typeof TYPES)[number];
 
 export async function POST(request: Request) {
   const denied = requireSession(request);
   if (denied) return denied;
+
+  // Refuse oversized bodies before formData() buffers them.
+  const header = request.headers.get("content-length");
+  const length = header !== null && /^\d+$/.test(header.trim()) ? Number(header) : NaN;
+  if (Number.isNaN(length)) {
+    return NextResponse.json({ error: "Length required" }, { status: 411 });
+  }
+  if (length > MAX_BYTES + MULTIPART_OVERHEAD) {
+    return NextResponse.json({ error: "Image too large" }, { status: 413 });
+  }
 
   let form: FormData;
   try {
