@@ -66,9 +66,47 @@ function withoutComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ");
 }
 
+// The matcher of commit 5be6ae2, copied unchanged (only the constant names are prefixed). It runs as
+// a third, independent check on the comment-blanked text, so the current matcher can only add to
+// what it flags. Where it flags a comparison it is a deliberate false positive (fail loud).
+const LEGACY_STMT = "[^;`]*?";
+const LEGACY_PLAIN = "[^;`()]";
+const LEGACY_GROUP1 = `\\(${LEGACY_PLAIN}*\\)`;
+const LEGACY_GROUP2 = `\\((?:${LEGACY_PLAIN}|${LEGACY_GROUP1})*\\)`;
+const LEGACY_GROUP3 = `\\((?:${LEGACY_PLAIN}|${LEGACY_GROUP2})*\\)`;
+const LEGACY_SET_LIST = `(?:(?!\\bWHERE\\b)${LEGACY_PLAIN}|${LEGACY_GROUP3})*?`;
+const LEGACY_TOUCHES = '(?:ONLY\\s+)?(?:"?\\w+"?\\.)?"?touches"?';
+const LEGACY_NAME = '"?\\w+"?';
+const LEGACY_assigns = (column: string) =>
+  `(?:[\\s,(]"?${column}"?\\s*=|[\\s,]\\(\\s*(?:${LEGACY_NAME}\\s*,\\s*)*"?${column}"?\\s*(?:,\\s*${LEGACY_NAME}\\s*)*\\)\\s*=)`;
+
+const LEGACY_RULES: { name: string; re: RegExp }[] = [
+  { name: "DELETE FROM", re: /\bDELETE\s+FROM\b/i },
+  { name: "TRUNCATE", re: /\bTRUNCATE\b/i },
+  { name: "DROP", re: /\bDROP\s+(?:TABLE|SCHEMA|COLUMN|DATABASE|VIEW|MATERIALIZED\s+VIEW)\b/i },
+  { name: "ALTER COLUMN", re: /\bALTER\s+COLUMN\b/i },
+  { name: "MERGE", re: /\bMERGE\s+INTO\b/i },
+  {
+    name: "UPDATE ... SET notes",
+    re: new RegExp(`(?:\\bUPDATE\\b${LEGACY_STMT}|\\bDO\\s+UPDATE\\s+)\\bSET\\b${LEGACY_SET_LIST}${LEGACY_assigns("notes")}`, "i"),
+  },
+  {
+    name: "UPDATE touches SET summary",
+    re: new RegExp(`\\bUPDATE\\s+${LEGACY_TOUCHES}\\b${LEGACY_STMT}\\bSET\\b${LEGACY_SET_LIST}${LEGACY_assigns("summary")}`, "i"),
+  },
+  {
+    name: "DO UPDATE SET summary",
+    re: new RegExp(`\\bDO\\s+UPDATE\\s+SET\\b${LEGACY_SET_LIST}${LEGACY_assigns("summary")}`, "i"),
+  },
+];
+
 function violations(source: string): string[] {
+  // raw and comments blanked, and each again with escaped quotes (a \" inside a TypeScript
+  // string) turned into plain ones, so an escaped quoted identifier is seen as one.
   const texts = [source, withoutComments(source)];
-  return FORBIDDEN.filter((f) => texts.some((t) => f.hit(t))).map((f) => f.name);
+  texts.push(...texts.map((t) => t.replace(/\\"/g, '"')));
+  const legacy = LEGACY_RULES.filter((f) => f.re.test(withoutComments(source))).map((f) => f.name);
+  return [...new Set([...FORBIDDEN.filter((f) => texts.some((t) => f.hit(t))).map((f) => f.name), ...legacy])];
 }
 
 function files(dir: string): string[] {
@@ -156,6 +194,15 @@ describe("never delete", () => {
       ["UPDATE ... SET notes", "UPDATE members m SET stage = $1, m.notes = $2"],
       ["UPDATE ... SET notes", "UPDATE members SET stage = '--', notes = $1"],
       ["UPDATE touches SET summary", "UPDATE touches SET by_whom = ')))))', summary = $1"],
+      // (j) keywords or comment starts inside a comment or string must not hide the write
+      ["UPDATE ... SET notes", "UPDATE members SET stage = 'and--', --and\nnotes = $1"],
+      ["UPDATE ... SET notes", "UPDATE members SET stage = '/*', by_whom = $1, -- */ and\n notes = $2"],
+      // (k) an escaped quoted identifier inside a double-quoted TypeScript string
+      ["UPDATE ... SET notes", String.raw`UPDATE members SET \"notes\" = $1`],
+      ["UPDATE touches SET summary", String.raw`UPDATE touches SET \"summary\" = $1`],
+      // (l) comparisons the legacy matcher flags: deliberate false positives (fail loud)
+      ["UPDATE ... SET notes", "UPDATE members SET stage = $1 AND notes = $2"],
+      ["UPDATE ... SET notes", "UPDATE members SET stage = CASE WHEN x THEN 1 ELSE notes = 'a' END"],
     ];
     for (const [name, sql] of samples) expect(violations(sql), sql).toContain(name);
   });
