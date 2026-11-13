@@ -50,3 +50,43 @@ whole batch in one server call (would need a new route and loses the per-card pr
 Review list (Vincent did not pick between list and step-through; the list was the stated default);
 12-card cap; 2400 px; batch-level role and note with per-card override; estate locked after the first
 save in a batch.
+
+---
+
+# Addendum: spoken notes (approved by Vincent 2026-11-13)
+
+## Intent
+
+After a draft contact appears, Vincent wants to talk freely about the person ("met at SFF, runs their
+Asia fund, her title is actually Managing Partner, follow up in January") and have Monsoon turn that
+into tidy notes and correct any fields he mentioned, without typing.
+
+## Decisions
+
+- **Speech to text is the iPhone keyboard dictation** (the choice Vincent made, "for now"). A `Speak notes`
+  button opens a text box with the keyboard up; he taps the keyboard microphone and talks, or types.
+  No in-app recording, no microphone permission, no second provider. In-app one-button recording is a
+  possible later version and must not be made harder by this one.
+- **Tidying is one Claude Haiku 5.5 call** behind the same passcode: current fields + current notes +
+  what was said in, updated fields + organised notes out.
+- Non-goals: storing the raw speech; changing the save route or database; audio handling of any kind.
+- Anti-goals: a field changed that Vincent did not explicitly correct; a field blanked; existing notes
+  lost; anything saved before he taps Save.
+
+## Behaviour
+
+1. `Speak notes` is available on the single form and inside the editor of each card in the batch list.
+2. `Apply` sends the text. On success the Notes field holds the organised notes (existing notes merged
+   in) and any corrected field is updated. Each changed field is highlighted and shows its old value;
+   `Undo` restores everything from before the Apply.
+3. A field changes only when he states a correction for it. A value he did not state is never invented.
+   A field is never emptied.
+4. Notes are short plain lines in his words with filler removed (where they met, context, follow-up),
+   no headings or markdown.
+5. If tidying fails, the text he dictated is kept and `Use as typed` puts it into Notes unchanged.
+6. A 401 shows the passcode screen and the dictated text is still there afterwards.
+
+## Calls Claude made
+
+Highlight-and-undo instead of a separate confirm screen; raw speech not stored; 4000-character limit on
+the dictated text; never blanking a field even if asked to (he can clear it by hand).
