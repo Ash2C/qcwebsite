@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/monsoon/auth";
+import { readJson } from "@/lib/monsoon/body";
 import { capture, type CaptureInput } from "@/lib/monsoon/capture";
 import { withEstateDb } from "@/lib/monsoon/db";
 import { estateByKey } from "@/lib/monsoon/estates";
@@ -7,6 +8,8 @@ import { estateByKey } from "@/lib/monsoon/estates";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
+
+const MAX_BODY = 65_536;
 
 function invalid(error: string) {
   return NextResponse.json({ outcome: "invalid", error }, { status: 400 });
@@ -20,12 +23,13 @@ export async function POST(request: Request) {
   const denied = requireSession(request);
   if (denied) return denied;
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return invalid("Invalid JSON");
+  const read = await readJson(request, MAX_BODY);
+  if (!read.ok) {
+    // Keep this route's own error shape.
+    const error = read.response.status === 413 ? "Request too large" : "Invalid JSON";
+    return NextResponse.json({ outcome: "invalid", error }, { status: read.response.status });
   }
+  const body = read.body;
   if (typeof body !== "object" || body === null) return invalid("Invalid body");
   const b = body as Record<string, unknown>;
 

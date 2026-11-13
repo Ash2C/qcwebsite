@@ -113,4 +113,13 @@ describe("POST /api/monsoon/refine", () => {
     expect(logged).not.toContain("Jane");
     expect(logged).not.toContain("she is CIO now");
   });
+
+  it("413 to an over-cap body after a valid session, 401 first without one", async () => {
+    const big = JSON.stringify(valid({ pad: "x".repeat(32_768) }));
+    const res = await POST(req(null, true, big));
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: "Request too large" });
+    expect((await POST(req(null, false, big))).status).toBe(401);
+    expect(refineContact).not.toHaveBeenCalled();
+  });
 });

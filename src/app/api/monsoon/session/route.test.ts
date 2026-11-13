@@ -90,4 +90,18 @@ describe("DELETE", () => {
     expect(cookie).toContain("monsoon_session=");
     expect(cookie).toContain("Max-Age=0");
   });
+
+  it("returns 413 for an over-cap body, streamed or declared, before any passcode check", async () => {
+    vi.useFakeTimers();
+    const big = JSON.stringify({ passcode: "x".repeat(4096) });
+    const res = await POST(post(big));
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: "Request too large" });
+    const declared = new Request("http://localhost/api/monsoon/session", {
+      method: "POST",
+      body: "{}",
+      headers: { "Content-Length": "999999" },
+    });
+    expect((await POST(declared)).status).toBe(413);
+  });
 });

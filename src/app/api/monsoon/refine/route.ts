@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/monsoon/auth";
+import { readJson } from "@/lib/monsoon/body";
 import {
   MAX_FIELD,
   MAX_NOTES,
@@ -12,6 +13,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
+const MAX_BODY = 32_768;
+
 const KEYS: (keyof ContactFields)[] = ["name", "title", "org", "email", "phone", "linkedin"];
 
 function bad(error: string) {
@@ -22,12 +25,9 @@ export async function POST(request: Request) {
   const denied = requireSession(request);
   if (denied) return denied;
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return bad("Invalid JSON");
-  }
+  const read = await readJson(request, MAX_BODY);
+  if (!read.ok) return read.response;
+  const body = read.body;
   if (typeof body !== "object" || body === null || Array.isArray(body)) return bad("Invalid body");
   const b = body as Record<string, unknown>;
   const f = b.fields;

@@ -6,11 +6,13 @@ import {
   checkPasscode,
   signSession,
 } from "@/lib/monsoon/auth";
+import { readJson } from "@/lib/monsoon/body";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const FAILURE_DELAY_MS = 1000;
+const MAX_BODY = 4096;
 
 export async function POST(request: Request) {
   if (!authConfigured()) {
@@ -20,12 +22,9 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const read = await readJson(request, MAX_BODY);
+  if (!read.ok) return read.response;
+  const body = read.body;
 
   const candidate =
     typeof body === "object" && body !== null

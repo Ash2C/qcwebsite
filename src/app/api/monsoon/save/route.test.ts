@@ -194,4 +194,14 @@ describe("POST /api/monsoon/save", () => {
     expect(log).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(log.mock.calls)).not.toContain("hunter2");
   });
+
+  it("returns 413 to an over-cap body after a valid session, 401 first without one", async () => {
+    const big = JSON.stringify(validBody({ pad: "x".repeat(65_536) }));
+    const res = await POST(post(big));
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ outcome: "invalid", error: "Request too large" });
+    expect((await POST(post(big, false))).status).toBe(401);
+    expect(capture).not.toHaveBeenCalled();
+    expect(withEstateDb).not.toHaveBeenCalled();
+  });
 });
