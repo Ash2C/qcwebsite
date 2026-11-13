@@ -221,11 +221,27 @@ describe("POST /api/monsoon/act", () => {
 
   it("answers 200 missing when the contact is gone (foreign-key violation) instead of 502", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    addNote.mockRejectedValue(Object.assign(new Error('insert or update on table "touches" violates foreign key constraint'), { code: "23503" }));
+    addNote.mockRejectedValue(Object.assign(new Error('insert or update on table "touches" violates foreign key constraint'), { code: "23503", constraint: "touches_member_id_fkey" }));
     const res = await POST(post(signed(noteProposal(), { text: "hello" })));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "missing", message: "Northwind Capital is no longer on the pipeline; nothing changed." });
     expect(log).not.toHaveBeenCalled();
+  });
+
+  it("answers 502 for a foreign-key violation on any other constraint (a missing owner row)", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    addNote.mockRejectedValue(Object.assign(new Error("boom"), { code: "23503", constraint: "touches_by_whom_fkey" }));
+    const res = await POST(post(signed(noteProposal(), { text: "hello" })));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "Could not reach the Traxo CRM" });
+    expect(log).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers 502 for a 23503 that names no constraint", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    addNote.mockRejectedValue(Object.assign(new Error("boom"), { code: "23503" }));
+    const res = await POST(post(signed(noteProposal(), { text: "hello" })));
+    expect(res.status).toBe(502);
   });
 
   it("still answers 502 for any other database error code while adding a note", async () => {

@@ -21,7 +21,9 @@ const MAX_ROUNDS = 6;
 const DEADLINE_MS = 50_000; // one deadline for all work, inside the route's 60 seconds
 const CALL_TIMEOUT_MS = 20_000;
 const MIN_ROUND_MS = 8_000; // less than this left: no new model round
-const MIN_TOOL_MS = 15_000; // less than this left: no tool starts (a tool may run up to 8s, and the final call needs time after)
+// Less than this left: no tool starts. The 8s statement timeout is per statement, and a tool that
+// runs several statements can take a multiple of it, with the final call still needing time after.
+const MIN_TOOL_MS = 15_000;
 const MIN_FINAL_MS = 5_000; // less than this left: no final call either
 const MAX_TOOLS_PER_REPLY = 8;
 const MAX_PROPOSALS = 4;
@@ -73,7 +75,9 @@ Rules:
 - "Who should I chase" means the user's own contacts (owner VF) plus unassigned ones, unless he says the whole team. Say so: "yours and unassigned".
 - A person filed under a company is changed through that company's entry. Say so when it applies.
 - For a change about a person filed under a company, call the propose tool with person_id, never the company's member_id. If you do not have the person id, look the person up again first.
-- Use the ids from earlier tool results; never invent an id.`;
+- Use the ids from earlier tool results; never invent an id.
+- When the user dictates a note, the note text is the user's own words, tidied only for grammar. Add no facts from the record, no dates, nothing the user did not say, and do not restate what is already on file.
+- Do not say a person is not in the CRM unless a lookup for that person returned nothing in this turn.`;
 }
 
 type Block = { type: string; [k: string]: unknown };

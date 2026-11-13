@@ -469,6 +469,10 @@ describe("buildSystem", () => {
     expect(s).toContain("call the propose tool with person_id, never the company's member_id");
     expect(s).toContain("look the person up again first");
     expect(s).toContain("You cannot delete anything and you cannot change anything yourself; you can only prepare a change for the user to confirm.");
-    expect(s.split(/\s+/).length).toBeLessThan(450);
+    expect(s).toContain("the note text is the user's own words, tidied only for grammar");
+    expect(s).toContain("Add no facts from the record, no dates, nothing the user did not say");
+    expect(s).toContain("do not restate what is already on file");
+    expect(s).toContain("Do not say a person is not in the CRM unless a lookup for that person returned nothing in this turn");
+    expect(s.split(/\s+/).length).toBeLessThan(500);
   });
 });

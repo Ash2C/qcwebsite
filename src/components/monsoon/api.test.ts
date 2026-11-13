@@ -22,7 +22,7 @@ const act = { estate: "traxo", proposal: { kind: "add_note" } as never, signatur
 const CALLS: [string, string, number, () => Promise<unknown>][] = [
   ["signIn", "/api/monsoon/session", 15_000, () => signIn("pass")],
   ["loadEstates", "/api/monsoon/estates", 15_000, () => loadEstates()],
-  ["readCards", "/api/monsoon/read", 35_000, () => readCards(new Blob(["x"]))],
+  ["readCards", "/api/monsoon/read", 90_000, () => readCards(new Blob(["x"]))],
   ["saveCard", "/api/monsoon/save", 35_000, () => saveCard(save)],
   ["refineCard", "/api/monsoon/refine", 35_000, () => refineCard(refine)],
   ["actOnCrm", "/api/monsoon/act", 35_000, () => actOnCrm(act)],
@@ -69,5 +69,41 @@ describe("client timeouts", () => {
   it("still returns a non-2xx status as data, not an exception", async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: "nope" }), { status: 502 }));
     await expect(actOnCrm(act)).resolves.toEqual({ status: 502, body: { error: "nope" } });
+  });
+
+  describe("without AbortSignal.timeout (older iOS Safari)", () => {
+    let original: typeof AbortSignal.timeout;
+    beforeEach(() => {
+      vi.useFakeTimers();
+      timeoutSpy.mockRestore();
+      original = AbortSignal.timeout;
+      Object.defineProperty(AbortSignal, "timeout", { value: undefined, configurable: true, writable: true });
+    });
+    afterEach(() => {
+      Object.defineProperty(AbortSignal, "timeout", { value: original, configurable: true, writable: true });
+      vi.useRealTimers();
+    });
+
+    it("aborts the request from a timer after the limit", async () => {
+      fetchMock.mockImplementation(
+        (_url: string, init: RequestInit) =>
+          new Promise((_res, rej) => {
+            init.signal!.addEventListener("abort", () => rej(init.signal!.reason));
+          }),
+      );
+      const pending = loadEstates();
+      const settled = expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect((fetchMock.mock.calls[0][1] as RequestInit).signal!.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await settled;
+      expect((fetchMock.mock.calls[0][1] as RequestInit).signal!.aborted).toBe(true);
+    });
+
+    it("clears the timer once the request settles", async () => {
+      await loadEstates();
+      expect(vi.getTimerCount()).toBe(0);
+      expect((fetchMock.mock.calls[0][1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    });
   });
 });

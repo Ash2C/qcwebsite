@@ -39,13 +39,28 @@ export type ApiResult<T> = { status: number; body: T };
 // own limit, so the server answers first when it can.
 const TIMEOUT_MS = {
   quick: 15_000, // signIn, loadEstates
-  standard: 35_000, // readCards, saveCard, refineCard, actOnCrm
+  standard: 35_000, // saveCard, refineCard, actOnCrm
+  upload: 90_000, // readCards: the photo upload on a weak connection counts against the limit
   ask: 70_000, // askCrm
 } as const;
 
-// The one place a request is made: every call gets a timeout signal.
-function request(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
-  return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+// The one place a request is made: every call gets a timeout signal. Older iOS Safari has no
+// AbortSignal.timeout, so there an AbortController aborted by a timer does the same job (the timer
+// is cleared once the request settles).
+async function request(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  if (typeof AbortSignal.timeout === "function") {
+    return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+    timeoutMs,
+  );
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function parse<T>(response: Response): Promise<ApiResult<T>> {
@@ -81,7 +96,7 @@ export async function readCards(
 ): Promise<ApiResult<{ cards: CardFields[] } | { error: string }>> {
   const form = new FormData();
   form.append("image", image, "card.jpg");
-  return parse(await request("/api/monsoon/read", { method: "POST", body: form }, TIMEOUT_MS.standard));
+  return parse(await request("/api/monsoon/read", { method: "POST", body: form }, TIMEOUT_MS.upload));
 }
 
 export async function saveCard(

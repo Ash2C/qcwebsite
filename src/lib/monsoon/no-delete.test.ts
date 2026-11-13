@@ -6,52 +6,69 @@ const ROOT = join(__dirname, "..", "..");
 const SCAN = [join(ROOT, "lib", "monsoon"), join(ROOT, "app", "api", "monsoon")];
 const TESTING = join(ROOT, "lib", "monsoon", "testing") + sep;
 
-// Every pattern stays inside one statement: the gaps stop at a semicolon or a backtick (the end of
-// a template literal), and a SET list stops at a top-level WHERE. A WHERE inside parentheses (a
-// subquery in the SET list) does not end it, so a column assigned after a subquery is still seen;
-// parentheses nest to three levels. Comments are blanked first, so one between SET and the column
-// (or one holding a semicolon or WHERE) hides nothing. Aliases, schema prefixes, ONLY, quoted
-// identifiers, other columns earlier in the SET list and the row form SET (a, b) = (...) are all
-// allowed for.
-const STMT = "[^;`]*?";
-const PLAIN = "[^;`()]";
-const GROUP1 = `\\(${PLAIN}*\\)`;
-const GROUP2 = `\\((?:${PLAIN}|${GROUP1})*\\)`;
-const GROUP3 = `\\((?:${PLAIN}|${GROUP2})*\\)`;
-const SET_LIST = `(?:(?!\\bWHERE\\b)${PLAIN}|${GROUP3})*?`;
-const TOUCHES = '(?:ONLY\\s+)?(?:"?\\w+"?\\.)?"?touches"?';
-const NAME = '"?\\w+"?';
-const assigns = (column: string) =>
-  `(?:[\\s,(]"?${column}"?\\s*=|[\\s,]\\(\\s*(?:${NAME}\\s*,\\s*)*"?${column}"?\\s*(?:,\\s*${NAME}\\s*)*\\)\\s*=)`;
+// Each file is scanned twice, as raw text and with comments blanked, and is flagged if either pass
+// matches: blanking hides a comment that splits a statement; the raw pass hides nothing, so a `--`
+// or `/*` inside a string or an operator (`i--;`) cannot swallow what follows.
+// The notes / summary rules look at one statement at a time: from UPDATE ... SET (or DO UPDATE SET)
+// to the next semicolon, backtick or the end of the text. Parentheses are not balanced and strings
+// are not parsed, so nothing nested or quoted can end the SET list early. Inside that statement any
+// `notes` (quoted or not, with an optional table or alias prefix, or in the row form
+// SET (a, notes) = ...) followed by `=` is an assignment, wherever it sits, even past a WHERE. The
+// one exception is a comparison: the word in front of it is WHERE, AND, OR, NOT, ON, HAVING, WHEN,
+// THEN or ELSE (or it is the first thing inside a comment). Anything else in front (SET, a comma, a
+// closing parenthesis, a quote) is flagged, so the check fails loud rather than guessing.
+const COMPARISON_LEAD = /\b(?:WHERE|AND|OR|NOT|ON|HAVING|WHEN|THEN|ELSE)$/i;
+const NAME = '(?:"?\\w+"?\\s*\\.\\s*)?"?\\w+"?';
 
-const FORBIDDEN: { name: string; re: RegExp }[] = [
-  { name: "DELETE FROM", re: /\bDELETE\s+FROM\b/i },
-  { name: "TRUNCATE", re: /\bTRUNCATE\b/i },
-  { name: "DROP", re: /\bDROP\s+(?:TABLE|SCHEMA|COLUMN|DATABASE|VIEW|MATERIALIZED\s+VIEW)\b/i },
-  { name: "ALTER COLUMN", re: /\bALTER\s+COLUMN\b/i },
-  { name: "MERGE", re: /\bMERGE\s+INTO\b/i },
+/** True when what comes before a match makes it a comparison (or the start of a comment's text). */
+function isComparison(before: string): boolean {
+  const lead = before.trimEnd();
+  return COMPARISON_LEAD.test(lead) || lead.endsWith("/*") || lead.endsWith("--");
+}
+
+function assignsColumn(text: string, start: RegExp, column: string): boolean {
+  const plain = new RegExp(`(?<![\\w$"])(?:"?\\w+"?\\s*\\.\\s*)*"?${column}"?\\s*=(?!=)`, "gi");
+  const row = new RegExp(
+    `\\(\\s*(?:${NAME}\\s*,\\s*)*"?${column}"?\\s*(?:,\\s*${NAME}\\s*)*\\)\\s*=(?!=)`,
+    "gi",
+  );
+  for (const s of text.matchAll(new RegExp(start.source, "gi"))) {
+    const tail = text.slice(s.index + s[0].length).split(/[;`]/, 1)[0];
+    for (const re of [plain, row]) {
+      for (const m of tail.matchAll(re)) {
+        if (!isComparison("SET " + tail.slice(0, m.index))) return true;
+      }
+    }
+  }
+  return false;
+}
+
+const UPDATE_SET = /\bUPDATE\b[^;`]*?\bSET\b/;
+const UPDATE_TOUCHES_SET = /\bUPDATE\s+(?:ONLY\s+)?(?:"?\w+"?\.)?"?touches"?\b[^;`]*?\bSET\b/;
+const DO_UPDATE_SET = /\bDO\s+UPDATE\s+SET\b/;
+
+const FORBIDDEN: { name: string; hit: (text: string) => boolean }[] = [
+  { name: "DELETE FROM", hit: (t) => /\bDELETE\s+FROM\b/i.test(t) },
+  { name: "TRUNCATE", hit: (t) => /\bTRUNCATE\b/i.test(t) },
   {
-    name: "UPDATE ... SET notes",
-    re: new RegExp(`(?:\\bUPDATE\\b${STMT}|\\bDO\\s+UPDATE\\s+)\\bSET\\b${SET_LIST}${assigns("notes")}`, "i"),
+    name: "DROP",
+    hit: (t) => /\bDROP\s+(?:TABLE|SCHEMA|COLUMN|DATABASE|VIEW|MATERIALIZED\s+VIEW)\b/i.test(t),
   },
-  {
-    name: "UPDATE touches SET summary",
-    re: new RegExp(`\\bUPDATE\\s+${TOUCHES}\\b${STMT}\\bSET\\b${SET_LIST}${assigns("summary")}`, "i"),
-  },
-  {
-    name: "DO UPDATE SET summary",
-    re: new RegExp(`\\bDO\\s+UPDATE\\s+SET\\b${SET_LIST}${assigns("summary")}`, "i"),
-  },
+  { name: "ALTER COLUMN", hit: (t) => /\bALTER\s+COLUMN\b/i.test(t) },
+  { name: "MERGE", hit: (t) => /\bMERGE\s+INTO\b/i.test(t) },
+  { name: "UPDATE ... SET notes", hit: (t) => assignsColumn(t, UPDATE_SET, "notes") },
+  { name: "UPDATE touches SET summary", hit: (t) => assignsColumn(t, UPDATE_TOUCHES_SET, "summary") },
+  { name: "DO UPDATE SET summary", hit: (t) => assignsColumn(t, DO_UPDATE_SET, "summary") },
 ];
 
-/** SQL and JS comments replaced by a space, so they cannot split or hide a statement. */
+/** SQL and JS comments replaced by a space, so they cannot split a statement. */
 function withoutComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ");
 }
 
 function violations(source: string): string[] {
-  const text = withoutComments(source);
-  return FORBIDDEN.filter((f) => f.re.test(text)).map((f) => f.name);
+  const texts = [source, withoutComments(source)];
+  return FORBIDDEN.filter((f) => texts.some((t) => f.hit(t))).map((f) => f.name);
 }
 
 function files(dir: string): string[] {
@@ -65,6 +82,9 @@ function files(dir: string): string[] {
 }
 
 describe("never delete", () => {
+  // Strictly wider than every earlier version: this list is the union of the samples the three
+  // earlier matchers (2c2c0e1, 8e0cfa0, 5be6ae2) flagged, plus the residual-fix additions. Never
+  // remove an entry; the allowed list below must stay unflagged and the real files must pass.
   it("the matcher flags each forbidden statement", () => {
     const samples: [string, string][] = [
       ["DELETE FROM", "delete  from touches WHERE id = $1"],
@@ -125,6 +145,17 @@ describe("never delete", () => {
       ["DROP", "drop materialized  view if exists mv"],
       ["ALTER COLUMN", "ALTER TABLE members ALTER COLUMN notes TYPE varchar(5)"],
       ["ALTER COLUMN", "alter table touches alter  column summary set not null"],
+      // (h) nesting depth, parentheses in strings, and `--` in code (residual fixes)
+      ["UPDATE ... SET notes", "UPDATE members SET stage = coalesce(lower(trim(upper(x)))), notes = $1"],
+      ["UPDATE ... SET notes", "UPDATE members SET stage = ':)', notes = $1"],
+      ["UPDATE ... SET notes", "UPDATE members SET stage = '(', notes = $1"],
+      ["DELETE FROM", 'i--; await db.query("DELETE FROM touches")'],
+      ["TRUNCATE", 'x = "--force"; await db.query("TRUNCATE members")'],
+      // (i) past a WHERE, quoted, prefixed, a quoted `--` hiding the rest of the line
+      ["UPDATE ... SET notes", "UPDATE members SET stage = $1 WHERE id = $2, notes = $3"],
+      ["UPDATE ... SET notes", "UPDATE members m SET stage = $1, m.notes = $2"],
+      ["UPDATE ... SET notes", "UPDATE members SET stage = '--', notes = $1"],
+      ["UPDATE touches SET summary", "UPDATE touches SET by_whom = ')))))', summary = $1"],
     ];
     for (const [name, sql] of samples) expect(violations(sql), sql).toContain(name);
   });
@@ -148,6 +179,8 @@ describe("never delete", () => {
       "UPDATE touches SET by_whom = (SELECT key FROM owners WHERE key = $1) WHERE id = $2",
       "SELECT 1 FROM touches WHERE summary = $1 AND at > now() - interval '2 minutes'",
       "ALTER TABLE members ADD COLUMN extra text",
+      "UPDATE members m SET stage = $1 WHERE m.notes = $2 AND m.id = $3",
+      "UPDATE touches t SET by_whom = $1 FROM x WHERE t.summary = x.s OR t.id = $2",
     ]) {
       expect(violations(sql), sql).toEqual([]);
     }

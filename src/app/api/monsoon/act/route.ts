@@ -13,6 +13,9 @@ export const maxDuration = 30;
 
 const MAX_BODY = 16_384;
 const MAX_NOTE = 2000;
+// The member foreign key on touches (unnamed in the schema, so Postgres names it this). A 23503 on
+// any other constraint, such as the by_whom owner reference, is not a missing contact.
+const MEMBER_FK = "touches_member_id_fkey";
 
 function bad(error: string) {
   return NextResponse.json({ error }, { status: 400 });
@@ -50,8 +53,10 @@ export async function POST(request: Request) {
           const { status } = await addNote(db, proposal.memberId, text);
           return { status, message: `Done. Note added to ${proposal.memberName}.` };
         } catch (err) {
-          // The contact was removed after the change was offered: a foreign-key violation, not an outage.
-          if ((err as { code?: unknown })?.code === "23503") {
+          // The contact was removed after the change was offered: a violation of the member foreign
+          // key, not an outage. Any other foreign-key violation is rethrown.
+          const e = err as { code?: unknown; constraint?: unknown };
+          if (e?.code === "23503" && e.constraint === MEMBER_FK) {
             return { status: "missing" as const, message: `${proposal.memberName} is no longer on the pipeline; nothing changed.` };
           }
           throw err;
