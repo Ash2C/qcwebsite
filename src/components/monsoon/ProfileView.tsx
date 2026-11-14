@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Profile } from "@/lib/monsoon/contacts";
+import MonsoonLoader from "./MonsoonLoader";
 import { loadProfile, type EstateInfo } from "./api";
 import { localDate } from "./AskPanel";
 import type { ContactTarget } from "./ContactsPanel";
@@ -259,7 +260,10 @@ export default function ProfileView({
     return (
       <div className="flex flex-col gap-3">
         {back}
-        <p className="px-1 text-neutral-500 dark:text-neutral-400">Loading…</p>
+        <p className="flex items-center gap-2 px-1 text-neutral-500 dark:text-neutral-400">
+          <MonsoonLoader className="h-7 w-7" />
+          Loading…
+        </p>
       </div>
     );
   }

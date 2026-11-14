@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ContactHit } from "@/lib/monsoon/contacts";
+import MonsoonLoader from "./MonsoonLoader";
 import { searchContacts, type EstateInfo } from "./api";
 import ProfileActions, { type ProfileDraft } from "./ProfileActions";
 import ProfileView, { roleLabel } from "./ProfileView";
@@ -192,7 +193,10 @@ export default function ContactsPanel({
           </button>
         </div>
       ) : phase === "loading" && rows.length === 0 ? (
-        <p className="px-1 text-neutral-500 dark:text-neutral-400">Loading…</p>
+        <p className="flex items-center gap-2 px-1 text-neutral-500 dark:text-neutral-400">
+          <MonsoonLoader className="h-7 w-7" />
+          Loading…
+        </p>
       ) : phase === "ready" && rows.length === 0 ? (
         <p className="px-1 text-neutral-500 dark:text-neutral-400">
           {searching ? `No contacts match "${q}".` : "No contacts yet."}

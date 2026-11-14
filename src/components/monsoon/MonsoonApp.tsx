@@ -1,5 +1,6 @@
 "use client";
 
+import MonsoonLoader from "./MonsoonLoader";
 import MonsoonLogo from "./MonsoonLogo";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CardFields, CardKind } from "@/lib/monsoon/extract";
@@ -516,7 +517,10 @@ export default function MonsoonApp() {
   if (phase === "loading") {
     return (
       <Shell>
-        <p className="px-6 pt-[max(6rem,env(safe-area-inset-top))] text-center text-neutral-500">Loading…</p>
+        <div role="status" className="flex flex-col items-center px-6 pt-[max(9rem,env(safe-area-inset-top))]">
+          <MonsoonLoader variant="rise" className="h-28 w-28" />
+          <span className="sr-only">Loading…</span>
+        </div>
       </Shell>
     );
   }
@@ -684,19 +688,23 @@ export default function MonsoonApp() {
                 busy ? "pointer-events-none opacity-50" : ""
               }`}
             >
-              <svg
-                aria-hidden="true"
-                viewBox="0 0 24 24"
-                className="h-6 w-6"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M4 8h3l1.5-2h7L17 8h3v11H4z" />
-                <circle cx="12" cy="13" r="3.5" />
-              </svg>
+              {reading ? (
+                <MonsoonLoader className="h-7 w-7" />
+              ) : (
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  className="h-6 w-6"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M4 8h3l1.5-2h7L17 8h3v11H4z" />
+                  <circle cx="12" cy="13" r="3.5" />
+                </svg>
+              )}
               <span>{reading ? "Reading photo…" : "Snap or choose a photo"}</span>
               <input type="file" accept="image/*" hidden disabled={busy} onChange={onPhoto} />
             </label>

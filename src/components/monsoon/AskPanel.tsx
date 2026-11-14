@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AskMessage } from "@/lib/monsoon/ask/loop";
 import type { Ref, ResearchOffer } from "@/lib/monsoon/ask/tools";
+import MonsoonLoader from "./MonsoonLoader";
 import { askCrm, type EstateInfo } from "./api";
 import ChangeCard, { describeChange } from "./ChangeCard";
 import type { ContactTarget } from "./ContactsPanel";
@@ -352,7 +353,8 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
           </div>
         ))}
         {asking && (
-          <p role="status" className="px-1 text-[15px] text-neutral-500 dark:text-neutral-400">
+          <p role="status" className="flex items-center gap-2 px-1 text-[15px] text-neutral-500 dark:text-neutral-400">
+            <MonsoonLoader className="h-7 w-7" />
             Looking...
           </p>
         )}

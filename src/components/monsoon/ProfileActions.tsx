@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Profile } from "@/lib/monsoon/contacts";
+import MonsoonLoader from "./MonsoonLoader";
 import { proposeChange, researchContact, type EstateInfo, type ProposeBody } from "./api";
 import ChangeCard, { DETAIL_LABELS, MAX_NOTE } from "./ChangeCard";
 import ResearchCard from "./ResearchCard";
@@ -335,7 +336,8 @@ export default function ProfileActions({
         </div>
       )}
       {researching && (
-        <p role="status" className="break-words px-1 text-[15px] text-neutral-600 dark:text-neutral-300">
+        <p role="status" className="flex items-center gap-2 break-words px-1 text-[15px] text-neutral-600 dark:text-neutral-300">
+          <MonsoonLoader className="h-8 w-8" />
           {`Researching ${p.name}${p.company ? ` at ${p.company}` : ""}...`}
         </p>
       )}

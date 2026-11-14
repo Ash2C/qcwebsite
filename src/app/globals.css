@@ -55,3 +55,53 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Monsoon loading mark (src/components/monsoon/MonsoonLoader.tsx): the three bars light left to right. */
+.monsoon-loader {
+  --ml-top: #3ccbea;
+  --ml-mid: #1ba3cc;
+  --ml-low: #0d6a8f;
+  --ml-fill: #ffffff;
+  --ml-cycle: 1.5s;
+}
+@media (prefers-color-scheme: dark) {
+  .monsoon-loader {
+    --ml-top: #b4f5ff;
+    --ml-mid: #6ae6ff;
+    --ml-low: #2496c0;
+    --ml-fill: #0e1822;
+  }
+}
+.monsoon-loader .ml-bar {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+}
+.monsoon-loader .ml-bar-1 { animation-delay: 0s; }
+.monsoon-loader .ml-bar-2 { animation-delay: calc(var(--ml-cycle) * 0.13); }
+.monsoon-loader .ml-bar-3 { animation-delay: calc(var(--ml-cycle) * 0.26); }
+.monsoon-loader-blink .ml-bar {
+  opacity: 0.2;
+  animation: monsoon-blink var(--ml-cycle) ease-in-out infinite;
+}
+.monsoon-loader-rise .ml-bar {
+  animation: monsoon-rise var(--ml-cycle) cubic-bezier(0.3, 0.9, 0.3, 1) infinite;
+}
+.monsoon-loader-blink .ml-bar-1, .monsoon-loader-rise .ml-bar-1 { animation-delay: 0s; }
+.monsoon-loader-blink .ml-bar-2, .monsoon-loader-rise .ml-bar-2 { animation-delay: calc(var(--ml-cycle) * 0.13); }
+.monsoon-loader-blink .ml-bar-3, .monsoon-loader-rise .ml-bar-3 { animation-delay: calc(var(--ml-cycle) * 0.26); }
+@keyframes monsoon-blink {
+  0%, 46%, 100% { opacity: 0.2; }
+  14%, 28% { opacity: 1; }
+}
+@keyframes monsoon-rise {
+  0% { transform: scaleY(0); opacity: 1; }
+  30%, 66% { transform: scaleY(1); opacity: 1; }
+  84%, 100% { transform: scaleY(1); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .monsoon-loader .ml-bar {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
