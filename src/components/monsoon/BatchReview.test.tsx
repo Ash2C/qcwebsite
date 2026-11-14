@@ -707,6 +707,7 @@ const cand = (personId: string, name: string): MatchCandidate => ({
   member: null,
   memberOf: null,
   by: "name_company",
+  nameAgrees: true,
 });
 const NONE: CardMatch = { match: "none", candidates: [] };
 const EXACT: CardMatch = { match: "exact", candidates: [cand("p-jane", "Jane Tan")] };
@@ -734,8 +735,9 @@ describe("BatchReview match lines", () => {
   it("makeBatch indexes matches by card and tolerates a short or null list", () => {
     const b = makeBatch([JANE, BOB, CY], [NONE, EXACT], "lp_prospect", "");
     expect(b.rows.map((r) => r.match)).toEqual([NONE, EXACT, null]);
-    expect(b.rows[1].samePerson).toBe("p-jane");
-    expect(b.rows[0].samePerson).toBeUndefined();
+    expect(b.rows[1].choice).toBe("p-jane");
+    expect(b.rows[1].samePerson).toBeUndefined();
+    expect(b.rows[0].choice).toBeUndefined();
     expect(makeBatch([JANE], null, "lp_prospect", "").rows[0].match).toBeNull();
   });
 
@@ -762,19 +764,45 @@ describe("BatchReview match lines", () => {
     expect(m.saveCard.mock.calls[0][0].samePerson).toBe(false);
   });
 
-  it("a Check row with nothing chosen is sent without samePerson", async () => {
+  it("a same_name row with no company waits for a choice and Save all leaves it out", async () => {
     const user = userEvent.setup();
     m.saveCard.mockResolvedValue(added);
     show([BOB, CY], [SAME, NONE]);
-    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
-    await screen.findByText("2 saved to Traxo.");
+    expect(within(row("Bob Lee")).getByText("Check")).toBeInTheDocument();
+    expect(within(row("Bob Lee")).getByText('Choose a match or "Different person" first.')).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save all (1)" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await screen.findByText("Cy Wu added to Traxo.");
+    expect(m.saveCard).toHaveBeenCalledTimes(1);
+    expect(m.saveCard.mock.calls[0][0].fields.name).toBe("Cy Wu");
+  });
+
+  it("choosing a match on a waiting row makes it saveable and sends the choice", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(added);
+    show([BOB], [SAME]);
+    expect(screen.getByRole("button", { name: "Save all (0)" })).toBeDisabled();
+    await open(user, "Bob Lee");
+    await user.click(screen.getByRole("button", { name: "Different person" }));
+    expect(screen.queryByText('Choose a match or "Different person" first.')).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await screen.findByText("1 saved to Traxo.");
+    expect(m.saveCard.mock.calls[0][0].samePerson).toBe(false);
+  });
+
+  it("a same_name row that has a company is not held back", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(added);
+    show([JANE], [SAME]);
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await screen.findByText("1 saved to Traxo.");
     expect(m.saveCard.mock.calls[0][0].samePerson).toBeUndefined();
   });
 
   it("editing a row's Name clears its match and choice", async () => {
     const user = userEvent.setup();
     m.saveCard.mockResolvedValue(added);
-    show([JANE, BOB], [EXACT, SAME]);
+    show([JANE, BOB], [EXACT, NONE]);
     await open(user, "Jane Tan");
     await user.type(screen.getByLabelText("Name"), "x");
     expect(screen.queryByText(/Already on file/)).not.toBeInTheDocument();
@@ -835,5 +863,225 @@ describe("BatchReview match lines", () => {
     await waitFor(() => expect(finishers.length).toBe(2));
     finishers[1](added);
     await screen.findByText("2 saved to Traxo.");
+  });
+});
+
+describe("BatchReview match choice", () => {
+  const refined = (fields: Record<string, string>, notes: string) => ({ status: 200, body: { fields, notes } }) as never;
+  const JANE_FIELDS = { name: "Jane Tan", title: "", org: "Acme Capital", email: "", phone: "", linkedin: "" };
+  const promptResult = {
+    status: 200,
+    body: { outcome: "same_name", matches: [{ personId: "p-jane", org: "Acme Capital" }] },
+  } as never;
+  const sent = (n: number) => m.saveCard.mock.calls[n][0];
+
+  async function speak(user: ReturnType<typeof userEvent.setup>, text: string) {
+    await user.click(screen.getByRole("button", { name: "Speak notes" }));
+    await user.type(screen.getByPlaceholderText("Tap the microphone on the keyboard and talk"), text);
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+  }
+
+  it("a failed save, an edit to Phone and a retry still send the preselected match", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValueOnce({ status: 500, body: {} } as never).mockResolvedValue(added);
+    show([JANE], [EXACT]);
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await screen.findByText("Could not save. Retry.");
+    await open(user, "Jane Tan");
+    await user.type(screen.getByLabelText("Phone"), "5");
+    expect(screen.getByRole("button", { name: "Add what's new" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await screen.findByText("1 saved to Traxo.");
+    expect(sent(0).samePerson).toBe("p-jane");
+    expect(sent(1).samePerson).toBe("p-jane");
+  });
+
+  it("a 401 during Save all keeps the match choice", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValueOnce({ status: 401, body: {} } as never).mockResolvedValue(added);
+    show([JANE], [EXACT]);
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await waitFor(() => expect(handlers.onUnauthorized).toHaveBeenCalled());
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await screen.findByText("1 saved to Traxo.");
+    expect(sent(1).samePerson).toBe("p-jane");
+  });
+
+  it("a server prompt answer wins over the match choice, and a prompt hides the match line", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValueOnce(promptResult).mockResolvedValue(added);
+    show([JANE], [EXACT]);
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await screen.findByRole("button", { name: "Same person (Acme Capital)" });
+    await open(user, "Jane Tan");
+    expect(screen.getByLabelText("Name")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add what's new" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Different person" }));
+    await screen.findByText("1 saved to Traxo.");
+    expect(sent(1).samePerson).toBe(false);
+  });
+
+  it("editing Phone on a needs row drops the prompt and brings the match line back with the choice", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValueOnce(promptResult);
+    show([JANE], [EXACT]);
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await screen.findByRole("button", { name: "Same person (Acme Capital)" });
+    await open(user, "Jane Tan");
+    await user.type(screen.getByLabelText("Phone"), "5");
+    expect(screen.queryByRole("button", { name: "Same person (Acme Capital)" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add what's new" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("editing Email drops the match and the choice", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(added);
+    show([JANE], [EXACT]);
+    await open(user, "Jane Tan");
+    await user.type(screen.getByLabelText("Email"), "a");
+    expect(screen.queryByText(/Already on file/)).not.toBeInTheDocument();
+    expect(within(row("Jane Tan")).queryByText("On file")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await screen.findByText("1 saved to Traxo.");
+    expect(sent(0).samePerson).toBeUndefined();
+  });
+
+  describe("Different person across a Company edit", () => {
+    it("the choice survives, the match line goes, and the save sends false", async () => {
+      const user = userEvent.setup();
+      m.saveCard.mockResolvedValue(added);
+      show([JANE], [EXACT]);
+      await open(user, "Jane Tan");
+      await user.click(screen.getByRole("button", { name: "Different person" }));
+      await user.type(screen.getByLabelText("Company"), " Group");
+      expect(screen.queryByText(/Already on file/)).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await screen.findByText("1 saved to Traxo.");
+      expect(sent(0).samePerson).toBe(false);
+    });
+
+    it("needs_company, then typing the company and saving does not ask again", async () => {
+      const user = userEvent.setup();
+      m.saveCard
+        .mockResolvedValueOnce({ status: 200, body: { outcome: "needs_company" } } as never)
+        .mockResolvedValue(added);
+      show([BOB], [SAME]);
+      await open(user, "Bob Lee");
+      await user.click(screen.getByRole("button", { name: "Different person" }));
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await screen.findByText("Add their company so I can tell them apart.");
+      await user.type(screen.getByLabelText("Company"), "Z Co");
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await screen.findByText("1 saved to Traxo.");
+      expect(sent(1).samePerson).toBe(false);
+      expect(sent(1).fields.org).toBe("Z Co");
+    });
+
+    it("a positive choice does not survive a Company edit", async () => {
+      const user = userEvent.setup();
+      m.saveCard.mockResolvedValue(added);
+      show([JANE], [EXACT]);
+      await open(user, "Jane Tan");
+      await user.type(screen.getByLabelText("Company"), "x");
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await screen.findByText("1 saved to Traxo.");
+      expect(sent(0).samePerson).toBeUndefined();
+    });
+  });
+
+  describe("a tidy that changes who the card is", () => {
+    it("changing the company drops the match and the choice, and Undo does not bring them back", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue(refined({ ...JANE_FIELDS, org: "Borealis" }, "met at demo day"));
+      m.saveCard.mockResolvedValue(added);
+      show([JANE], [EXACT]);
+      await open(user, "Jane Tan");
+      await speak(user, "she is at Borealis");
+      await waitFor(() => expect(screen.getByLabelText("Company")).toHaveValue("Borealis"));
+      expect(screen.queryByText(/Already on file/)).not.toBeInTheDocument();
+      expect(within(row("Jane Tan")).queryByText("On file")).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Undo" }));
+      expect(screen.getByLabelText("Company")).toHaveValue("Acme Capital");
+      expect(screen.queryByText(/Already on file/)).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await screen.findByText("1 saved to Traxo.");
+      expect(sent(0).samePerson).toBeUndefined();
+    });
+
+    it("changing the name drops the match", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue(refined({ ...JANE_FIELDS, name: "Janet Tan" }, "met at demo day"));
+      show([JANE], [EXACT]);
+      await open(user, "Jane Tan");
+      await speak(user, "her name is Janet");
+      await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("Janet Tan"));
+      expect(screen.queryByText(/Already on file/)).not.toBeInTheDocument();
+    });
+
+    it("a tidy that leaves name, company and email alone keeps the match and the choice", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue(refined({ ...JANE_FIELDS, title: "CIO" }, "met at demo day"));
+      show([JANE], [EXACT]);
+      await open(user, "Jane Tan");
+      await speak(user, "she is CIO");
+      await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("CIO"));
+      expect(screen.getByRole("button", { name: "Add what's new" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("on a failed row, a tidy of the title keeps the choice", async () => {
+      const user = userEvent.setup();
+      m.refineCard.mockResolvedValue(refined({ ...JANE_FIELDS, title: "CIO" }, "met at demo day"));
+      m.saveCard.mockResolvedValueOnce({ status: 500, body: {} } as never).mockResolvedValue(added);
+      show([JANE], [EXACT]);
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await screen.findByText("Could not save. Retry.");
+      await open(user, "Jane Tan");
+      await speak(user, "she is CIO");
+      await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("CIO"));
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await screen.findByText("1 saved to Traxo.");
+      expect(sent(1).samePerson).toBe("p-jane");
+    });
+  });
+
+  describe("an email-only match under another name", () => {
+    const jon = cardOf("Jon Poe", "", "jon@x.com");
+    const byEmail = (nameAgrees: boolean): CardMatch => ({
+      match: "exact",
+      candidates: [{ ...cand("p-jonathan", "Jonathan Poe"), company: null, email: "jon@x.com", by: "email", nameAgrees }],
+    });
+
+    it("is tagged Check, not preselected, and goes out unchosen", async () => {
+      const user = userEvent.setup();
+      m.saveCard.mockResolvedValue(added);
+      show([jon], [byEmail(false)]);
+      expect(within(row("Jon Poe")).getByText("Check")).toBeInTheDocument();
+      await open(user, "Jon Poe");
+      expect(screen.getByRole("button", { name: "Add what's new" })).toHaveAttribute("aria-pressed", "false");
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await screen.findByText("1 saved to Traxo.");
+      expect(sent(0).samePerson).toBeUndefined();
+    });
+
+    it("an explicit tap on Add what's new sends the person", async () => {
+      const user = userEvent.setup();
+      m.saveCard.mockResolvedValue(added);
+      show([jon], [byEmail(false)]);
+      await open(user, "Jon Poe");
+      await user.click(screen.getByRole("button", { name: "Add what's new" }));
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await screen.findByText("1 saved to Traxo.");
+      expect(sent(0).samePerson).toBe("p-jonathan");
+    });
+
+    it("the same email with the name agreeing is On file and preselected", async () => {
+      const user = userEvent.setup();
+      m.saveCard.mockResolvedValue(added);
+      show([jon], [byEmail(true)]);
+      expect(within(row("Jon Poe")).getByText("On file")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await screen.findByText("1 saved to Traxo.");
+      expect(sent(0).samePerson).toBe("p-jonathan");
+    });
   });
 });

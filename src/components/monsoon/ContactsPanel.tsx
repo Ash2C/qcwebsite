@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ContactHit } from "@/lib/monsoon/contacts";
 import { searchContacts, type EstateInfo } from "./api";
 import ProfileActions, { type ProfileDraft } from "./ProfileActions";
-import ProfileView, { roleLabel, stageLabel } from "./ProfileView";
+import ProfileView, { roleLabel } from "./ProfileView";
+import { stageLabel } from "./labels";
 import { card, secondaryButton } from "./styles";
 
 export type ContactTarget = { memberId?: string; personId?: string; orgId?: string };

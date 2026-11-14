@@ -15,6 +15,7 @@ import { describeResult, type SavePrompt } from "./outcomes";
 import ContactFormFields, { type FormKey } from "./ContactFormFields";
 import PromptButtons from "./PromptButtons";
 import MatchLine, { type MatchChoice } from "./MatchLine";
+import { changeOf, choiceAfter, confidentId, NEEDS_CHOICE_HINT, needsChoice } from "./matchState";
 import { mergeRefine, type Snapshot } from "./merge";
 import SpeakNotes from "./SpeakNotes";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
@@ -178,15 +179,27 @@ export default function MonsoonApp() {
     void load();
   }, [load]);
 
-  // The match describes the name and company that were read; once either changes it no longer applies.
+  // The match describes the name, company and email that were read; once any changes it no longer applies.
   function dropMatch() {
     setMatch(null);
     setChoice(null);
   }
 
+  // After an edit to who the card is: the match always goes. A positive choice goes too; "Different
+  // person" survives a company edit, so adding the company asked for does not ask the question again.
+  function matchStale(prev: Form, next: Form) {
+    const change = changeOf(prev, next);
+    if (change === "same") return;
+    setMatch(null);
+    setChoice((c) => {
+      const kept = choiceAfter(c?.samePerson, change);
+      return kept === undefined ? null : { samePerson: kept };
+    });
+  }
+
   function edit(key: keyof Form, value: string) {
+    matchStale(formRef.current, { ...formRef.current, [key]: value });
     setForm((f) => ({ ...f, [key]: value }));
-    if (key === "name" || key === "org") dropMatch();
     setBeforeRefine((b) => (b ? { ...b, changed: b.changed.filter((k) => k !== key) } : b));
     dropPrompt();
     setNewOrg(false);
@@ -207,7 +220,7 @@ export default function MonsoonApp() {
     const next = mergeRefine({ fields: curFields, notes: curNotes }, sent, result);
     const merged: Form = { ...cur, ...next.fields, notes: next.notes };
     setForm(merged);
-    if (merged.name !== cur.name || merged.org !== cur.org) dropMatch();
+    matchStale(cur, merged);
     setBeforeRefine((prev) => {
       const base = prev?.form ?? cur;
       const keys = Object.keys(merged) as FormKey[];
@@ -221,7 +234,7 @@ export default function MonsoonApp() {
   function undoRefine() {
     if (!beforeRefine) return;
     setForm(beforeRefine.form);
-    if (beforeRefine.form.name !== form.name || beforeRefine.form.org !== form.org) dropMatch();
+    matchStale(form, beforeRefine.form);
     setBeforeRefine(null);
     dropPrompt();
     setNewOrg(false);
@@ -239,12 +252,13 @@ export default function MonsoonApp() {
     setEstateKey(e.key);
     setRole(startRole(e));
     // Cards not yet saved follow the new estate: its start role, and no per-card role left over.
+    // The matches describe the other CRM: no row keeps one, nor a person id from it.
     setBatch((b) =>
       b
         ? {
             ...b,
             role: startRole(e),
-            rows: b.rows.map((r) => ({ ...r, role: undefined })),
+            rows: b.rows.map((r) => ({ ...r, role: undefined, match: null, choice: undefined, samePerson: undefined })),
           }
         : b,
     );
@@ -312,8 +326,8 @@ export default function MonsoonApp() {
           setKind(f.kind);
           const found = res.body.matches?.[0] ?? null;
           setMatch(found);
-          const only = found?.match === "exact" ? found.candidates[0] : undefined;
-          setChoice(only ? { samePerson: only.personId } : null);
+          const only = confidentId(found);
+          setChoice(only ? { samePerson: only } : null);
         }
         setForm((prev) => ({
           name: f.name ?? "",
@@ -554,6 +568,8 @@ export default function MonsoonApp() {
   }
 
   const busy = reading || saving || tidying;
+  // A name-only match with no company: saving would silently reuse the namesake.
+  const waitingForChoice = needsChoice(match, form.org, choice?.samePerson, samePerson);
   const messageColour =
     message?.tone === "ok"
       ? "text-green-700 dark:text-green-400"
@@ -673,7 +689,8 @@ export default function MonsoonApp() {
               <input type="file" accept="image/*" hidden disabled={busy} onChange={onPhoto} />
             </label>
 
-            {match && (
+            {/* The server's same-name question is the same question as the match line: ask it once. */}
+            {match && prompt?.kind !== "same_name" && (
               <MatchLine
                 match={match}
                 choice={choice}
@@ -754,10 +771,13 @@ export default function MonsoonApp() {
             />
 
             <div className="sticky bottom-0 -mx-4 mt-auto bg-[#f2f2f7]/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:bg-[#07090C]/90">
+              {waitingForChoice && (
+                <p className="pb-2 text-[14px] text-neutral-500 dark:text-neutral-400">{NEEDS_CHOICE_HINT}</p>
+              )}
               <button
                 type="button"
                 className={primaryButton}
-                disabled={busy || !form.name.trim()}
+                disabled={busy || !form.name.trim() || waitingForChoice}
                 onClick={() => void doSave()}
               >
                 {saving ? "Saving…" : "Save"}

@@ -1,7 +1,7 @@
 "use client";
 
 import type { CardMatch, MatchCandidate } from "@/lib/monsoon/match";
-import { stageLabel } from "./ProfileView";
+import { stageLabel } from "./labels";
 
 // null = not chosen yet. A person id = "this is that person"; false = "a different person".
 export type MatchChoice = { samePerson: string | false } | null;

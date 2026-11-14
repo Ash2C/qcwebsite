@@ -18,8 +18,9 @@ const JANE: MatchCandidate = {
   member: { memberId: "m1", memberKind: "person", role: "lp_prospect", stage: "warm_intro" },
   memberOf: "self",
   by: "name_company",
+  nameAgrees: true,
 };
-const JANE_2: MatchCandidate = { ...JANE, personId: "p2", company: null, member: null, memberOf: null, by: "name" };
+const JANE_2: MatchCandidate = { ...JANE, personId: "p2", company: null, member: null, memberOf: null, by: "name", nameAgrees: true };
 
 function setup(match: CardMatch, choice: Parameters<typeof MatchLine>[0]["choice"] = null, disabled = false) {
   const onChoose = vi.fn();
@@ -99,5 +100,33 @@ describe("MatchLine", () => {
   it("disables the three buttons of a single match when disabled", () => {
     setup({ match: "exact", candidates: [JANE] }, null, true);
     for (const b of screen.getAllByRole("button")) expect(b).toBeDisabled();
+  });
+
+  it("roleLabel renames the role on the standing line", () => {
+    const onChoose = vi.fn();
+    render(
+      <MatchLine
+        match={{ match: "exact", candidates: [JANE] }}
+        choice={null}
+        onChoose={onChoose}
+        onOpen={vi.fn()}
+        roleLabel={(key) => (key === "lp_prospect" ? "LP prospect" : key)}
+      />,
+    );
+    expect(screen.getByText("LP prospect · Warm intro")).toBeInTheDocument();
+  });
+
+  it("canOpen false hides the buttons that leave for a profile", () => {
+    render(
+      <MatchLine match={{ match: "exact", candidates: [JANE] }} choice={null} onChoose={vi.fn()} onOpen={vi.fn()} canOpen={false} />,
+    );
+    expect(screen.queryByRole("button", { name: "Open profile" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add what's new" })).toBeInTheDocument();
+    cleanup();
+    render(
+      <MatchLine match={{ match: "several", candidates: [JANE, JANE_2] }} choice={null} onChoose={vi.fn()} onOpen={vi.fn()} canOpen={false} />,
+    );
+    expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "This one" })).toHaveLength(2);
   });
 });

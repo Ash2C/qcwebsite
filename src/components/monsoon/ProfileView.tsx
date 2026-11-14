@@ -5,6 +5,7 @@ import type { Profile } from "@/lib/monsoon/contacts";
 import { loadProfile, type EstateInfo } from "./api";
 import { localDate } from "./AskPanel";
 import type { ContactTarget } from "./ContactsPanel";
+import { stageLabel } from "./labels";
 import { card, secondaryButton } from "./styles";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -20,11 +21,6 @@ export function formatDate(value: string): string {
 
 export function roleLabel(estate: EstateInfo, key: string): string {
   return estate.roles.find((r) => r.key === key)?.label ?? key.replace(/_/g, " ");
-}
-
-export function stageLabel(key: string): string {
-  const text = key.replace(/_/g, " ");
-  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 // An http(s) URL for a stored value, adding https:// when it has no scheme; null for anything else.

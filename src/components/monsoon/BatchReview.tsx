@@ -8,6 +8,7 @@ import { saveCard, type EstateInfo, type SaveBody } from "./api";
 import { changedClass, notesRows, Was } from "./Highlight";
 import { describeResult, type SavePrompt } from "./outcomes";
 import MatchLine, { type MatchChoice } from "./MatchLine";
+import { changeOf, choiceAfter, confidentId, matchTag, NEEDS_CHOICE_HINT, needsChoice } from "./matchState";
 import PromptButtons from "./PromptButtons";
 import { mergeRefine, type Snapshot } from "./merge";
 import SpeakNotes from "./SpeakNotes";
@@ -23,6 +24,10 @@ export type BatchRow = {
   role?: string; // undefined = use the batch role
   notes?: string; // undefined = use the batch note
   newOrg?: boolean;
+  // The user's choice about the match line: a person id, or false = a different person. Kept apart
+  // from `samePerson`, so resetting a prompt answer never wipes a still-valid choice.
+  choice?: string | false;
+  // The answer to a same-name prompt from the server.
   samePerson?: string | false;
   status: "pending" | "saving" | "saved" | "needs" | "failed";
   message?: string;
@@ -41,23 +46,22 @@ export function makeBatch(cards: CardFields[], matches: (CardMatch | null)[] | n
     note,
     rows: cards.map((c, i) => {
       const match = matches?.[i] ?? null;
-      const only = match?.match === "exact" ? match.candidates[0] : undefined;
       return {
-      id: crypto.randomUUID(),
-      captureId: crypto.randomUUID(),
-      fields: {
-        name: c.name ?? "",
-        title: c.title ?? "",
-        org: c.org ?? "",
-        email: c.email ?? "",
-        phone: c.phone ?? "",
-        linkedin: c.linkedin ?? "",
-      },
-      extracted: c,
-      kind: c.kind,
-      match,
-      samePerson: only?.personId,
-      status: "pending" as const,
+        id: crypto.randomUUID(),
+        captureId: crypto.randomUUID(),
+        fields: {
+          name: c.name ?? "",
+          title: c.title ?? "",
+          org: c.org ?? "",
+          email: c.email ?? "",
+          phone: c.phone ?? "",
+          linkedin: c.linkedin ?? "",
+        },
+        extracted: c,
+        kind: c.kind,
+        match,
+        choice: confidentId(match),
+        status: "pending" as const,
       };
     }),
   };
@@ -66,20 +70,30 @@ export function makeBatch(cards: CardFields[], matches: (CardMatch | null)[] | n
 const SAVE_FAILED = "Could not save. Retry.";
 
 function isEligible(r: BatchRow): boolean {
-  return (r.status === "pending" || r.status === "failed") && r.fields.name.trim() !== "";
+  return (
+    (r.status === "pending" || r.status === "failed") &&
+    r.fields.name.trim() !== "" &&
+    !needsChoice(r.match, r.fields.org, r.choice, r.samePerson)
+  );
+}
+
+// A row whose save would silently reuse a namesake: it waits for a choice.
+function waitsForChoice(r: BatchRow): boolean {
+  return (
+    (r.status === "pending" || r.status === "failed") &&
+    r.fields.name.trim() !== "" &&
+    needsChoice(r.match, r.fields.org, r.choice, r.samePerson)
+  );
+}
+
+function identity(f: Record<FieldKey, string>) {
+  return { name: f.name, org: f.org, email: f.email };
 }
 
 function summary(r: BatchRow): string {
   const name = r.fields.name.trim() || "(no name)";
   const second = r.fields.org.trim() || r.fields.email.trim();
   return second ? `${name} · ${second}` : name;
-}
-
-function matchTag(match: CardMatch | null): string | null {
-  if (!match) return null;
-  if (match.match === "none") return "New";
-  if (match.match === "exact") return "On file";
-  return "Check";
 }
 
 function statusColour(status: BatchRow["status"]): string {
@@ -142,8 +156,10 @@ export default function BatchReview({
   function editField(row: BatchRow, key: FieldKey, value: string) {
     const fields = { ...row.fields, [key]: value };
     const before = dropChanged(row, key);
-    // A different name or company may be a different person: the match and the choice no longer apply.
-    const stale = key === "name" || key === "org" ? { match: null, samePerson: undefined } : {};
+    // A different name, company or email may be a different person: the match no longer applies, nor a
+    // positive choice. "Different person" survives a company edit.
+    const change = changeOf(identity(row.fields), identity(fields));
+    const stale = change === "same" ? {} : { match: null, choice: choiceAfter(row.choice, change) };
     // A changed field is a fresh attempt: the old answer and message no longer apply.
     if (row.status === "needs" || row.status === "failed") {
       patchRow(row.id, {
@@ -153,7 +169,7 @@ export default function BatchReview({
         message: undefined,
         prompt: undefined,
         newOrg: undefined,
-        samePerson: undefined,
+        samePerson: choiceAfter(row.samePerson, change === "same" ? "person" : change),
         ...stale,
       });
     } else {
@@ -181,13 +197,22 @@ export default function BatchReview({
           (k) => next.fields[k] !== base.fields[k],
         );
         if (next.notes !== wasNotes) changed.push("notes");
+        const change = changeOf(identity(r.fields), identity(next.fields));
+        const stale = change === "same" ? {} : { match: null, choice: choiceAfter(r.choice, change) };
         const reset =
           r.status === "needs" || r.status === "failed"
-            ? { status: "pending" as const, message: undefined, prompt: undefined, newOrg: undefined, samePerson: undefined }
+            ? {
+                status: "pending" as const,
+                message: undefined,
+                prompt: undefined,
+                newOrg: undefined,
+                samePerson: choiceAfter(r.samePerson, change === "same" ? "person" : change),
+              }
             : {};
         return {
           ...r,
           ...reset,
+          ...stale,
           fields: { ...next.fields },
           // Notes equal to what the card already shows stay on "Same as batch".
           notes: next.notes === nowNotes ? r.notes : next.notes,
@@ -200,11 +225,19 @@ export default function BatchReview({
   function undoRefine(row: BatchRow) {
     if (!row.before) return;
     // Same reset as a hand edit: the answers and buttons belonged to the tidied values.
+    const change = changeOf(identity(row.fields), identity(row.before.fields));
+    const stale = change === "same" ? {} : { match: null, choice: choiceAfter(row.choice, change) };
     const reset =
       row.status === "needs" || row.status === "failed"
-        ? { status: "pending" as const, message: undefined, prompt: undefined, newOrg: undefined, samePerson: undefined }
+        ? {
+            status: "pending" as const,
+            message: undefined,
+            prompt: undefined,
+            newOrg: undefined,
+            samePerson: choiceAfter(row.samePerson, change === "same" ? "person" : change),
+          }
         : {};
-    patchRow(row.id, { ...reset, fields: row.before.fields, notes: row.before.notes, before: undefined });
+    patchRow(row.id, { ...reset, ...stale, fields: row.before.fields, notes: row.before.notes, before: undefined });
   }
 
   // Saves one row. Resolves false when the loop must stop (401).
@@ -226,7 +259,8 @@ export default function BatchReview({
       extracted: row.extracted,
       kind: row.kind,
       newOrg: row.newOrg || undefined,
-      samePerson: row.samePerson,
+      // A prompt answer wins over the match choice; nothing chosen sends nothing.
+      samePerson: row.samePerson ?? row.choice,
     };
     const failed = (message: string) => patchRow(row.id, { status: "failed", message });
     try {
@@ -336,71 +370,77 @@ export default function BatchReview({
       </div>
 
       <ul className="flex flex-col gap-3">
-        {batch.rows.map((row) => (
-          <li key={row.id} className={`${card} overflow-hidden`}>
-            <button
-              type="button"
-              aria-expanded={openId === row.id}
-              onClick={() => setOpenId(openId === row.id ? null : row.id)}
-              className="flex min-h-[56px] w-full flex-col items-start justify-center gap-0.5 px-4 py-2 text-left"
-            >
-              <span className="flex items-center gap-2">
-                <span className="text-[17px] font-semibold">{summary(row)}</span>
-                {matchTag(row.match) && (
-                  <span className="rounded-full bg-neutral-200 px-2 py-0.5 text-[12px] font-semibold text-neutral-700 dark:bg-white/15 dark:text-neutral-200">
-                    {matchTag(row.match)}
-                  </span>
+        {batch.rows.map((row) => {
+          const tag = matchTag(row.match);
+          return (
+            <li key={row.id} className={`${card} overflow-hidden`}>
+              <button
+                type="button"
+                aria-expanded={openId === row.id}
+                onClick={() => setOpenId(openId === row.id ? null : row.id)}
+                className="flex min-h-[56px] w-full flex-col items-start justify-center gap-0.5 px-4 py-2 text-left"
+              >
+                <span className="flex items-center gap-2">
+                  <span className="text-[17px] font-semibold">{summary(row)}</span>
+                  {tag && (
+                    <span className="rounded-full bg-neutral-200 px-2 py-0.5 text-[12px] font-semibold text-neutral-700 dark:bg-white/15 dark:text-neutral-200">
+                      {tag}
+                    </span>
+                  )}
+                </span>
+                {row.fields.name.trim() === "" && (
+                  <span className="text-[14px] font-medium text-red-600 dark:text-red-400">Add a name</span>
                 )}
-              </span>
-              {row.fields.name.trim() === "" && (
-                <span className="text-[14px] font-medium text-red-600 dark:text-red-400">Add a name</span>
+                {waitsForChoice(row) && (
+                  <span className="text-[14px] font-medium text-red-600 dark:text-red-400">{NEEDS_CHOICE_HINT}</span>
+                )}
+                {row.status === "saving" && (
+                  <span className="text-[14px] text-neutral-500 dark:text-neutral-400">Saving…</span>
+                )}
+              </button>
+              {row.message && (
+                <p className={`px-4 pb-3 text-[16px] font-medium leading-snug ${statusColour(row.status)}`}>
+                  {row.message}
+                </p>
               )}
-              {row.status === "saving" && (
-                <span className="text-[14px] text-neutral-500 dark:text-neutral-400">Saving…</span>
+              {row.prompt && (
+                <div className="px-4 pb-3">
+                  <PromptButtons
+                    prompt={row.prompt}
+                    disabled={running || tidying}
+                    onUseOrg={(org) =>
+                      void run([{ ...row, fields: { ...row.fields, org }, newOrg: undefined }])
+                    }
+                    onDifferentCompany={() => void run([{ ...row, newOrg: true }])}
+                    onSamePerson={(personId) => void run([{ ...row, samePerson: personId }])}
+                  />
+                </div>
               )}
-            </button>
-            {row.message && (
-              <p className={`px-4 pb-3 text-[16px] font-medium leading-snug ${statusColour(row.status)}`}>
-                {row.message}
-              </p>
-            )}
-            {row.prompt && (
-              <div className="px-4 pb-3">
-                <PromptButtons
-                  prompt={row.prompt}
-                  disabled={running || tidying}
-                  onUseOrg={(org) =>
-                    void run([{ ...row, fields: { ...row.fields, org }, newOrg: undefined }])
-                  }
-                  onDifferentCompany={() => void run([{ ...row, newOrg: true }])}
-                  onSamePerson={(personId) => void run([{ ...row, samePerson: personId }])}
+              {openId === row.id && (
+                <RowEditor
+                  row={row}
+                  estate={estate}
+                  running={running}
+                  tidying={(tidyCounts[row.id] ?? 0) > 0}
+                  anyTidying={tidying}
+                  canOpen={!running && !!onOpenProfile}
+                  onOpenProfile={(id) => onOpenProfile?.(id)}
+                  batchNote={batch.note}
+                  onField={(key, value) => editField(row, key, value)}
+                  onRole={(role) => patchRow(row.id, { role })}
+                  onChoose={(choice) => patchRow(row.id, { choice })}
+                  onNotes={(notes) => patchRow(row.id, { notes, before: dropChanged(row, "notes") })}
+                  onDraft={(spoken) => patchRow(row.id, { spoken })}
+                  onApply={(next, sent) => applyRefine(row.id, next, sent)}
+                  onBusy={(b) => setRowBusy(row.id, b)}
+                  onUndo={() => undoRefine(row)}
+                  onUnauthorized={onUnauthorized}
+                  onRemove={() => remove(row)}
                 />
-              </div>
-            )}
-            {openId === row.id && (
-              <RowEditor
-                row={row}
-                estate={estate}
-                running={running}
-                tidying={(tidyCounts[row.id] ?? 0) > 0}
-                anyTidying={tidying}
-                canOpen={!running && !!onOpenProfile}
-                onOpenProfile={(id) => onOpenProfile?.(id)}
-                batchNote={batch.note}
-                onField={(key, value) => editField(row, key, value)}
-                onRole={(role) => patchRow(row.id, { role })}
-                onChoose={(samePerson) => patchRow(row.id, { samePerson })}
-                onNotes={(notes) => patchRow(row.id, { notes, before: dropChanged(row, "notes") })}
-                onDraft={(spoken) => patchRow(row.id, { spoken })}
-                onApply={(next, sent) => applyRefine(row.id, next, sent)}
-                onBusy={(b) => setRowBusy(row.id, b)}
-                onUndo={() => undoRefine(row)}
-                onUnauthorized={onUnauthorized}
-                onRemove={() => remove(row)}
-              />
-            )}
-          </li>
-        ))}
+              )}
+            </li>
+          );
+        })}
       </ul>
 
       {allSaved && (
@@ -473,11 +513,12 @@ function RowEditor({
   onRemove: () => void;
 }) {
   const locked = row.status === "saved" || row.status === "saving" || running || tidying;
-  const choice: MatchChoice = row.samePerson === undefined ? null : { samePerson: row.samePerson };
+  const choice: MatchChoice = row.choice === undefined ? null : { samePerson: row.choice };
   const marked = (key: FieldKey | "notes") => row.before?.changed.includes(key) ?? false;
   return (
     <div className="divide-y divide-neutral-200 border-t border-neutral-200 dark:divide-white/10 dark:border-white/10">
-      {row.match && row.status !== "saved" && (
+      {/* The server's same-name question is the same question as the match line: ask it once. */}
+      {row.match && row.status !== "saved" && row.prompt?.kind !== "same_name" && (
         <div className="p-3">
           <MatchLine
             match={row.match}
