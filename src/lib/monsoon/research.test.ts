@@ -388,6 +388,65 @@ describe("vet vouching and summary", () => {
   });
 });
 
+describe("vet residual guards", () => {
+  const nothing = { outcome: "nothing" };
+  const NEWS = "https://news.example.test/ada";
+  const emailKept = (email: string, site: string, srcHost: string) => {
+    const src = `https://${srcHost}/team`;
+    const r = vet(
+      raw({ findings: [f("work_email", email, src)] }),
+      [...RETURNED, src],
+      { ...SUBJECT, email: null, companyWebsite: site },
+    );
+    return r.outcome === "findings";
+  };
+
+  it.each([
+    ["mia@acme.co.uk", "https://www.acme.co.uk", "www.acme.co.uk", true],
+    ["mia@mail.acme.com", "https://acme.com", "acme.com", true],
+    ["mia@acme.com", "https://careers.acme.com", "careers.acme.com", true],
+    ["x@co.uk", "https://acme.co.uk", "acme.co.uk", false],
+    ["x@com.au", "https://acme.com.au", "acme.com.au", false],
+    ["x@other.com", "https://acme.com", "acme.com", false],
+    ["x@github.io", "https://acme.github.io", "acme.github.io", false],
+  ])("email %s against %s", (email, site, srcHost, kept) => {
+    expect(emailKept(email, site, srcHost)).toBe(kept);
+  });
+
+  it.each([
+    "He has led the team since 2019.",
+    "He worked there from 2015-2019.",
+    "She was CFO in FY2019-2022.",
+    "The fund raised US$1,500,000,000 in total.",
+  ])("keeps a summary with %s", (summary) => {
+    expect(vet(raw({ summary, summary_sources: [NEWS] }), RETURNED, SUBJECT).outcome).toBe("findings");
+  });
+
+  it.each(["Call +1 212 555 0199 today.", "Call (212) 555-0199 ext 4.", "Call 6591234567 today."])(
+    "drops a summary with the phone number in %s",
+    (summary) => {
+      expect(vet(raw({ summary, summary_sources: [NEWS] }), RETURNED, SUBJECT)).toEqual(nothing);
+    },
+  );
+
+  const title = (value: string, company: string | null) => {
+    const r = vet(raw({ findings: [f("title", value, NEWS)] }), RETURNED, { ...SUBJECT, company, title: null });
+    return r.outcome === "findings" ? r.findings.map((x) => x.to) : [];
+  };
+  it.each([
+    ["VC investment at Raffles Family Office", "Raffles Family Office", "VC investment"],
+    ["Analyst at Everberg Capital", "Everberg Capital, LLC", "Analyst"],
+    ["analyst AT EVERBERG CAPITAL Ltd", "Everberg Capital", "analyst"],
+    ["Head of Investments", "Everberg Capital", "Head of Investments"],
+    ["Partner at Large", "Everberg Capital", "Partner at Large"],
+  ])("title %s at company %s gives %s", (value, company, expected) => {
+    expect(title(value, company)).toEqual([expected]);
+  });
+  it("drops a title that is only the company suffix", () => {
+    expect(title(" at Everberg Capital", "Everberg Capital")).toEqual([]);
+  });
+});
+
 describe("anchors", () => {
   const base = { ...SUBJECT, company: null, email: null, companyWebsite: null };
   it("is false for name only and gmail only", () => {

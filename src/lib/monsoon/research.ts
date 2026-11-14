@@ -160,6 +160,34 @@ function cutSummary(s: string): string {
 const same = (a: string | null | undefined, b: string): boolean =>
   !!a && a.trim().toLowerCase() === b.trim().toLowerCase();
 
+const SECOND_LEVEL = ["co", "com", "org", "net", "gov", "edu", "ac"];
+
+/** Last two labels, or the last three when the second-to-last is a common second-level label. */
+function registrable(host: string): string[] {
+  const labels = cleanHost(host).split(".");
+  const n = labels.length >= 3 && SECOND_LEVEL.includes(labels[labels.length - 2]) ? 3 : 2;
+  return labels.slice(-n);
+}
+
+/** Same registrable domain, and the domain has at least as many labels as it (a bare suffix never matches). */
+function sameRegistrable(domain: string, host: string): boolean {
+  const a = registrable(domain);
+  const b = registrable(host);
+  return cleanHost(domain).split(".").length >= a.length && a.length === b.length && a.join(".") === b.join(".");
+}
+
+/** "Analyst at Acme Ltd" for a contact at Acme: the part before " at ", else the title unchanged. */
+function stripAtCompany(title: string, company: string | null): string {
+  const name = company?.trim().toLowerCase();
+  if (!name) return title;
+  const core = name.replace(/(,\s*|\s+)(llc|ltd|inc|limited|corp|plc)\.?$/i, "").trim();
+  const m = /^(.*?)(?:^|\s)at\s+(.+)$/i.exec(title);
+  if (!m) return title;
+  const tail = m[2].toLowerCase();
+  if (!tail.includes(name) && !(core && tail.includes(core))) return title;
+  return m[1].trim();
+}
+
 /** Pure. `returned` is every URL the search tool returned in this run. */
 export function vet(raw: RawResearch, returned: string[], subject: ResearchSubject): Vetted {
   if (raw.identity !== "established") return { outcome: "not_identified" };
@@ -247,8 +275,9 @@ export function vet(raw: RawResearch, returned: string[], subject: ResearchSubje
     if (it.field === "email" || it.field === "phone") {
       emailPhone.push(it);
     } else if (it.field === "title") {
-      if (it.value.length > 120 || /[(\uFF08]/.test(it.value)) continue;
-      finish(it, it.value, "person");
+      const title = stripAtCompany(it.value, subject.company);
+      if (!title || title.length > 120 || /[(\uFF08]/.test(title)) continue;
+      finish(it, title, "person");
     } else if (it.field === "linkedin") {
       const base = it.value.split(/[?#]/)[0];
       if (!LINKEDIN_IN.test(base)) continue;
@@ -294,7 +323,8 @@ export function vet(raw: RawResearch, returned: string[], subject: ResearchSubje
       const domain = cleanHost(it.value.slice(it.value.lastIndexOf("@") + 1));
       if (FREE_MAIL.some((d) => hostMatches(domain, d))) continue;
       // The address must belong to the vouching site: same domain, a subdomain or a parent of it.
-      if (!employerHosts.some((h) => hostMatches(domain, h) || hostMatches(h, domain))) continue;
+      if (NOT_COMPANY_SITES.includes(domain)) continue;
+      if (!employerHosts.some((h) => sameRegistrable(domain, h))) continue;
     } else if (!/^\+?[0-9 ().-]{7,25}$/.test(it.value)) {
       continue;
     }
@@ -312,7 +342,7 @@ export function vet(raw: RawResearch, returned: string[], subject: ResearchSubje
 
   let summary = typeof raw.summary === "string" ? raw.summary.replace(/\s+/g, " ").trim() : "";
   // The summary is free text: contact details and links do not belong in it.
-  if (/[^\s@]+@[^\s@]+/.test(summary) || /https?:\/\/|www\./i.test(summary) || /\+?\d(?:[\s.\-()]*\d){6,}/.test(summary)) {
+  if (/[^\s@]+@[^\s@]+/.test(summary) || /https?:\/\/|www\./i.test(summary) || /\+?\d(?:[\s.\-()]*\d){8,}/.test(summary.replace(/\b(?:19|20)\d\d[-/\s](?:19|20)\d\d\b/g, ""))) {
     summary = "";
   }
   const summarySources: string[] = [];
