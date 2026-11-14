@@ -54,22 +54,41 @@ function mailHref(value: string): string | null {
   return `mailto:${encodeURIComponent(parts[0])}@${encodeURIComponent(parts[1])}`;
 }
 
-type PhonePart = { text: string; note: string; href: string | null };
+type PhoneSegment = { text: string; href: string | null };
 
-// A stored phone value may hold several numbers ("a (office); b (mobile)"), each with an annotation.
-function phoneParts(value: string): PhonePart[] {
-  return value
-    .split(/[;/]/)
-    .map((raw) => raw.trim())
-    .filter(Boolean)
-    .map((raw) => {
-      const cut = raw.search(/\(\s*[a-z]|\b(?:office|mobile|ext)\b/i);
-      const number = (cut < 0 ? raw : raw.slice(0, cut)).trim();
-      const note = cut < 0 ? "" : raw.slice(cut);
-      const digits = number.replace(/\D/g, "");
-      const dial = (number.startsWith("+") ? "+" : "") + digits;
-      return { text: number, note, href: digits.length >= 6 ? `tel:${dial}` : null };
-    });
+// A phone number run: optional +, digits with spaces, dots, hyphens and brackets between them. It never
+// crosses a comma, semicolon, slash, letter or line break, so lists and labels split it naturally.
+const PHONE_RUN = /\+?\(?\d(?:[\d \t().-]*\d)?\)?/g;
+// An extension right after a number is not dialled: it stays text beside the link.
+const PHONE_EXT = /^[ \t]*(?:(?:x|ext\.?)[ \t]*|#)\d+/i;
+
+// The stored value as text and tappable numbers, in its original order and wording.
+function phoneSegments(value: string): PhoneSegment[] {
+  const out: PhoneSegment[] = [];
+  let at = 0;
+  const push = (text: string, href: string | null) => {
+    if (text) out.push({ text, href });
+  };
+  PHONE_RUN.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PHONE_RUN.exec(value)) !== null) {
+    const run = m[0];
+    const digits = run.replace(/\D/g, "");
+    push(value.slice(at, m.index), null);
+    const linkable = digits.length >= 7 && digits.length <= 15;
+    push(run, linkable ? `tel:${run.startsWith("+") ? "+" : ""}${digits}` : null);
+    at = m.index + run.length;
+    if (linkable) {
+      const ext = PHONE_EXT.exec(value.slice(at));
+      if (ext) {
+        push(ext[0], null);
+        at += ext[0].length;
+      }
+    }
+    PHONE_RUN.lastIndex = at;
+  }
+  push(value.slice(at), null);
+  return out;
 }
 
 type Phase = "loading" | "ready" | "missing" | "failed";
@@ -257,20 +276,17 @@ export default function ProfileView({
         </Detail>
         <Detail label="Phone">
           {p.phone ? (
-            <div className="flex flex-col">
-              {phoneParts(p.phone).map((part, i) => (
-                <span key={i}>
-                  {part.href ? (
-                    <a href={part.href} className={linkClass}>
-                      {part.text}
-                    </a>
-                  ) : (
-                    part.text
-                  )}
-                  {part.note ? ` ${part.note}` : null}
-                </span>
-              ))}
-            </div>
+            <span className="whitespace-pre-line">
+              {phoneSegments(p.phone).map((seg, i) =>
+                seg.href ? (
+                  <a key={i} href={seg.href} className={linkClass}>
+                    {seg.text}
+                  </a>
+                ) : (
+                  <span key={i}>{seg.text}</span>
+                ),
+              )}
+            </span>
           ) : (
             "(none)"
           )}

@@ -169,23 +169,35 @@ describe("ProfileView", () => {
     expect(document.querySelector('a[href^="mailto:"]')).toBeNull();
   });
 
-  it("does not link a phone value that is too short or carries query characters", async () => {
-    m.loadProfile.mockResolvedValue(profile({ phone: "123?x&y" }));
-    view();
-    await flush();
-    expect(screen.getByText("123?x&y")).toBeInTheDocument();
-    expect(document.querySelector('a[href^="tel:"]')).toBeNull();
-  });
-
-  it("links each number of a multi-number phone value, annotations as text", async () => {
-    m.loadProfile.mockResolvedValue(profile({ phone: "+1 212-970-5762 (office); +1 973-558-0598 (mobile)" }));
+  it.each([
+    ["+65 6123 4567", ["tel:+6561234567"]],
+    ["212-675-1600", ["tel:2126751600"]],
+    ["+1 212-970-5762 (office); +1 973-558-0598 (mobile)", ["tel:+12129705762", "tel:+19735580598"]],
+    ["Office 212-675-1600, mobile 646-404-4166", ["tel:2126751600", "tel:6464044166"]],
+    ["212-675-1600, 646-404-4166", ["tel:2126751600", "tel:6464044166"]],
+    ["212-675-1600 or 646-404-4166", ["tel:2126751600", "tel:6464044166"]],
+    ["212-675-1600 x123", ["tel:2126751600"]],
+    ["212-675-1600 ext. 1234567", ["tel:2126751600"]],
+    ["(212) 675-1600", ["tel:2126751600"]],
+    ["123?x&y", []],
+    ["call the front desk", []],
+    ["12345678901234567890", []],
+  ])("phone %j links exactly %j and shows the stored text", async (phone, hrefs) => {
+    m.loadProfile.mockResolvedValue(profile({ phone }));
     view();
     await flush();
     const links = Array.from(document.querySelectorAll('a[href^="tel:"]'));
-    expect(links.map((a) => a.getAttribute("href"))).toEqual(["tel:+12129705762", "tel:+19735580598"]);
-    expect(links.map((a) => a.textContent)).toEqual(["+1 212-970-5762", "+1 973-558-0598"]);
-    expect(screen.getByText(/\(office\)/)).toBeInTheDocument();
-    expect(screen.getByText(/\(mobile\)/)).toBeInTheDocument();
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(hrefs);
+    const dd = screen.getByText("Phone").parentElement!.querySelector("dd")!;
+    expect(dd.textContent).toBe(phone);
+  });
+
+  it("keeps an extension as text after the link", async () => {
+    m.loadProfile.mockResolvedValue(profile({ phone: "212-675-1600 x123" }));
+    view();
+    await flush();
+    expect(screen.getByRole("link", { name: "212-675-1600" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "212-675-1600" }).nextSibling?.textContent).toBe(" x123");
   });
 
   it("keeps the profile and offers Retry when a reload fails", async () => {
