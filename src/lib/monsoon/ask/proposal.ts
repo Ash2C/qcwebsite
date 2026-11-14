@@ -45,6 +45,7 @@ export type DetailChange = { field: DetailField; from: string | null; to: string
 const PERSON_FIELDS: readonly string[] = ["name", "title", "email", "phone", "linkedin", "country", "company"];
 const COMPANY_FIELDS: readonly string[] = ["website", "country"];
 const MAX_DETAIL = 300;
+const MAX_FROM = 2000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** `text` is the suggested note text; it is not signed because the user may edit it on the card. */
@@ -111,7 +112,8 @@ function wellFormedDetails(o: Record<string, unknown>): boolean {
     seen.add(c.field);
     if (!isStringOrNull(c.from) || !isStringOrNull(c.to) || c.from === c.to) return false;
     if (c.field === "name" && c.to === null) return false;
-    if ((c.from?.length ?? 0) > MAX_DETAIL || (c.to?.length ?? 0) > MAX_DETAIL) return false;
+    // `from` is whatever is stored, so it only gets a bound that keeps the body small.
+    if ((c.from?.length ?? 0) > MAX_FROM || (c.to?.length ?? 0) > MAX_DETAIL) return false;
   }
   return true;
 }

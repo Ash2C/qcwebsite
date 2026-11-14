@@ -351,6 +351,61 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
       expect((await applyDetails(db, c)).status).toBe("missing");
     });
 
+    it("two concurrent company changes for a company-less person write exactly one", async () => {
+      const other = await testDb.connect();
+      try {
+        const a = await proposed({ personId: id.pat }, { company: "Alpha Ltd" });
+        const b = await proposed({ personId: id.pat }, { company: "Beta Ltd" });
+        const [ra, rb] = await Promise.all([applyDetails(db, a), applyDetails(other, b)]);
+        const statuses = [ra.status, rb.status].sort();
+        expect(statuses[1]).toBe("updated");
+        expect(["unchanged", "partly"]).toContain(statuses[0]);
+        const stale = ra.status === "updated" ? rb : ra;
+        expect(stale.skipped).toEqual(["company"]);
+        expect(stale.written).toEqual([]);
+        const row = (await db.query("SELECT o.name FROM people p JOIN orgs o ON o.id = p.org_id WHERE p.id = $1", [id.pat])).rows;
+        expect(row).toHaveLength(1);
+        const winner = ra.status === "updated" ? "Alpha Ltd" : "Beta Ltd";
+        expect(row[0].name).toBe(winner);
+        expect(await count("touches", "kind = 'system'")).toBe(1);
+        expect((await db.query("SELECT summary FROM touches")).rows[0].summary).toBe(
+          `Details updated: Company: (empty) → ${winner}`,
+        );
+      } finally {
+        await other.end();
+      }
+    });
+
+    it("rethrows a unique violation that is not the namesake key, writing nothing", async () => {
+      const p = await proposed({ personId: id.liwei }, { title: "Director" });
+      const before = await snapshot();
+      const failing = new Proxy(db, {
+        get(target, prop) {
+          if (prop !== "query") return Reflect.get(target, prop);
+          return (text: unknown, ...rest: unknown[]) => {
+            if (typeof text === "string" && text.startsWith("UPDATE people")) {
+              return Promise.reject(Object.assign(new Error("duplicate"), { code: "23505", constraint: "some_other_key" }));
+            }
+            return (target.query as (...a: unknown[]) => Promise<unknown>)(text, ...rest);
+          };
+        },
+      });
+      await expect(applyDetails(failing, p)).rejects.toThrow("duplicate");
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("reports unlogged, writing nothing, when the contact has no pipeline entry any more", async () => {
+      const p = await proposed({ personId: id.liwei }, { title: "Director" });
+      await db.query("DELETE FROM members WHERE id = $1", [id.mLi]); // test setup only
+      const before = await snapshot();
+      expect(await applyDetails(db, p)).toEqual({ status: "unlogged", written: [], skipped: [], name: "Li Wei" });
+      expect(await snapshot()).toEqual(before);
+      const c = await proposed({ orgId: id.nw }, { country: "UK" });
+      await db.query("DELETE FROM members WHERE id = $1", [id.mNw]); // test setup only
+      expect((await applyDetails(db, c)).status).toBe("unlogged");
+      expect((await db.query("SELECT country FROM orgs WHERE id = $1", [id.nw])).rows[0].country).toBeNull();
+    });
+
     it("deletes no row and changes no notes column", async () => {
       await db.query("UPDATE people SET notes = 'keep me' WHERE id = $1", [id.liwei]);
       await db.query("UPDATE orgs SET notes = 'keep me too' WHERE id = $1", [id.nw]);

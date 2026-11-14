@@ -298,6 +298,7 @@ describe("POST /api/monsoon/act", () => {
       ["partly", ["phone"], ["title"], "Updated Phone. Title changed in the meantime and was left alone."],
       ["unchanged", [], ["title", "phone"], "Nothing changed. Li Wei Chen was already up to date."],
       ["missing", [], [], "Li Wei is no longer on file; nothing changed."],
+      ["unlogged", [], [], "Li Wei is no longer on the pipeline, so the change could not be logged; nothing changed."],
       ["collision", [], [], "Another Li Wei Chen is already on file there; nothing changed."],
     ])("maps %s to its message", async (status, written, skipped, message) => {
       applyDetails.mockResolvedValue({ status, written, skipped, name: "Li Wei Chen" });
@@ -325,6 +326,14 @@ describe("POST /api/monsoon/act", () => {
       body.proposal = detailsProposal({ changes: [...(body.proposal as never as { changes: unknown[] }).changes, { field: "country", from: null, to: "SG" }] });
       expect((await POST(post(body))).status).toBe(403);
       nothingCalled();
+    });
+
+    it("accepts a body between 16,385 and 65,536 bytes", async () => {
+      applyDetails.mockResolvedValue({ status: "updated", written: ["title"], skipped: [], name: "Li Wei" });
+      const req = post(signed(detailsProposal(), { padding: "x".repeat(20000) }));
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+      expect(applyDetails).toHaveBeenCalledTimes(1);
     });
 
     it("needs no note text", async () => {

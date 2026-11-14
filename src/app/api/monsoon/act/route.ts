@@ -71,6 +71,7 @@ export async function POST(request: Request) {
           partly: `Updated ${labels(done.written)}. ${labels(done.skipped)} changed in the meantime and was left alone.`,
           unchanged: `Nothing changed. ${done.name} was already up to date.`,
           missing: `${proposal.targetName} is no longer on file; nothing changed.`,
+          unlogged: `${proposal.targetName} is no longer on the pipeline, so the change could not be logged; nothing changed.`,
           collision: `Another ${done.name} is already on file there; nothing changed.`,
         };
         return { status: done.status, message: messages[done.status] };

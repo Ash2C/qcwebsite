@@ -204,6 +204,15 @@ describe("update_details proposals", () => {
     for (const p of bad) expect(ok(p), JSON.stringify(p)).toBe(false);
   });
 
+  it("caps `to` at 300 characters but allows a long stored `from` up to 2000", () => {
+    const d = details as Extract<Proposal, { kind: "update_details" }>;
+    const one = (from: string | null, to: string | null) => ({ ...d, changes: [{ field: "title", from, to }] });
+    expect(ok(one("x".repeat(2000), "short"))).toBe(true);
+    expect(ok(one("x".repeat(2001), "short"))).toBe(false);
+    expect(ok(one(null, "x".repeat(300)))).toBe(true);
+    expect(ok(one(null, "x".repeat(301)))).toBe(false);
+  });
+
   it("keeps the old key sets for the other two kinds", () => {
     expect(ok({ ...note, target: 1 })).toBe(false);
     expect(ok(note)).toBe(true);

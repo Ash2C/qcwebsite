@@ -36,7 +36,7 @@ export const ORG_DETAIL_COLUMNS: readonly string[] = ["website", "country"];
 
 export type DetailInput = Partial<Record<DetailField, string | null>>;
 export type ApplyResult = {
-  status: "updated" | "partly" | "unchanged" | "missing" | "collision";
+  status: "updated" | "partly" | "unchanged" | "missing" | "collision" | "unlogged";
   written: DetailField[];
   skipped: DetailField[];
   name: string;
@@ -48,6 +48,8 @@ const OWNER = "VF";
 const MAX_VALUE = 300;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NO_CONTACT = "No such contact.";
+// Postgres's default name for UNIQUE NULLS NOT DISTINCT (org_id, name_key) on people (unnamed in the schema).
+const PEOPLE_NAME_KEY = "people_org_id_name_key_key";
 const FIELD_ORDER: readonly DetailField[] = ["name", "title", "email", "phone", "linkedin", "country", "company", "website"];
 const PERSON_FIELDS: readonly DetailField[] = ["name", "title", "email", "phone", "linkedin", "country", "company"];
 const ORG_FIELDS: readonly DetailField[] = ["website", "country"];
@@ -90,19 +92,23 @@ type Row = { type: "person" | "company"; id: string; name: string; company: stri
 const isUuid = (v: unknown): v is string => typeof v === "string" && UUID_RE.test(v);
 
 async function loadPerson(db: ClientBase, id: string, lock: boolean): Promise<Row | undefined> {
+  // The person row is read alone: under READ COMMITTED a joined row would not be re-read after a
+  // lock wait. The company name is a second read, from the locked row's org_id.
   const r = await db.query(
-    `SELECT p.id, p.name, p.org_id, p.title, p.email, p.phone, p.linkedin_url, p.country, o.name AS org_name
-       FROM people p LEFT JOIN orgs o ON o.id = p.org_id
-      WHERE p.id = $1${lock ? " FOR UPDATE OF p" : ""}`,
+    `SELECT id, name, org_id, title, email, phone, linkedin_url, country
+       FROM people WHERE id = $1${lock ? " FOR UPDATE" : ""}`,
     [id],
   );
   const p = r.rows[0];
   if (!p) return undefined;
+  const orgName: string | null = p.org_id
+    ? ((await db.query("SELECT name FROM orgs WHERE id = $1", [p.org_id])).rows[0]?.name ?? null)
+    : null;
   return {
     type: "person",
     id: p.id,
     name: p.name,
-    company: p.org_name ?? null,
+    company: orgName,
     orgId: p.org_id ?? null,
     values: {
       name: p.name,
@@ -111,7 +117,7 @@ async function loadPerson(db: ClientBase, id: string, lock: boolean): Promise<Ro
       phone: p.phone,
       linkedin: p.linkedin_url,
       country: p.country,
-      company: p.org_name ?? null,
+      company: orgName,
     },
   };
 }
@@ -274,7 +280,7 @@ export function applyDetails(db: ClientBase, proposal: DetailsProposal): Promise
     try {
       // The log member comes from the state before the change.
       let logMember = await logMemberFor(db, row);
-      if (target.type === "company" && logMember === null) return result("missing", [], [], proposal.targetName);
+      if (target.type === "company" && logMember === null) return result("unlogged", [], [], proposal.targetName);
 
       if (target.type === "person") {
         const set = new Map<string, string | null>();
@@ -313,7 +319,7 @@ export function applyDetails(db: ClientBase, proposal: DetailsProposal): Promise
         await db.query(UPDATE_ORGS, params);
       }
 
-      if (logMember === null) return result("missing", [], [], proposal.targetName);
+      if (logMember === null) return result("unlogged", [], [], proposal.targetName);
       const summary = `Details updated: ${fresh
         .map((c) => `${DETAIL_LABELS[c.field]}: ${display(c.from)} → ${display(c.to)}`)
         .join("; ")}`;
@@ -323,7 +329,8 @@ export function applyDetails(db: ClientBase, proposal: DetailsProposal): Promise
         summary,
       ]);
     } catch (err) {
-      if ((err as { code?: unknown })?.code === "23505") return result("collision", [], [], resultingName);
+      const e = err as { code?: unknown; constraint?: unknown };
+      if (e?.code === "23505" && e.constraint === PEOPLE_NAME_KEY) return result("collision", [], [], resultingName);
       throw err;
     }
     return result(skipped.length > 0 ? "partly" : "updated", fresh.map((c) => c.field), skipped, resultingName, true);
