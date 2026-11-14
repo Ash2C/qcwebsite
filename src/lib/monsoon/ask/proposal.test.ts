@@ -223,3 +223,85 @@ describe("update_details proposals", () => {
     expect(verifyProposal(note, OLD_NOTE_SIGNATURE, NOW)).toBe(true);
   });
 });
+
+describe("apply_research proposals", () => {
+  const PERSON = "33333333-3333-4333-8333-333333333333";
+  const COMPANY = "44444444-4444-4444-8444-444444444444";
+  const finding = (over: Record<string, unknown> = {}) => ({
+    id: "f1",
+    target: "person",
+    field: "title",
+    from: "Analyst",
+    to: "Director",
+    source: "https://example.com/team/jane",
+    ...over,
+  });
+  const research = (over: Record<string, unknown> = {}): Proposal =>
+    ({
+      kind: "apply_research",
+      estate: "zeroone",
+      person: { id: PERSON, name: "Jane Tan" },
+      company: { id: COMPANY, name: "Northwind Capital" },
+      identity: "Same firm and city as on file.",
+      findings: [finding()],
+      summarySources: ["https://example.com/news"],
+      logMemberId: PERSON,
+      addsToPipeline: null,
+      expires: NOW + PROPOSAL_TTL_MS,
+      ...over,
+    }) as Proposal;
+  const refused = (p: Proposal) => verifyProposal(p, signProposal(p), NOW);
+
+  it("signs and verifies a valid proposal", () => {
+    const p = research();
+    expect(verifyProposal(p, signProposal(p), NOW)).toBe(true);
+    const two = research({
+      findings: [finding(), finding({ id: "f2", target: "company", field: "website", from: null, to: "https://northwind.example" })],
+    });
+    expect(refused(two)).toBe(true);
+  });
+
+  it("refuses malformed shapes", () => {
+    const base = research() as unknown as Record<string, unknown>;
+    expect(refused({ ...base, extra: 1 } as unknown as Proposal)).toBe(false);
+    const { identity: _i, ...missing } = base;
+    expect(refused(missing as unknown as Proposal)).toBe(false);
+    expect(refused(research({ findings: [finding({ id: "f9" })] }))).toBe(false);
+    expect(refused(research({ findings: [finding(), finding({ field: "country", from: null })] }))).toBe(false);
+    expect(refused(research({ findings: [finding(), finding({ id: "f2" })] }))).toBe(false);
+    expect(refused(research({ findings: [finding({ target: "person", field: "website" })] }))).toBe(false);
+    expect(refused(research({ findings: [finding({ target: "company", field: "title" })] }))).toBe(false);
+    expect(
+      refused(research({ company: null, findings: [finding({ target: "company", field: "website", from: null })] })),
+    ).toBe(false);
+    expect(refused(research({ findings: [finding({ to: "x".repeat(301) })] }))).toBe(false);
+    expect(refused(research({ findings: [finding({ from: "Director" })] }))).toBe(false);
+    expect(refused(research({ findings: [finding({ source: "http://example.com/a" })] }))).toBe(false);
+    expect(refused(research({ findings: [finding({ source: "not a url" })] }))).toBe(false);
+    expect(refused(research({ summarySources: ["https://e.com/" + "a".repeat(500)] }))).toBe(false);
+    expect(refused(research({ identity: "" }))).toBe(false);
+    expect(refused(research({ person: { id: "nope", name: "Jane" } }))).toBe(false);
+  });
+
+  it("enforces count limits", () => {
+    const fields = ["title", "linkedin", "country", "email", "phone"] as const;
+    const nine = Array.from({ length: 9 }, (_, i) =>
+      finding({ id: `f${(i % 8) + 1}`, field: fields[i % 5], target: i < 5 ? "person" : "company" }),
+    );
+    expect(refused(research({ findings: nine }))).toBe(false);
+    expect(refused(research({ summarySources: Array.from({ length: 7 }, (_, i) => `https://e.com/${i}`) }))).toBe(false);
+    expect(refused(research({ findings: [], summarySources: [] }))).toBe(false);
+    expect(refused(research({ findings: [], summarySources: ["https://e.com/a"] }))).toBe(true);
+  });
+
+  it("refuses tampering, expiry and an unknown estate", () => {
+    const p = research();
+    const sig = signProposal(p);
+    const changed = research({ findings: [finding({ to: "CEO" })] });
+    expect(verifyProposal(changed, sig, NOW)).toBe(false);
+    const added = research({ findings: [finding(), finding({ id: "f2", field: "country", from: null, to: "Singapore" })] });
+    expect(verifyProposal(added, sig, NOW)).toBe(false);
+    expect(verifyProposal(p, sig, p.expires)).toBe(false);
+    expect(refused(research({ estate: "nowhere" }))).toBe(false);
+  });
+});

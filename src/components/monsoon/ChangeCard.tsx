@@ -26,6 +26,7 @@ function stageLabel(key: string): string {
 export function describeChange(c: AskCard): string {
   const p = c.signed.proposal;
   if (p.kind === "update_details") return `change the details of ${p.targetName}`;
+  if (p.kind === "apply_research") return `save research about ${p.person.name}`;
   return p.kind === "add_note"
     ? `add a note to ${p.memberName}`
     : `move ${p.memberName} from ${stageLabel(p.fromStage)} to ${stageLabel(p.toStage)}`;
@@ -77,6 +78,8 @@ export default function ChangeCard({
         </button>
       </div>
     );
+
+  if (p.kind === "apply_research") return null; // rendered by the research card, not here
 
   if (p.kind === "update_details") {
     const display = (v: string | null) => (v ? v : "(empty)");

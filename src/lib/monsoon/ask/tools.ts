@@ -223,6 +223,7 @@ function describeChange(p: SignedProposal): string {
     const list = x.changes.map((c) => `${DETAIL_LABELS[c.field]}: ${c.from ?? "(empty)"} → ${c.to ?? "(empty)"}`).join("; ");
     return clip(`Update the details of ${x.targetName}: ${list}`, 600) as string;
   }
+  if (x.kind === "apply_research") return clip(`Save research about ${x.person.name}`, 600) as string;
   const who = x.company ? `${x.memberName} (${x.company})` : x.memberKind === "company" ? `${x.memberName} (company)` : x.memberName;
   const via = x.about ? ` for ${x.about}` : "";
   return x.kind === "add_note"

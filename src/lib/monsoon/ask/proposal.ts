@@ -37,7 +37,29 @@ export type Proposal =
       logMemberId: string | null; // the member whose timeline gets the log entry, when one exists
       addsToPipeline: string | null; // a role key when confirming also adds the person to the pipeline
       expires: number;
+    }
+  | {
+      kind: "apply_research";
+      estate: EstateKey;
+      person: { id: string; name: string };
+      company: { id: string; name: string } | null; // the person's company when researched
+      identity: string; // 1..400 chars, why this is the right person
+      findings: ResearchFinding[]; // 0..8
+      summarySources: string[]; // 0..6 https URLs
+      logMemberId: string | null;
+      addsToPipeline: string | null;
+      expires: number;
     };
+
+export type ResearchField = "title" | "linkedin" | "country" | "email" | "phone" | "website";
+export type ResearchFinding = {
+  id: string; // "f1".."f8", unique in the proposal
+  target: "person" | "company"; // "company" only for field "website"
+  field: ResearchField;
+  from: string | null; // value on file when researched
+  to: string; // 1..300 chars
+  source: string; // https URL, <= 500 chars
+};
 
 export type DetailField = "name" | "title" | "email" | "phone" | "linkedin" | "country" | "company" | "website";
 export type DetailChange = { field: DetailField; from: string | null; to: string | null };
@@ -46,6 +68,10 @@ const PERSON_FIELDS: readonly string[] = ["name", "title", "email", "phone", "li
 const COMPANY_FIELDS: readonly string[] = ["website", "country"];
 const MAX_DETAIL = 300;
 const MAX_FROM = 2000;
+const MAX_IDENTITY = 400;
+const MAX_URL = 500;
+const RESEARCH_FIELDS: readonly string[] = ["title", "linkedin", "country", "email", "phone", "website"];
+const FINDING_ID_RE = /^f[1-8]$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** `text` is the suggested note text; it is not signed because the user may edit it on the card. */
@@ -60,6 +86,7 @@ const KEYS: Record<string, readonly string[]> = {
   add_note: COMMON,
   move_stage: [...COMMON, "fromStage", "toStage"],
   update_details: ["kind", "estate", "target", "targetName", "company", "changes", "logMemberId", "addsToPipeline", "expires"],
+  apply_research: ["kind", "estate", "person", "company", "identity", "findings", "summarySources", "logMemberId", "addsToPipeline", "expires"],
 };
 
 function secret(): string {
@@ -118,6 +145,49 @@ function wellFormedDetails(o: Record<string, unknown>): boolean {
   return true;
 }
 
+function isHttpsUrl(v: unknown): boolean {
+  if (!isString(v) || v.length > MAX_URL) return false;
+  try {
+    return new URL(v).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isRef(v: unknown): boolean {
+  return isObject(v) && Object.keys(v).length === 2 && isString(v.id) && UUID_RE.test(v.id) && isString(v.name);
+}
+
+function wellFormedResearch(o: Record<string, unknown>): boolean {
+  if (!isRef(o.person)) return false;
+  if (o.company !== null && !isRef(o.company)) return false;
+  if (!isString(o.identity) || o.identity.length < 1 || o.identity.length > MAX_IDENTITY) return false;
+  if (o.logMemberId !== null && !(isString(o.logMemberId) && UUID_RE.test(o.logMemberId))) return false;
+  if (!isStringOrNull(o.addsToPipeline)) return false;
+  const { findings, summarySources } = o;
+  if (!Array.isArray(findings) || findings.length > 8) return false;
+  if (!Array.isArray(summarySources) || summarySources.length > 6 || !summarySources.every(isHttpsUrl)) return false;
+  if (findings.length === 0 && summarySources.length === 0) return false;
+  const ids = new Set<string>();
+  const pairs = new Set<string>();
+  for (const f of findings) {
+    if (!isObject(f) || Object.keys(f).length !== 6) return false;
+    if (!isString(f.id) || !FINDING_ID_RE.test(f.id) || ids.has(f.id)) return false;
+    ids.add(f.id);
+    if (f.target !== "person" && f.target !== "company") return false;
+    if (!isString(f.field) || !RESEARCH_FIELDS.includes(f.field)) return false;
+    if ((f.field === "website") !== (f.target === "company")) return false;
+    if (f.target === "company" && o.company === null) return false;
+    const pair = `${f.target}:${f.field}`;
+    if (pairs.has(pair)) return false;
+    pairs.add(pair);
+    if (!isStringOrNull(f.from) || (f.from?.length ?? 0) > MAX_FROM) return false;
+    if (!isString(f.to) || f.to.length < 1 || f.to.length > MAX_DETAIL || f.from === f.to) return false;
+    if (!isHttpsUrl(f.source)) return false;
+  }
+  return true;
+}
+
 function wellFormed(p: unknown): p is Proposal {
   if (typeof p !== "object" || p === null || Array.isArray(p)) return false;
   const o = p as Record<string, unknown>;
@@ -128,6 +198,7 @@ function wellFormed(p: unknown): p is Proposal {
   if (!estateByKey(o.estate)) return false;
   if (typeof o.expires !== "number" || !Number.isFinite(o.expires)) return false;
   if (o.kind === "update_details") return wellFormedDetails(o);
+  if (o.kind === "apply_research") return wellFormedResearch(o);
   if (!isString(o.memberId) || !isString(o.memberName)) return false;
   if (o.memberKind !== "person" && o.memberKind !== "company") return false;
   if (!isStringOrNull(o.company) || !isStringOrNull(o.about)) return false;

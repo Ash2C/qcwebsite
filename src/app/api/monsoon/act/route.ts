@@ -39,6 +39,10 @@ export async function POST(request: Request) {
   if (!verifyProposal(proposal, b.signature, Date.now()) || proposal.estate !== estate.key) {
     return NextResponse.json({ error: "This change has expired. Ask again." }, { status: 403 });
   }
+  // Applying research arrives with the research task; until then it is answered like an expired change.
+  if (proposal.kind === "apply_research") {
+    return NextResponse.json({ error: "This change has expired. Ask again." }, { status: 403 });
+  }
 
   let text = "";
   if (proposal.kind === "add_note") {
