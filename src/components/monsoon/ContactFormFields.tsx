@@ -27,6 +27,7 @@ export default function ContactFormFields({
   onRole,
   locked,
   speak,
+  hints,
 }: {
   form: FormValues;
   roles: { key: string; label: string }[];
@@ -37,6 +38,7 @@ export default function ContactFormFields({
   onRole: (role: string) => void;
   locked: boolean; // a tidy request is running: the fields are read-only until it returns
   speak: ReactNode;
+  hints?: Partial<Record<FormKey, string>>; // a quiet line under a field
 }) {
   const mark = (key: FormKey) => was !== null && changed.includes(key);
   return (
@@ -58,6 +60,7 @@ export default function ContactFormFields({
             onChange={(e) => onEdit(r.key, e.target.value)}
             className={fieldInput}
           />
+          {hints?.[r.key] && <p className="px-4 pb-2 text-[14px] text-neutral-500 dark:text-neutral-400">{hints[r.key]}</p>}
           {mark(r.key) && was && <Was value={was[r.key]} />}
         </div>
       ))}

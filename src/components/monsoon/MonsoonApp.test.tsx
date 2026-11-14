@@ -208,7 +208,7 @@ describe("MonsoonApp", () => {
     expect(screen.getByRole("button", { name: "Zero One" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Ask" })).toBeEnabled();
     expect(document.querySelector('input[type="file"]')).toBeEnabled();
-    expect(screen.getByText("Take photo")).toBeInTheDocument();
+    expect(screen.getByText("Snap or choose a photo")).toBeInTheDocument();
   });
 
   it("a save that fails by timeout shows the failure and the Save button works again", async () => {
@@ -267,6 +267,7 @@ describe("MonsoonApp", () => {
         notes: "",
       },
       extracted: CARD,
+      kind: "card",
     });
     expect(screen.getByLabelText("Name")).toHaveValue("");
   });
@@ -1378,6 +1379,199 @@ describe("Profile actions and links", () => {
     for (const name of ["Capture", "Contacts", "Ask", "Zero One"]) {
       await waitFor(() => expect(screen.getByRole("button", { name })).toBeEnabled());
     }
+  });
+});
+
+describe("Match line on the single form", () => {
+  const CAND = {
+    personId: "p1", name: "Jane Tan", title: "Partner", company: "Acme Capital", email: "jane@acme.com",
+    member: { memberId: "m1", memberKind: "person", role: "lp_prospect", stage: "lead" }, memberOf: "self", by: "name_company",
+  };
+  const CAND_2 = { ...CAND, personId: "p2", company: null, member: null, memberOf: null, by: "name" };
+  const ADDED_OK = { status: 200, body: { outcome: "added", person: "p", org: null } } as never;
+  const exact = { match: "exact", candidates: [CAND] };
+
+  async function read(user: User, cards: unknown[], matches: unknown) {
+    signedIn();
+    m.readCards.mockResolvedValue({ status: 200, body: { cards, matches } } as never);
+    render(<MonsoonApp />);
+    await ready();
+    await user.type(screen.getByLabelText("Name"), "Old");
+    await pickPhoto(user);
+    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue(cards.length ? "Jane Tan" : ""));
+  }
+
+  it("has the new photo button label and sends the estate with the read", async () => {
+    const user = userEvent.setup();
+    await read(user, [CARD], null);
+    expect(m.readCards).toHaveBeenCalledWith(expect.any(Blob), "traxo");
+    expect(screen.getByText("Snap or choose a photo")).toBeInTheDocument();
+  });
+
+  it("shows no match line when matching did not run", async () => {
+    const user = userEvent.setup();
+    await read(user, [CARD], null);
+    expect(screen.queryByText("New contact")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open profile" })).toBeNull();
+  });
+
+  it("shows New contact when nobody matches", async () => {
+    const user = userEvent.setup();
+    await read(user, [CARD], [{ match: "none", candidates: [] }]);
+    expect(screen.getByText("New contact")).toBeInTheDocument();
+  });
+
+  it("an exact match preselects Add what's new and Save sends that person and the kind", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(ADDED_OK);
+    await read(user, [{ ...CARD, kind: "badge" }], [exact]);
+    expect(screen.getByText("Already on file: Jane Tan, Acme Capital")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add what's new" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(1));
+    expect(m.saveCard.mock.calls[0][0]).toMatchObject({ samePerson: "p1", kind: "badge" });
+  });
+
+  it("Different person sends samePerson false", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(ADDED_OK);
+    await read(user, [CARD], [exact]);
+    await user.click(screen.getByRole("button", { name: "Different person" }));
+    expect(screen.getByRole("button", { name: "Different person" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(1));
+    expect(m.saveCard.mock.calls[0][0].samePerson).toBe(false);
+  });
+
+  it("a same-name match with nothing chosen sends no samePerson", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(ADDED_OK);
+    await read(user, [CARD], [{ match: "same_name", candidates: [CAND_2] }]);
+    expect(screen.getByRole("button", { name: "Add what's new" })).toHaveAttribute("aria-pressed", "false");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(1));
+    expect(m.saveCard.mock.calls[0][0]).not.toHaveProperty("samePerson");
+  });
+
+  it("several matches: This one sends that person", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(ADDED_OK);
+    await read(user, [CARD], [{ match: "several", candidates: [CAND, CAND_2] }]);
+    await user.click(within(screen.getByRole("group", { name: "Jane Tan, no company" })).getByRole("button", { name: "This one" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(1));
+    expect(m.saveCard.mock.calls[0][0].samePerson).toBe("p2");
+  });
+
+  it("editing Name hides the line and clears the choice", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(ADDED_OK);
+    await read(user, [CARD], [exact]);
+    await user.type(screen.getByLabelText("Name"), "x");
+    expect(screen.queryByText(/Already on file/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(1));
+    expect(m.saveCard.mock.calls[0][0]).not.toHaveProperty("samePerson");
+  });
+
+  it("editing Company hides the line", async () => {
+    const user = userEvent.setup();
+    await read(user, [CARD], [exact]);
+    await user.type(screen.getByLabelText("Company"), "x");
+    expect(screen.queryByText(/Already on file/)).toBeNull();
+  });
+
+  it("editing Email keeps the line and the choice", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(ADDED_OK);
+    await read(user, [CARD], [exact]);
+    await user.type(screen.getByLabelText("Email"), "x");
+    expect(screen.getByText(/Already on file/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(1));
+    expect(m.saveCard.mock.calls[0][0].samePerson).toBe("p1");
+  });
+
+  it("Open profile switches to Contacts and the form is still there on return", async () => {
+    const user = userEvent.setup();
+    m.loadProfile.mockResolvedValue({ status: 404, body: { error: "Not found" } } as never);
+    await read(user, [CARD], [exact]);
+    await user.type(screen.getByLabelText("Email"), "x");
+    await user.click(screen.getByRole("button", { name: "Open profile" }));
+    await waitFor(() =>
+      expect(m.loadProfile).toHaveBeenCalledWith("traxo", { memberId: undefined, personId: "p1", orgId: undefined }, expect.any(String)),
+    );
+    expect(screen.getByRole("button", { name: "Contacts" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Capture" }));
+    expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan");
+    expect(screen.getByLabelText("Email")).toHaveValue("jane@acme.comx");
+    expect(screen.getByText(/Already on file/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add what's new" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("zero entries clear the form for typing and say so", async () => {
+    const user = userEvent.setup();
+    await read(user, [], [] as never);
+    expect(screen.getByText("No name found in that photo.")).toBeInTheDocument();
+    expect(screen.queryByText("New contact")).toBeNull();
+  });
+
+  it("a name-only read shows the company hint until Company is filled", async () => {
+    const user = userEvent.setup();
+    await read(user, [{ ...CARD, org: "" }], null);
+    expect(screen.getByText("Add their company if you know it.")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Company"), "A");
+    expect(screen.queryByText("Add their company if you know it.")).toBeNull();
+  });
+
+  it("no company hint when the read had a company", async () => {
+    const user = userEvent.setup();
+    await read(user, [CARD], null);
+    expect(screen.queryByText("Add their company if you know it.")).toBeNull();
+  });
+
+  it("a typed entry sends no kind", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.saveCard.mockResolvedValue(ADDED_OK);
+    render(<MonsoonApp />);
+    await ready();
+    await typeName(user);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(1));
+    expect(m.saveCard.mock.calls[0][0]).not.toHaveProperty("kind");
+  });
+
+  it("locks the match buttons while saving", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockImplementation(() => new Promise(() => {}));
+    await read(user, [CARD], [exact]);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Different person" })).toBeDisabled());
+    expect(screen.getByRole("button", { name: "Open profile" })).toBeDisabled();
+  });
+
+  it("a filed result shows its text", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue({
+      status: 200,
+      body: { outcome: "filed", created: true, org: "Acme Capital", filled: [] },
+    } as never);
+    await read(user, [CARD], [{ match: "none", candidates: [] }]);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Jane Tan filed under Acme Capital.")).toBeInTheDocument();
+  });
+
+  it("needs_company shows its text, keeps the form and the choice, and focuses Company", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue({ status: 200, body: { outcome: "needs_company" } } as never);
+    await read(user, [{ ...CARD, org: "" }], [{ match: "same_name", candidates: [CAND_2] }]);
+    await user.click(screen.getByRole("button", { name: "Different person" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Add their company so I can tell them apart.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan");
+    expect(screen.getByRole("button", { name: "Different person" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(screen.getByLabelText("Company")).toHaveFocus());
   });
 });
 

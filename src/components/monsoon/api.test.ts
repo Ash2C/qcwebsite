@@ -22,7 +22,7 @@ const act = { estate: "traxo", proposal: { kind: "add_note" } as never, signatur
 const CALLS: [string, string, number, () => Promise<unknown>][] = [
   ["signIn", "/api/monsoon/session", 15_000, () => signIn("pass")],
   ["loadEstates", "/api/monsoon/estates", 15_000, () => loadEstates()],
-  ["readCards", "/api/monsoon/read", 90_000, () => readCards(new Blob(["x"]))],
+  ["readCards", "/api/monsoon/read", 90_000, () => readCards(new Blob(["x"]), "traxo")],
   ["saveCard", "/api/monsoon/save", 35_000, () => saveCard(save)],
   ["refineCard", "/api/monsoon/refine", 35_000, () => refineCard(refine)],
   ["actOnCrm", "/api/monsoon/act", 35_000, () => actOnCrm(act)],
@@ -41,6 +41,18 @@ describe("client timeouts", () => {
     expect(init.signal).toBeInstanceOf(AbortSignal);
     expect(timeoutSpy).toHaveBeenCalledTimes(1);
     expect(timeoutSpy).toHaveBeenCalledWith(ms);
+  });
+
+  it("readCards sends the estate beside the image and returns cards with matches", async () => {
+    fetchMock.mockImplementation(
+      async () => new Response(JSON.stringify({ cards: [], matches: [{ match: "none", candidates: [] }] }), { status: 200 }),
+    );
+    const res = await readCards(new Blob(["x"]), "zeroone");
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const form = init.body as FormData;
+    expect(form.get("estate")).toBe("zeroone");
+    expect(form.get("image")).toBeInstanceOf(Blob);
+    expect(res.body).toEqual({ cards: [], matches: [{ match: "none", candidates: [] }] });
   });
 
   it("keeps each call's own method, headers and body beside the signal", async () => {

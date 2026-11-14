@@ -2,7 +2,8 @@
 
 import MonsoonLogo from "./MonsoonLogo";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CardFields } from "@/lib/monsoon/extract";
+import type { CardFields, CardKind } from "@/lib/monsoon/extract";
+import type { CardMatch } from "@/lib/monsoon/match";
 import type { CaptureResult } from "@/lib/monsoon/capture";
 import type { RefineOutput } from "@/lib/monsoon/refine";
 import { loadEstates, readCards, saveCard, signIn, type EstateInfo, type SaveBody } from "./api";
@@ -13,6 +14,7 @@ import BatchReview, { makeBatch, type Batch } from "./BatchReview";
 import { describeResult, type SavePrompt } from "./outcomes";
 import ContactFormFields, { type FormKey } from "./ContactFormFields";
 import PromptButtons from "./PromptButtons";
+import MatchLine, { type MatchChoice } from "./MatchLine";
 import { mergeRefine, type Snapshot } from "./merge";
 import SpeakNotes from "./SpeakNotes";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
@@ -98,6 +100,11 @@ export default function MonsoonApp() {
   const [signingIn, setSigningIn] = useState(false);
   const [samePerson, setSamePerson] = useState<string | false | undefined>(undefined);
   const [batch, setBatch] = useState<Batch | null>(null);
+  // Match before save: whether the person read from the photo is already on file, the choice made
+  // about it, and the kind of photo (sent with the save; nothing for a hand-typed entry).
+  const [match, setMatch] = useState<CardMatch | null>(null);
+  const [choice, setChoice] = useState<MatchChoice>(null);
+  const [kind, setKind] = useState<CardKind | undefined>(undefined);
   // Spoken notes: the draft survives a 401; the snapshot lets Undo restore the form, and
   // `changed` lists the fields still highlighted (a hand edit drops just that field).
   const [spokenDraft, setSpokenDraft] = useState("");
@@ -171,8 +178,15 @@ export default function MonsoonApp() {
     void load();
   }, [load]);
 
+  // The match describes the name and company that were read; once either changes it no longer applies.
+  function dropMatch() {
+    setMatch(null);
+    setChoice(null);
+  }
+
   function edit(key: keyof Form, value: string) {
     setForm((f) => ({ ...f, [key]: value }));
+    if (key === "name" || key === "org") dropMatch();
     setBeforeRefine((b) => (b ? { ...b, changed: b.changed.filter((k) => k !== key) } : b));
     dropPrompt();
     setNewOrg(false);
@@ -193,6 +207,7 @@ export default function MonsoonApp() {
     const next = mergeRefine({ fields: curFields, notes: curNotes }, sent, result);
     const merged: Form = { ...cur, ...next.fields, notes: next.notes };
     setForm(merged);
+    if (merged.name !== cur.name || merged.org !== cur.org) dropMatch();
     setBeforeRefine((prev) => {
       const base = prev?.form ?? cur;
       const keys = Object.keys(merged) as FormKey[];
@@ -206,6 +221,7 @@ export default function MonsoonApp() {
   function undoRefine() {
     if (!beforeRefine) return;
     setForm(beforeRefine.form);
+    if (beforeRefine.form.name !== form.name || beforeRefine.form.org !== form.org) dropMatch();
     setBeforeRefine(null);
     dropPrompt();
     setNewOrg(false);
@@ -236,6 +252,7 @@ export default function MonsoonApp() {
     if (batchEstateRef.current) batchEstateRef.current = e.key;
     dropPrompt();
     setSamePerson(undefined);
+    dropMatch();
   }
 
   // A chip in an answer: Contacts with that profile open; the Ask conversation stays as it is.
@@ -262,6 +279,8 @@ export default function MonsoonApp() {
     if (!file) return;
     setCaptureId(crypto.randomUUID());
     setExtracted(null);
+    setKind(undefined);
+    dropMatch();
     clearRefine();
     setPrompt(null);
     setNewOrg(false);
@@ -270,7 +289,7 @@ export default function MonsoonApp() {
     setReading(true);
     try {
       const blob = await downsizeImage(file);
-      const res = await readCards(blob);
+      const res = await readCards(blob, estateKey);
       if (res.status === 401) {
         setPhase("locked");
         return;
@@ -287,6 +306,15 @@ export default function MonsoonApp() {
         // is cleared for typing by hand.
         const f = cards[0] ?? EMPTY_CARD;
         setExtracted(f);
+        if (cards.length === 0) {
+          setMessage({ tone: "info", text: "No name found in that photo." });
+        } else {
+          setKind(f.kind);
+          const found = res.body.matches?.[0] ?? null;
+          setMatch(found);
+          const only = found?.match === "exact" ? found.candidates[0] : undefined;
+          setChoice(only ? { samePerson: only.personId } : null);
+        }
         setForm((prev) => ({
           name: f.name ?? "",
           title: f.title ?? "",
@@ -331,15 +359,16 @@ export default function MonsoonApp() {
       captureId: id,
       fields,
       ...(extracted ? { extracted } : {}),
+      ...(kind ? { kind } : {}),
     };
     const wantNewOrg = overrides?.newOrg ?? newOrg;
     if (wantNewOrg) body.newOrg = true;
     // An earlier same-name answer survives a later company-lookalike re-save.
     const answer = overrides?.samePerson ?? samePerson;
-    if (answer !== undefined) {
-      body.samePerson = answer;
-      setSamePerson(answer);
-    }
+    if (answer !== undefined) setSamePerson(answer);
+    // No answer to a prompt: the choice on the match line, else nothing (the server asks if needed).
+    const sent = answer ?? choice?.samePerson;
+    if (sent !== undefined) body.samePerson = sent;
 
     try {
       const res = await saveCard(body);
@@ -382,6 +411,8 @@ export default function MonsoonApp() {
     clearRefine();
     setForm(EMPTY_FORM);
     setExtracted(null);
+    setKind(undefined);
+    dropMatch();
     setCaptureId(null);
     setNewOrg(false);
     setSamePerson(undefined);
@@ -411,6 +442,8 @@ export default function MonsoonApp() {
       setPrompt(out.prompt);
     }
     setMessage({ tone: "info", text: out.text });
+    // They said "different person" but gave no company: the cursor goes to Company.
+    if (result.outcome === "needs_company") document.getElementById("f-org")?.focus();
   }
 
   function onBatchChange(next: Batch | ((prev: Batch) => Batch)) {
@@ -427,6 +460,8 @@ export default function MonsoonApp() {
       clearRefine();
       setForm(EMPTY_FORM);
       setExtracted(null);
+      setKind(undefined);
+      dropMatch();
       setCaptureId(null);
       setMessage(null);
     }
@@ -633,9 +668,20 @@ export default function MonsoonApp() {
                 <path d="M4 8h3l1.5-2h7L17 8h3v11H4z" />
                 <circle cx="12" cy="13" r="3.5" />
               </svg>
-              <span>{reading ? "Reading card…" : "Take photo"}</span>
+              <span>{reading ? "Reading photo…" : "Snap or choose a photo"}</span>
               <input type="file" accept="image/*" hidden disabled={busy} onChange={onPhoto} />
             </label>
+
+            {match && (
+              <MatchLine
+                match={match}
+                choice={choice}
+                onChoose={setChoice}
+                onOpen={(personId) => openContact({ personId })}
+                disabled={busy}
+                roleLabel={roleLabel}
+              />
+            )}
 
             {message && (
               <div
@@ -670,6 +716,11 @@ export default function MonsoonApp() {
               onEdit={edit}
               onRole={setRole}
               locked={tidying}
+              hints={
+                extracted?.name && !extracted.org.trim() && !form.org.trim()
+                  ? { org: "Add their company if you know it." }
+                  : undefined
+              }
               speak={
                 <div className="flex flex-col gap-2">
                   <SpeakNotes

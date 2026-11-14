@@ -1,7 +1,8 @@
 // Thin client for the /api/monsoon routes. Every call resolves with { status, body }; a
 // non-2xx status is data, not an exception. Only a network failure rejects, and so does a
 // request that runs past its time limit (it is aborted): callers treat both alike.
-import type { CardFields } from "@/lib/monsoon/extract";
+import type { CardFields, CardKind } from "@/lib/monsoon/extract";
+import type { CardMatch } from "@/lib/monsoon/match";
 import type { CaptureResult } from "@/lib/monsoon/capture";
 import type { RefineInput, RefineOutput } from "@/lib/monsoon/refine";
 import type { AskMessage, AskResult } from "@/lib/monsoon/ask/loop";
@@ -32,6 +33,7 @@ export type SaveBody = {
   extracted?: CardFields;
   newOrg?: boolean;
   samePerson?: string | false;
+  kind?: CardKind;
 };
 
 export type ApiResult<T> = { status: number; body: T };
@@ -94,9 +96,11 @@ export async function loadEstates(): Promise<
 
 export async function readCards(
   image: Blob,
-): Promise<ApiResult<{ cards: CardFields[] } | { error: string }>> {
+  estate: string,
+): Promise<ApiResult<{ cards: CardFields[]; matches?: CardMatch[] | null } | { error: string }>> {
   const form = new FormData();
   form.append("image", image, "card.jpg");
+  form.append("estate", estate);
   return parse(await request("/api/monsoon/read", { method: "POST", body: form }, TIMEOUT_MS.upload));
 }
 
