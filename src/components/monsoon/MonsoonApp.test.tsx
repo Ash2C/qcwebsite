@@ -1135,3 +1135,16 @@ describe("MonsoonApp", () => {
     });
   });
 });
+
+describe("Monsoon branding", () => {
+  it("shows the Monsoon logo as the screen heading, with a dark-mode version", async () => {
+    const { container } = render(<MonsoonApp />);
+    const heading = await screen.findByRole("heading", { level: 1, name: "Monsoon" });
+    const img = heading.querySelector("img");
+    expect(img).toHaveAttribute("src", "/monsoon/brand/monsoon-logo-on-light.svg");
+    expect(container.querySelector('source[media="(prefers-color-scheme: dark)"]')).toHaveAttribute(
+      "srcset",
+      "/monsoon/brand/monsoon-logo-on-dark.svg",
+    );
+  });
+});

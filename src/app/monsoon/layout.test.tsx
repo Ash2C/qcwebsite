@@ -1,6 +1,10 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// next/font only runs inside the Next build; stand it in with a fixed class name.
+vi.mock("next/font/google", () => ({ Sora: () => ({ className: "font-sora" }) }));
+
 import MonsoonLayout, { metadata, viewport } from "./layout";
 
 describe("monsoon layout", () => {
@@ -15,7 +19,7 @@ describe("monsoon layout", () => {
   it("sets light and dark theme colours", () => {
     expect(viewport.themeColor).toEqual([
       { media: "(prefers-color-scheme: light)", color: "#f2f2f7" },
-      { media: "(prefers-color-scheme: dark)", color: "#000000" },
+      { media: "(prefers-color-scheme: dark)", color: "#07090C" },
     ]);
   });
 
@@ -25,7 +29,8 @@ describe("monsoon layout", () => {
         <p>x</p>
       </MonsoonLayout>,
     );
-    expect(html).toMatch(/^<div class="[^"]*bg-\[#f2f2f7\][^"]*dark:bg-black/);
+    expect(html).toMatch(/^<div class="[^"]*bg-\[#f2f2f7\][^"]*dark:bg-\[#07090C\][^"]*font-sora/);
+    expect(html).toContain("html,body{background:#07090C}");
     expect(html).toContain("html,body{background:#f2f2f7}");
     expect(html).toContain("prefers-color-scheme:dark");
   });

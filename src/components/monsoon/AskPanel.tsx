@@ -251,7 +251,7 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
         <div className="flex justify-end">
           <button
             type="button"
-            className="min-h-[44px] rounded-xl bg-neutral-100 px-4 text-[16px] font-medium text-blue-700 active:bg-neutral-200 disabled:opacity-50 dark:bg-white/10 dark:text-blue-300 dark:active:bg-white/20"
+            className="min-h-[44px] rounded-xl bg-neutral-100 px-4 text-[16px] font-medium text-[#0E7FA6] active:bg-neutral-200 disabled:opacity-50 dark:bg-white/10 dark:text-[#6AE6FF] dark:active:bg-white/20"
             disabled={busy}
             onClick={clear}
           >
@@ -282,8 +282,8 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
             <div
               className={`max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-4 py-2.5 text-[17px] leading-snug ${
                 t.role === "user"
-                  ? "ml-auto bg-blue-600 text-white dark:bg-blue-500"
-                  : "mr-auto bg-white shadow-sm ring-1 ring-black/5 dark:bg-[#1c1c1e] dark:ring-white/10"
+                  ? "ml-auto bg-[#0E7FA6] text-white dark:bg-[#6AE6FF] dark:text-[#04121A]"
+                  : "mr-auto bg-white shadow-sm ring-1 ring-black/5 dark:bg-[#0E1822] dark:ring-white/10"
               }`}
             >
               {t.content}
@@ -312,7 +312,7 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
         <div ref={endRef} />
       </div>
 
-      <div className="sticky bottom-0 -mx-4 mt-auto flex items-end gap-2 bg-[#f2f2f7]/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:bg-black/90">
+      <div className="sticky bottom-0 -mx-4 mt-auto flex items-end gap-2 bg-[#f2f2f7]/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:bg-[#07090C]/90">
         <label htmlFor="ask-input" className="sr-only">
           Your question
         </label>
@@ -324,7 +324,7 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
           value={state.draft}
           placeholder={`Ask about ${estate.label}...`}
           onChange={(e) => setDraft(e.target.value)}
-          className="block min-h-[44px] flex-1 resize-none rounded-2xl bg-white px-4 py-2.5 text-[17px] text-neutral-900 shadow-sm ring-1 ring-black/5 placeholder:text-neutral-400 focus:outline-none dark:bg-[#1c1c1e] dark:text-white dark:ring-white/10 dark:placeholder:text-neutral-500"
+          className="block min-h-[44px] flex-1 resize-none rounded-2xl bg-white px-4 py-2.5 text-[17px] text-neutral-900 shadow-sm ring-1 ring-black/5 placeholder:text-neutral-400 focus:outline-none dark:bg-[#0E1822] dark:text-white dark:ring-white/10 dark:placeholder:text-neutral-500"
         />
         <button
           type="button"

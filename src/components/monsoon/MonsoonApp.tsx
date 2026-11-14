@@ -1,5 +1,6 @@
 "use client";
 
+import MonsoonLogo from "./MonsoonLogo";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CardFields } from "@/lib/monsoon/extract";
 import type { CaptureResult } from "@/lib/monsoon/capture";
@@ -73,7 +74,7 @@ function storeEstate(key: string) {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-dvh bg-[#f2f2f7] text-neutral-900 dark:bg-black dark:text-white">{children}</div>
+    <div className="min-h-dvh bg-[#f2f2f7] text-neutral-900 dark:bg-[#07090C] dark:text-white">{children}</div>
   );
 }
 
@@ -438,7 +439,7 @@ export default function MonsoonApp() {
     return (
       <Shell>
         <div className="mx-auto flex min-h-dvh max-w-md flex-col justify-center gap-5 px-6">
-          <h1 className="text-4xl font-bold tracking-tight">Monsoon</h1>
+          <MonsoonLogo className="h-10" />
           <p role="alert" className="text-[17px] font-medium text-red-600 dark:text-red-400">
             Could not load. Check signal.
           </p>
@@ -464,7 +465,7 @@ export default function MonsoonApp() {
           onSubmit={onSignIn}
           className="mx-auto flex min-h-dvh max-w-md flex-col justify-center gap-5 px-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(1.5rem,env(safe-area-inset-top))]"
         >
-          <h1 className="text-4xl font-bold tracking-tight">Monsoon</h1>
+          <MonsoonLogo className="h-10" />
           <div className={card}>
             <label htmlFor="passcode" className={fieldLabel}>
               Passcode
@@ -502,7 +503,7 @@ export default function MonsoonApp() {
   return (
     <Shell>
       <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
-        <h1 className="px-1 pt-2 text-4xl font-bold tracking-tight">Monsoon</h1>
+        <MonsoonLogo className="h-8 px-1 pt-2" />
 
         <div
           role="group"
@@ -520,7 +521,7 @@ export default function MonsoonApp() {
                 onClick={() => chooseEstate(e)}
                 className={`min-h-[44px] rounded-lg px-2 text-[16px] font-semibold disabled:opacity-40 ${
                   selected
-                    ? "bg-white text-neutral-900 shadow-sm dark:bg-[#636366] dark:text-white"
+                    ? "bg-white text-neutral-900 shadow-sm dark:bg-[#1F3A4A] dark:text-white"
                     : "text-neutral-600 dark:text-neutral-300"
                 }`}
               >
@@ -544,7 +545,7 @@ export default function MonsoonApp() {
               onClick={() => setMode(m)}
               className={`min-h-[44px] rounded-lg px-2 text-[16px] font-semibold disabled:opacity-40 ${
                 mode === m
-                  ? "bg-white text-neutral-900 shadow-sm dark:bg-[#636366] dark:text-white"
+                  ? "bg-white text-neutral-900 shadow-sm dark:bg-[#1F3A4A] dark:text-white"
                   : "text-neutral-600 dark:text-neutral-300"
               }`}
             >
@@ -573,7 +574,7 @@ export default function MonsoonApp() {
         ) : (
           <>
             <label
-              className={`flex min-h-[64px] cursor-pointer items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-blue-600/50 bg-blue-600/5 text-[19px] font-semibold text-blue-700 active:bg-blue-600/10 dark:border-blue-400/50 dark:bg-blue-400/10 dark:text-blue-300 ${
+              className={`flex min-h-[64px] cursor-pointer items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-[#0E7FA6]/50 bg-[#0E7FA6]/5 text-[19px] font-semibold text-[#0E7FA6] active:bg-[#0E7FA6]/10 dark:border-[#6AE6FF]/50 dark:bg-[#6AE6FF]/10 dark:text-[#6AE6FF] ${
                 busy ? "pointer-events-none opacity-50" : ""
               }`}
             >
@@ -658,7 +659,7 @@ export default function MonsoonApp() {
               }
             />
 
-            <div className="sticky bottom-0 -mx-4 mt-auto bg-[#f2f2f7]/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:bg-black/90">
+            <div className="sticky bottom-0 -mx-4 mt-auto bg-[#f2f2f7]/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:bg-[#07090C]/90">
               <button
                 type="button"
                 className={primaryButton}
