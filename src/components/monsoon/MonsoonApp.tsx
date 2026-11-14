@@ -8,6 +8,7 @@ import type { RefineOutput } from "@/lib/monsoon/refine";
 import { loadEstates, readCards, saveCard, signIn, type EstateInfo, type SaveBody } from "./api";
 import { downsizeImage } from "./image";
 import AskPanel, { EMPTY_ASK, type AskState } from "./AskPanel";
+import ContactsPanel, { EMPTY_CONTACTS, type ContactsState } from "./ContactsPanel";
 import BatchReview, { makeBatch, type Batch } from "./BatchReview";
 import { describeResult, type SavePrompt } from "./outcomes";
 import ContactFormFields, { type FormKey } from "./ContactFormFields";
@@ -110,7 +111,9 @@ export default function MonsoonApp() {
   // True while a batch save run is in flight (reported by BatchReview).
   const [batchRunning, setBatchRunning] = useState(false);
   // Ask mode: the conversation lives here so it survives the passcode screen; askBusy is reported by AskPanel.
-  const [mode, setMode] = useState<"capture" | "ask">("capture");
+  const [mode, setMode] = useState<"capture" | "contacts" | "ask">("capture");
+  // Contacts mode: search text and the open profile live here too, so they survive tab switches and the passcode screen.
+  const [contacts, setContacts] = useState<ContactsState>(EMPTY_CONTACTS);
   const [ask, setAsk] = useState<AskState>(EMPTY_ASK);
   const [askBusy, setAskBusy] = useState(false);
   // The Ask conversation belongs to one estate: any path that changes the estate clears it.
@@ -119,6 +122,7 @@ export default function MonsoonApp() {
     if (askEstateRef.current !== estateKey) {
       askEstateRef.current = estateKey;
       setAsk(EMPTY_ASK);
+      setContacts(EMPTY_CONTACTS);
     }
   }, [estateKey]);
   const formRef = useRef(form);
@@ -534,14 +538,18 @@ export default function MonsoonApp() {
         <div
           role="group"
           aria-label="Mode"
-          className="grid grid-cols-2 gap-1 rounded-xl bg-neutral-200/80 p-1 dark:bg-white/10"
+          className="grid grid-cols-3 gap-1 rounded-xl bg-neutral-200/80 p-1 dark:bg-white/10"
         >
-          {(["capture", "ask"] as const).map((m) => (
+          {(["capture", "contacts", "ask"] as const).map((m) => (
             <button
               key={m}
               type="button"
               aria-pressed={mode === m}
-              disabled={m === "capture" ? askBusy : reading || saving || tidying || batchRunning}
+              disabled={
+                m === "capture"
+                  ? askBusy
+                  : reading || saving || tidying || batchRunning || (m === "contacts" && askBusy)
+              }
               onClick={() => setMode(m)}
               className={`min-h-[44px] rounded-lg px-2 text-[16px] font-semibold disabled:opacity-40 ${
                 mode === m
@@ -549,12 +557,19 @@ export default function MonsoonApp() {
                   : "text-neutral-600 dark:text-neutral-300"
               }`}
             >
-              {m === "capture" ? "Capture" : "Ask"}
+              {m === "capture" ? "Capture" : m === "contacts" ? "Contacts" : "Ask"}
             </button>
           ))}
         </div>
 
-        {mode === "ask" && estate ? (
+        {mode === "contacts" && estate ? (
+          <ContactsPanel
+            estate={estate}
+            state={contacts}
+            onChange={setContacts}
+            onUnauthorized={() => setPhase("locked")}
+          />
+        ) : mode === "ask" && estate ? (
           <AskPanel
             estate={estate}
             state={ask}

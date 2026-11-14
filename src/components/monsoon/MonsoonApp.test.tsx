@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MonsoonApp from "./MonsoonApp";
@@ -16,6 +16,8 @@ vi.mock("./api", () => ({
   refineCard: vi.fn(),
   askCrm: vi.fn(),
   actOnCrm: vi.fn(),
+  searchContacts: vi.fn(),
+  loadProfile: vi.fn(),
 }));
 vi.mock("./image", () => ({
   downsizeImage: vi.fn(),
@@ -1133,6 +1135,102 @@ describe("MonsoonApp", () => {
       await pickPhoto(user);
       await waitFor(() => expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled());
     });
+  });
+});
+
+describe("Contacts mode", () => {
+  const JANE = {
+    kind: "person", personId: "p1", orgId: "o1", name: "Jane Tan", title: "Partner", company: "Acme Capital",
+    email: null, member: null, memberOf: null,
+  };
+  const found = (...contacts: unknown[]) => ({ status: 200, body: { contacts } }) as never;
+
+  async function openContacts(user: User) {
+    signedIn();
+    m.searchContacts.mockResolvedValue(found(JANE));
+    render(<MonsoonApp />);
+    await ready();
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await screen.findByRole("textbox", { name: "Search contacts" });
+  }
+
+  it("has a three-way switch and keeps each mode's state across switches", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.searchContacts.mockResolvedValue(found(JANE));
+    render(<MonsoonApp />);
+    await ready();
+    expect(within(screen.getByRole("group", { name: "Mode" })).getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "Capture",
+      "Contacts",
+      "Ask",
+    ]);
+    await typeName(user);
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await user.type(await screen.findByRole("textbox", { name: "Search contacts" }), "jane");
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Who?");
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    expect(await screen.findByRole("textbox", { name: "Search contacts" })).toHaveValue("jane");
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Who?");
+    await user.click(screen.getByRole("button", { name: "Capture" }));
+    expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan");
+  });
+
+  it("keeps an open profile when switching modes", async () => {
+    const user = userEvent.setup();
+    m.loadProfile.mockResolvedValue({ status: 404, body: { error: "Not found" } } as never);
+    await openContacts(user);
+    await user.click(await screen.findByRole("button", { name: /Jane Tan/ }));
+    await screen.findByText("That contact is no longer on file.");
+    await user.click(screen.getByRole("button", { name: "Capture" }));
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    expect(await screen.findByText("That contact is no longer on file.")).toBeInTheDocument();
+  });
+
+  it("clears the search when the estate changes", async () => {
+    const user = userEvent.setup();
+    await openContacts(user);
+    await user.type(screen.getByRole("textbox", { name: "Search contacts" }), "jane");
+    await user.click(screen.getByRole("button", { name: "Zero One" }));
+    const box = await screen.findByPlaceholderText("Search Zero One");
+    expect(box).toHaveValue("");
+  });
+
+  it("survives the passcode screen on the same estate", async () => {
+    const user = userEvent.setup();
+    await openContacts(user);
+    await user.type(screen.getByRole("textbox", { name: "Search contacts" }), "jane");
+    m.searchContacts.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never);
+    await user.type(screen.getByRole("textbox", { name: "Search contacts" }), "x");
+    await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
+    m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+    m.searchContacts.mockResolvedValue(found(JANE));
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(await screen.findByRole("textbox", { name: "Search contacts" })).toHaveValue("janex");
+  });
+
+  it("the Contacts switch is disabled while a capture read is in flight", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.readCards.mockImplementation(() => new Promise(() => {}));
+    render(<MonsoonApp />);
+    await ready();
+    await pickPhoto(user);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Contacts" })).toBeDisabled());
+  });
+
+  it("the Contacts switch is disabled while a question is pending", async () => {
+    const user = userEvent.setup();
+    m.askCrm.mockImplementation(() => new Promise(() => {}));
+    signedIn();
+    render(<MonsoonApp />);
+    await ready();
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Who?");
+    await user.click(screen.getByRole("button", { name: "Send question" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Contacts" })).toBeDisabled());
   });
 });
 

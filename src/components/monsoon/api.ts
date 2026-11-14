@@ -5,6 +5,7 @@ import type { CardFields } from "@/lib/monsoon/extract";
 import type { CaptureResult } from "@/lib/monsoon/capture";
 import type { RefineInput, RefineOutput } from "@/lib/monsoon/refine";
 import type { AskMessage, AskResult } from "@/lib/monsoon/ask/loop";
+import type { ContactHit, Profile } from "@/lib/monsoon/contacts";
 import type { SignedProposal } from "@/lib/monsoon/ask/proposal";
 
 export type EstateInfo = {
@@ -150,4 +151,24 @@ export async function actOnCrm(body: {
       TIMEOUT_MS.standard,
     ),
   );
+}
+
+export async function searchContacts(
+  estate: string,
+  q: string,
+): Promise<ApiResult<{ contacts: ContactHit[] } | { error: string }>> {
+  const params = new URLSearchParams({ estate, q });
+  return parse(await request(`/api/monsoon/contacts?${params}`, { cache: "no-store" }, TIMEOUT_MS.quick));
+}
+
+export async function loadProfile(
+  estate: string,
+  target: { memberId?: string; personId?: string; orgId?: string },
+  today: string,
+): Promise<ApiResult<{ profile: Profile } | { error: string }>> {
+  const params = new URLSearchParams({ estate, today });
+  if (target.memberId) params.set("memberId", target.memberId);
+  if (target.personId) params.set("personId", target.personId);
+  if (target.orgId) params.set("orgId", target.orgId);
+  return parse(await request(`/api/monsoon/contact?${params}`, { cache: "no-store" }, TIMEOUT_MS.quick));
 }

@@ -1,0 +1,207 @@
+// @vitest-environment jsdom
+import React from "react";
+import "@testing-library/jest-dom/vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import ProfileView from "./ProfileView";
+import * as api from "./api";
+
+vi.mock("./api", () => ({ searchContacts: vi.fn(), loadProfile: vi.fn() }));
+const m = vi.mocked(api);
+
+const ESTATE = {
+  key: "traxo",
+  label: "Traxo",
+  defaultRole: "lp_prospect",
+  available: true,
+  roles: [{ key: "lp_prospect", label: "LP prospect" }],
+};
+
+const BASE = {
+  kind: "person", personId: "p1", orgId: "o1", name: "Jane Tan", title: "Partner", company: "Acme Capital",
+  email: "jane@acme.com", phone: "+65 9123 4567", linkedin: "linkedin.com/in/jane", country: "Singapore",
+  website: "acme.com", notes: "Own notes here", member: null, memberOf: null, timelineOf: null,
+  timeline: [], timelineTotal: 0, people: [],
+};
+const MEMBER = {
+  memberId: "m1", memberKind: "person", role: "lp_prospect", stage: "in_talks", owner: "VF", priority: null,
+  nextAction: "Send deck", nextActionDate: "2026-11-20", due: "later", notes: "Member notes here",
+};
+
+function profile(over: Record<string, unknown> = {}) {
+  return { status: 200, body: { profile: { ...BASE, ...over } } } as never;
+}
+
+type Props = Partial<React.ComponentProps<typeof ProfileView>>;
+function view(props: Props = {}) {
+  const handlers = { onBack: vi.fn(), onOpen: vi.fn(), onUnauthorized: vi.fn() };
+  render(<ProfileView estate={ESTATE} target={{ personId: "p1" }} {...handlers} {...props} />);
+  return handlers;
+}
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+beforeEach(() => vi.resetAllMocks());
+afterEach(cleanup);
+
+describe("ProfileView", () => {
+  it("shows Loading first, then a person on the pipeline", async () => {
+    m.loadProfile.mockResolvedValue(profile({ member: MEMBER, memberOf: "self" }));
+    view();
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    await flush();
+    expect(screen.getByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
+    expect(screen.getByText("LP prospect")).toBeInTheDocument();
+    expect(screen.getByText("In talks")).toBeInTheDocument();
+    expect(screen.getByText("Send deck · due 20 Nov 2026")).toBeInTheDocument();
+    expect(screen.getByText("Member notes here")).toBeInTheDocument();
+    expect(screen.getByText("Own notes here")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Timeline" })).toBeInTheDocument();
+    expect(screen.getByText("No timeline yet.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "People" })).toBeNull();
+  });
+
+  it("falls back to the role key with spaces when the estate has no label", async () => {
+    m.loadProfile.mockResolvedValue(profile({ member: { ...MEMBER, role: "fund_manager" }, memberOf: "self" }));
+    view();
+    await flush();
+    expect(screen.getByText("fund manager")).toBeInTheDocument();
+  });
+
+  it("the company is tappable and opens the company", async () => {
+    m.loadProfile.mockResolvedValue(profile());
+    const h = view();
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Acme Capital" }));
+    expect(h.onOpen).toHaveBeenCalledWith({ orgId: "o1" });
+  });
+
+  it("a person under a company: filed under, company timeline heading, clipped line, author", async () => {
+    m.loadProfile.mockResolvedValue(
+      profile({
+        member: { ...MEMBER, role: "lp_prospect", stage: "lead" },
+        memberOf: "company",
+        timelineOf: "Acme Capital",
+        timeline: [
+          { at: "2026-11-13T12:00:00.000Z", kind: "note", by: "VF", summary: "Called <b>Jane</b>" },
+          { at: "2026-11-01T12:00:00.000Z", kind: "system", by: null, summary: "Moved" },
+        ],
+        timelineTotal: 75,
+      }),
+    );
+    view();
+    await flush();
+    expect(screen.getByText("filed under Acme Capital")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Timeline of Acme Capital" })).toBeInTheDocument();
+    expect(screen.getByText("13 Nov 2026 · note · Called <b>Jane</b>")).toBeInTheDocument();
+    expect(document.querySelector("b")).toBeNull();
+    expect(screen.getByText("by VF")).toBeInTheDocument();
+    expect(screen.getByText("1 Nov 2026 · system · Moved")).toBeInTheDocument();
+    expect(screen.getAllByText(/^by /)).toHaveLength(1);
+    expect(screen.getByText("Showing 2 of 75")).toBeInTheDocument();
+  });
+
+  it("a person not on the pipeline", async () => {
+    m.loadProfile.mockResolvedValue(profile({ email: null, phone: null, linkedin: null, country: null, website: null, notes: null }));
+    view();
+    await flush();
+    expect(screen.getByText("Not on the pipeline")).toBeInTheDocument();
+    expect(screen.getAllByText("(none)")).toHaveLength(5);
+    expect(screen.queryByRole("heading", { name: "Notes" })).toBeNull();
+    expect(screen.queryByText(/^Next/)).toBeNull();
+  });
+
+  it("a company shows its people, and tapping one opens that person", async () => {
+    m.loadProfile.mockResolvedValue(
+      profile({
+        kind: "company", personId: null, name: "Acme Capital", title: null, company: null,
+        people: [{ personId: "p9", name: "Raj Rao", title: "CIO", email: null, phone: null }],
+      }),
+    );
+    const h = view({ target: { orgId: "o1" } });
+    await flush();
+    expect(screen.getByRole("heading", { name: "People" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Raj Rao/ }));
+    expect(h.onOpen).toHaveBeenCalledWith({ personId: "p9" });
+  });
+
+  it("builds mailto, tel and web links safely", async () => {
+    m.loadProfile.mockResolvedValue(profile());
+    view();
+    await flush();
+    expect(screen.getByRole("link", { name: "jane@acme.com" })).toHaveAttribute("href", "mailto:jane@acme.com");
+    const tel = screen.getByRole("link", { name: "+65 9123 4567" });
+    expect(tel).toHaveAttribute("href", "tel:+6591234567");
+    const li = screen.getByRole("link", { name: "linkedin.com/in/jane" });
+    expect(li).toHaveAttribute("href", "https://linkedin.com/in/jane");
+    expect(li).toHaveAttribute("target", "_blank");
+    expect(li).toHaveAttribute("rel", "noreferrer noopener");
+    expect(screen.getByRole("link", { name: "acme.com" })).toHaveAttribute("href", "https://acme.com/");
+  });
+
+  it("does not link a javascript: LinkedIn value or other non-http schemes", async () => {
+    m.loadProfile.mockResolvedValue(profile({ linkedin: "javascript:alert(1)", website: "ftp://files.example.com" }));
+    view();
+    await flush();
+    expect(screen.getByText("javascript:alert(1)")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "javascript:alert(1)" })).toBeNull();
+    expect(screen.getByText("ftp://files.example.com")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "ftp://files.example.com" })).toBeNull();
+  });
+
+  it("renders the actions slot between details and notes", async () => {
+    m.loadProfile.mockResolvedValue(profile());
+    view({ actions: (p) => <div data-testid="slot">{p.name}</div> });
+    await flush();
+    const slot = screen.getByTestId("slot");
+    expect(slot).toHaveTextContent("Jane Tan");
+    const details = screen.getByText("Country");
+    const notes = screen.getByRole("heading", { name: "Notes" });
+    expect(details.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(slot.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("not found shows the message and a working back control", async () => {
+    m.loadProfile.mockResolvedValue({ status: 404, body: { error: "Not found" } } as never);
+    const h = view();
+    await flush();
+    expect(screen.getByText("That contact is no longer on file.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "‹ Contacts" }));
+    expect(h.onBack).toHaveBeenCalled();
+  });
+
+  it("failure shows Retry, which loads again", async () => {
+    m.loadProfile.mockRejectedValueOnce(new Error("net")).mockResolvedValueOnce(profile());
+    view();
+    await flush();
+    expect(screen.getByText("Could not load this contact. Check signal.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await flush();
+    expect(screen.getByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
+  });
+
+  it("calls onUnauthorized on a 401", async () => {
+    m.loadProfile.mockResolvedValue({ status: 401, body: { error: "unauthorized" } } as never);
+    const h = view();
+    await flush();
+    expect(h.onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes a reload to the actions slot that fetches again", async () => {
+    m.loadProfile.mockResolvedValue(profile());
+    let reload: () => void = () => {};
+    view({
+      actions: (_p, r) => {
+        reload = r;
+        return null;
+      },
+    });
+    await flush();
+    await act(async () => reload());
+    expect(m.loadProfile).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
+  });
+});

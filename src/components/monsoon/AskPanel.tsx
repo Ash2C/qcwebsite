@@ -33,7 +33,7 @@ const SAVE_FAILURE = "Could not save. Check signal and try again.";
 const SUGGESTIONS = ["Who should I chase this week?", "Summarise the pipeline", "Tell me about "];
 
 // The phone's local date, never the UTC one.
-function localDate(): string {
+export function localDate(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
