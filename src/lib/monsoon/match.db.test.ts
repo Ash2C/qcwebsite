@@ -77,6 +77,7 @@ describe.skipIf(!testDb.available)("matchCards (real Postgres)", () => {
         company: "Northwind Capital",
         email: "jane@northwind.example",
         by: "name_company",
+        nameAgrees: true,
         memberOf: "company",
         member: { memberId: id.mNorth, memberKind: "company", role: "investor", stage: "engaged" },
       },
@@ -93,7 +94,17 @@ describe.skipIf(!testDb.available)("matchCards (real Postgres)", () => {
   it("matches by email, case-insensitively, whatever the name", async () => {
     const [m] = await matchCards(db, [card("Jon Tan", "", " JANE@northwind.example ")]);
     expect(m.match).toBe("exact");
-    expect(m.candidates).toMatchObject([{ personId: id.jane, by: "email" }]);
+    expect(m.candidates).toMatchObject([{ personId: id.jane, by: "email", nameAgrees: false }]);
+  });
+
+  it("says the name agrees when the email match has the same name", async () => {
+    const [m] = await matchCards(db, [card("Jane Tan", "", "jane@northwind.example")]);
+    expect(m.candidates).toMatchObject([{ personId: id.jane, by: "email", nameAgrees: true }]);
+  });
+
+  it("name-only candidates always have the name agreeing", async () => {
+    const [m] = await matchCards(db, [card("Li Wei", "Other Co")]);
+    expect(m.candidates).toMatchObject([{ by: "name", nameAgrees: true }]);
   });
 
   it("calls the same person one match when email and name+company agree", async () => {

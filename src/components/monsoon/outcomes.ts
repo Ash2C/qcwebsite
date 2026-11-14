@@ -14,7 +14,9 @@ export function describeResult(
   result: Exclude<CaptureResult, { outcome: "invalid" }>,
   ctx: { name: string; org: string; estateLabel: string; roleLabel: (key: string) => string },
 ): Outcome {
-  const name = ctx.name.trim();
+  // The name on file when the server says it (a match by email can carry another spelling).
+  const typed = ctx.name.trim();
+  const name = "name" in result && result.name ? result.name : typed;
   const org = ctx.org.trim();
   const estate = ctx.estateLabel;
   switch (result.outcome) {
@@ -40,7 +42,7 @@ export function describeResult(
       };
     }
     case "duplicate":
-      return { kind: "done", text: `${name} saved to ${estate}.` };
+      return { kind: "done", text: `${typed} saved to ${estate}.` };
     case "org_lookalike":
       return {
         kind: "prompt",
@@ -54,10 +56,10 @@ export function describeResult(
       return {
         kind: "prompt",
         prompt: { kind: "same_name", matches: result.matches },
-        text: `${name} is already on file at ${result.matches[0]?.org ?? "no company"}. Same person?`,
+        text: `${typed} is already on file at ${result.matches[0]?.org ?? "no company"}. Same person?`,
       };
     case "ambiguous":
-      return { kind: "info", text: `Several people are named ${name}. Add the company to say which one.` };
+      return { kind: "info", text: `Several people are named ${typed}. Add the company to say which one.` };
     case "needs_company":
       return { kind: "info", text: "Add their company so I can tell them apart." };
   }

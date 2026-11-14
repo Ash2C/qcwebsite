@@ -22,10 +22,11 @@ export type CaptureInput = {
   kind?: CaptureKind; // what the image was; sets the timeline wording
 };
 
+// `name` is the name on file (a match by email can carry another spelling than the typed one).
 export type CaptureResult =
-  | { outcome: "added"; person: string; org: string | null; role: string; filled: string[] }
-  | { outcome: "existing"; person: string; org: string | null; role: string; filled: string[] }
-  | { outcome: "filed"; person: string; org: string; role: string; filled: string[]; created: boolean }
+  | { outcome: "added"; person: string; name?: string; org: string | null; role: string; filled: string[] }
+  | { outcome: "existing"; person: string; name?: string; org: string | null; role: string; filled: string[] }
+  | { outcome: "filed"; person: string; name?: string; org: string; role: string; filled: string[]; created: boolean }
   | { outcome: "duplicate"; person: string; org: string | null }
   | { outcome: "org_lookalike"; similar: string[] }
   | { outcome: "same_name"; matches: { personId: string; org: string | null }[] }
@@ -146,8 +147,11 @@ export async function capture(db: ClientBase, input: CaptureInput): Promise<Capt
       const chosen = UUID_RE.test(input.samePerson)
         ? ((await db.query("SELECT * FROM people WHERE id = $1", [input.samePerson])).rows[0] as PersonRow | undefined)
         : undefined;
+      // Same normalisation as match.ts: trimmed and lower-cased on both sides.
       const sameEmail =
-        !!chosen?.email && !!fields.email && chosen.email.toLowerCase() === fields.email.toLowerCase();
+        !!chosen?.email &&
+        !!fields.email &&
+        chosen.email.trim().toLowerCase() === fields.email.trim().toLowerCase();
       person = chosen && (chosen.name_key === key || sameEmail) ? chosen : undefined;
       if (!person) return { outcome: "invalid", error: "samePerson is not a person with this name" };
     } else if (input.samePerson === false && !org && namesakes.length > 0) {
@@ -245,7 +249,8 @@ export async function capture(db: ClientBase, input: CaptureInput): Promise<Capt
     );
 
     // 7. A meeting touch, also for an existing member.
-    let summary = KIND_TEXT[input.kind ?? "card"] ?? KIND_TEXT.card;
+    const kindKey = input.kind ?? "card";
+    let summary = Object.hasOwn(KIND_TEXT, kindKey) ? KIND_TEXT[kindKey] : KIND_TEXT.card;
     if (filedUnder) summary = `${person.name}: ${summary}`;
     if (notes) summary += `: ${notes}`;
     if (cardOrg) summary += ` (card shows ${cardOrg})`;
@@ -259,6 +264,7 @@ export async function capture(db: ClientBase, input: CaptureInput): Promise<Capt
       return {
         outcome: "filed",
         person: person.id,
+        name: person.name,
         org: (await orgName(db, person.org_id)) ?? "",
         role: member.role,
         filled,
@@ -268,6 +274,7 @@ export async function capture(db: ClientBase, input: CaptureInput): Promise<Capt
     return {
       outcome: created || memberCreated ? "added" : "existing",
       person: person.id,
+      name: person.name,
       org: await orgName(db, person.org_id),
       role: member.role,
       filled,

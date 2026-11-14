@@ -13,7 +13,7 @@ const MAX_BYTES = 3_700_000;
 // Allowance for multipart boundaries and headers around the file.
 const MULTIPART_OVERHEAD = 100_000;
 // The photo is read by now (the model call has its own 25 s limit), so the lookup gets a short budget.
-const MATCH_TIMEOUT_MS = 4000;
+const MATCH_TIMEOUT_MS = 3000;
 const TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
 type MediaType = (typeof TYPES)[number];
 

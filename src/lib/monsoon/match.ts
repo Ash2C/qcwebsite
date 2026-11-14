@@ -14,6 +14,7 @@ export type MatchCandidate = {
   member: MemberRef | null; // own membership, else the company's, else null
   memberOf: "self" | "company" | null;
   by: "name_company" | "email" | "name"; // why this person matched
+  nameAgrees: boolean; // same name key as the card (false only for an email match under another name)
 };
 export type CardMatch = { match: "none" | "exact" | "same_name" | "several"; candidates: MatchCandidate[] };
 
@@ -40,7 +41,7 @@ type Row = {
 const stamp = (v: Date | string | null): number => (v === null ? Number.POSITIVE_INFINITY : new Date(v).getTime());
 const byAge = (a: Row, b: Row): number => stamp(a.created_at) - stamp(b.created_at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
-function candidate(r: Row, by: MatchCandidate["by"]): MatchCandidate {
+function candidate(r: Row, by: MatchCandidate["by"], key: string): MatchCandidate {
   const own: MemberRef | null = r.own_id
     ? { memberId: r.own_id, memberKind: "person", role: r.own_role as string, stage: r.own_stage as string }
     : null;
@@ -56,6 +57,7 @@ function candidate(r: Row, by: MatchCandidate["by"]): MatchCandidate {
     member: own ?? viaCompany,
     memberOf: own ? "self" : viaCompany ? "company" : null,
     by,
+    nameAgrees: r.name_key === key,
   };
 }
 
@@ -71,13 +73,13 @@ function verdict(card: { name: string; org: string; email: string }, rows: Row[]
   const viaCompany = orgKey === "" ? [] : sameName.filter((r) => r.org_key === orgKey && !emailIds.has(r.id));
 
   const exact = [
-    ...[...viaEmail].sort(byAge).map((r) => candidate(r, "email")),
-    ...[...viaCompany].sort(byAge).map((r) => candidate(r, "name_company")),
+    ...[...viaEmail].sort(byAge).map((r) => candidate(r, "email", key)),
+    ...[...viaCompany].sort(byAge).map((r) => candidate(r, "name_company", key)),
   ];
   if (exact.length > 0) {
     return { match: exact.length === 1 ? "exact" : "several", candidates: exact.slice(0, CANDIDATE_MAX) };
   }
-  const named = [...sameName].sort(byAge).map((r) => candidate(r, "name"));
+  const named = [...sameName].sort(byAge).map((r) => candidate(r, "name", key));
   if (named.length === 0) return { match: "none", candidates: [] };
   return { match: named.length === 1 ? "same_name" : "several", candidates: named.slice(0, CANDIDATE_MAX) };
 }

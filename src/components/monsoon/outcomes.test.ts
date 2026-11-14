@@ -69,6 +69,21 @@ describe("describeResult", () => {
     });
   });
 
+  it("uses the name on file when the server sends one", () => {
+    const ctx = { name: "Jon Poe", org: "", estateLabel: "Traxo", roleLabel: (k: string) => k };
+    expect(describeResult({ outcome: "added", person: PERSON, name: "Jonathan Poe", org: null, role: "investor", filled: [] }, ctx)).toEqual({
+      kind: "done",
+      text: "Jonathan Poe added to Traxo.",
+    });
+    expect(
+      describeResult({ outcome: "filed", person: PERSON, name: "Jonathan Poe", org: "Northwind", role: "investor", filled: [], created: false }, ctx),
+    ).toEqual({ kind: "done", text: "Jonathan Poe is already on file under Northwind; meeting logged." });
+    expect(describeResult({ outcome: "existing", person: PERSON, name: "Jonathan Poe", org: null, role: "investor", filled: [] }, ctx)).toEqual({
+      kind: "done",
+      text: "Jonathan Poe is already in Traxo as investor; nothing new.",
+    });
+  });
+
   it("filed, new person", () => {
     expect(
       describeResult(

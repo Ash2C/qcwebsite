@@ -163,6 +163,69 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
     expect(await count("people")).toBe(1);
   });
 
+  describe("choosing a match by email (re-check)", () => {
+    async function seed(email: string | null, withMember = false): Promise<string> {
+      const org = (
+        await db.query("INSERT INTO orgs (name, name_key, source) VALUES ('Northwind Capital', 'northwind capital', 'test') RETURNING id")
+      ).rows[0];
+      const p = (
+        await db.query(
+          "INSERT INTO people (org_id, name, name_key, email, source) VALUES ($1, 'Jonathan Poe', 'jonathan poe', $2, 'test') RETURNING id",
+          [org.id, email],
+        )
+      ).rows[0];
+      if (withMember) {
+        await db.query(
+          "INSERT INTO members (org_id, role, stage, owner, source) VALUES ($1, 'investor', 'uncontacted', 'VF', 'test')",
+          [org.id],
+        );
+      }
+      return p.id;
+    }
+
+    it("a stored email with stray spaces and capitals still matches", async () => {
+      const id = await seed("  Jon@Acme.COM 	", true);
+      const r = await capture(db, input({ name: "Jon Poe", email: " jon@acme.com ", samePerson: id }));
+      expect(r).toMatchObject({ outcome: "filed", person: id, created: false });
+      expect(await count("people")).toBe(1);
+    });
+
+    it("filed under the company when the name differs: the timeline and the result use the name on file", async () => {
+      const id = await seed("jon@acme.com", true);
+      const r = await capture(db, input({ name: "Jon Poe", email: "jon@acme.com", samePerson: id }));
+      expect(r).toMatchObject({ outcome: "filed", name: "Jonathan Poe" });
+      expect(await touchSummaries()).toEqual(["Jonathan Poe: Card captured in person"]);
+    });
+
+    it("a stored email with no email on the card is invalid and writes nothing", async () => {
+      const id = await seed("jon@acme.com");
+      const before = await counts();
+      const r = await capture(db, input({ name: "Jon Poe", samePerson: id }));
+      expect(r.outcome).toBe("invalid");
+      expect(await counts()).toEqual(before);
+    });
+
+    it("an email on the card but none stored is invalid and writes nothing", async () => {
+      const id = await seed(null);
+      const before = await counts();
+      const r = await capture(db, input({ name: "Jon Poe", email: "jon@acme.com", samePerson: id }));
+      expect(r.outcome).toBe("invalid");
+      expect(await counts()).toEqual(before);
+    });
+  });
+
+  it("existing and added results carry the name on file", async () => {
+    const first = await capture(db, input({ org: "Acme Capital" }));
+    expect(first).toMatchObject({ outcome: "added", name: "Jane Tan" });
+    const again = await capture(db, input({ name: "  jane   tan ", org: "Acme Capital" }));
+    expect(again).toMatchObject({ outcome: "existing", name: "Jane Tan" });
+  });
+
+  it("an odd kind such as toString falls back to the card wording", async () => {
+    await capture(db, input({ kind: "toString" as unknown as "card" }));
+    expect(await touchSummaries()).toEqual(["Card captured in person"]);
+  });
+
   it("samePerson with a different name and a different email is invalid", async () => {
     const other = await capture(db, input({ name: "Bob Lee", org: "Acme Capital", email: "bob@acme.com" }));
     if (other.outcome !== "added") throw new Error("seed failed");

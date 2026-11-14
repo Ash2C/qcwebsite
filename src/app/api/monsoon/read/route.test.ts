@@ -191,7 +191,7 @@ describe("POST /api/monsoon/read", () => {
           { name: "Jane Tan", org: "Acme", email: "" },
           { name: "Omar Reyes", org: "Northwind", email: "o@n.example" },
         ],
-        { timeoutMs: 4000 }
+        { timeoutMs: 3000 }
       );
     });
 
@@ -232,7 +232,7 @@ describe("POST /api/monsoon/read", () => {
       expect(await res.json()).toEqual({ cards: [FIELDS], matches: null });
     });
 
-    it("gives up on a hung lookup after 4,000 ms and keeps the cards", async () => {
+    it("gives up on a hung lookup after 3,000 ms and keeps the cards", async () => {
       vi.spyOn(console, "error").mockImplementation(() => {});
       extractCards.mockResolvedValue([FIELDS]);
       withEstateDb.mockImplementation(() => new Promise(() => {}));
@@ -240,7 +240,9 @@ describe("POST /api/monsoon/read", () => {
       vi.useFakeTimers();
       try {
         const pending = POST(req);
-        await vi.advanceTimersByTimeAsync(4000);
+        // The budget timer exists only once the lookup has started: wait for that, then run it out.
+        await vi.waitFor(() => expect(withEstateDb).toHaveBeenCalled());
+        await vi.advanceTimersByTimeAsync(3000);
         const res = await pending;
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({ cards: [FIELDS], matches: null });
