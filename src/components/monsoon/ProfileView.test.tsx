@@ -3,7 +3,7 @@ import React from "react";
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import ProfileView from "./ProfileView";
+import ProfileView, { phoneSegments } from "./ProfileView";
 import * as api from "./api";
 
 vi.mock("./api", () => ({ searchContacts: vi.fn(), loadProfile: vi.fn() }));
@@ -73,6 +73,21 @@ describe("ProfileView", () => {
     expect(screen.getByRole("heading", { name: "Timeline" })).toBeInTheDocument();
     expect(screen.getByText("No timeline yet.")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "People" })).toBeNull();
+  });
+
+  it("shows the stage's label from the profile's stages, else the key as words", async () => {
+    m.loadProfile.mockResolvedValue(
+      profile({ member: MEMBER, memberOf: "self", stages: [{ key: "in_talks", label: "Talking now", terminal: false }] }),
+    );
+    view();
+    await flush();
+    expect(screen.getByText("Talking now")).toBeInTheDocument();
+    expect(screen.queryByText("In talks")).toBeNull();
+    cleanup();
+    m.loadProfile.mockResolvedValue(profile({ member: MEMBER, memberOf: "self", stages: [] }));
+    view();
+    await flush();
+    expect(screen.getByText("In talks")).toBeInTheDocument();
   });
 
   it("falls back to the role key with spaces when the estate has no label", async () => {
@@ -179,6 +194,19 @@ describe("ProfileView", () => {
     ["212-675-1600 x123", ["tel:2126751600"]],
     ["212-675-1600 ext. 1234567", ["tel:2126751600"]],
     ["(212) 675-1600", ["tel:2126751600"]],
+    ["+44 (0)20 7946 0958", ["tel:+442079460958"]],
+    ["+44(0)20 7946 0958", ["tel:+442079460958"]],
+    ["+65 (0) 6123 4567", ["tel:+6561234567"]],
+    ["(0)20 7946 0958", ["tel:02079460958"]],
+    ["212-675-1600 646-404-4166", ["tel:2126751600", "tel:6464044166"]],
+    ["+1 212 970 5762 646 404 4166", ["tel:+12129705762", "tel:6464044166"]],
+    ["(212) 675-1600 (646) 404-4166", ["tel:2126751600", "tel:6464044166"]],
+    ["+65 6123 4567 +65 6123 4568", ["tel:+6561234567", "tel:+6561234568"]],
+    ["212 675 1600", ["tel:2126751600"]],
+    ["212-675-1600 - 123", ["tel:2126751600"]],
+    ["+65 6123 4567 - 12345", ["tel:+6561234567"]],
+    ["212-675-1600 - 12 and 646-404-4166", ["tel:2126751600", "tel:6464044166"]],
+    ["call 212-675-1600 - 123, 646-404-4166", ["tel:2126751600", "tel:6464044166"]],
     ["123?x&y", []],
     ["call the front desk", []],
     ["12345678901234567890", []],
@@ -190,6 +218,69 @@ describe("ProfileView", () => {
     expect(links.map((a) => a.getAttribute("href"))).toEqual(hrefs);
     const dd = screen.getByText("Phone").parentElement!.querySelector("dd")!;
     expect(dd.textContent).toBe(phone);
+  });
+
+  it("drops a (0) after the country code from the dialled number, keeping the visible text", async () => {
+    m.loadProfile.mockResolvedValue(profile({ phone: "+44 (0)20 7946 0958" }));
+    view();
+    await flush();
+    const link = document.querySelector('a[href^="tel:"]')!;
+    expect(link.getAttribute("href")).toBe("tel:+442079460958");
+    expect(link.textContent).toBe("+44 (0)20 7946 0958");
+    expect(screen.getByText("Phone").parentElement!.querySelector("dd")!.textContent).toBe("+44 (0)20 7946 0958");
+  });
+
+  it("locks Back, the company link and the People rows while an action is in flight, and unlocks after", async () => {
+    m.loadProfile.mockResolvedValue(
+      profile({ kind: "company", personId: null, people: [{ personId: "p9", name: "Raj Rao", title: "CIO", email: null, phone: null }] }),
+    );
+    let setBusy: (b: boolean) => void = () => {};
+    const h = view({
+      actions: (_p, _r, s) => {
+        setBusy = s;
+        return null;
+      },
+    });
+    await flush();
+    const back = screen.getByRole("button", { name: "‹ Contacts" });
+    const row = screen.getByRole("button", { name: /Raj Rao/ });
+    expect(back).toBeEnabled();
+    expect(row).toBeEnabled();
+    await act(async () => setBusy(true));
+    expect(back).toBeDisabled();
+    expect(row).toBeDisabled();
+    fireEvent.click(back);
+    fireEvent.click(row);
+    expect(h.onBack).not.toHaveBeenCalled();
+    expect(h.onOpen).not.toHaveBeenCalled();
+    await act(async () => setBusy(false));
+    expect(back).toBeEnabled();
+    expect(row).toBeEnabled();
+  });
+
+  it("locks the company link of a person while an action is in flight", async () => {
+    m.loadProfile.mockResolvedValue(profile());
+    let setBusy: (b: boolean) => void = () => {};
+    const h = view({
+      actions: (_p, _r, s) => {
+        setBusy = s;
+        return null;
+      },
+    });
+    await flush();
+    await act(async () => setBusy(true));
+    expect(screen.getByRole("button", { name: "Acme Capital" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Acme Capital" }));
+    expect(h.onOpen).not.toHaveBeenCalled();
+  });
+
+  it("ignores a response that arrives after the view closed", async () => {
+    let resolveProfile!: (v: never) => void;
+    m.loadProfile.mockImplementationOnce(() => new Promise((r) => (resolveProfile = r as never)));
+    const h = view();
+    cleanup();
+    await act(async () => resolveProfile({ status: 401, body: { error: "unauthorized" } } as never));
+    expect(h.onUnauthorized).not.toHaveBeenCalled();
   });
 
   it("keeps an extension as text after the link", async () => {
@@ -280,5 +371,26 @@ describe("ProfileView", () => {
     await act(async () => reload());
     expect(m.loadProfile).toHaveBeenCalledTimes(2);
     expect(screen.getByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
+  });
+});
+
+describe("phoneSegments", () => {
+  it("only ever links an optional + and 7 to 15 digits, keeps the stored text whole, and stays fast", () => {
+    // A small seeded generator: the same inputs every run.
+    let seed = 12345;
+    const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    const alphabet = ["0", "1", "2", "7", "9", "9", " ", " ", " ", "-", "(", ")", ".", "+", "x", "a", ",", "\t", " - "];
+    for (let n = 0; n < 3000; n++) {
+      let value = "";
+      const len = 1 + Math.floor(next() * 40);
+      for (let i = 0; i < len; i++) value += alphabet[Math.floor(next() * alphabet.length)];
+      const segments = phoneSegments(value);
+      expect(segments.map((s) => s.text).join("")).toBe(value);
+      for (const s of segments) if (s.href !== null) expect(s.href).toMatch(/^tel:\+?\d{7,15}$/);
+    }
+    const hostile = ["1 ".repeat(50_000), "1-".repeat(50_000) + "x", " ".repeat(50_000) + "1", "(0)".repeat(20_000), "1 - ".repeat(20_000)];
+    const started = Date.now();
+    for (const value of hostile) expect(phoneSegments(value).map((s) => s.text).join("")).toBe(value);
+    expect(Date.now() - started).toBeLessThan(3000);
   });
 });

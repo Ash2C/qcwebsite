@@ -88,6 +88,9 @@ export default function ChangeCard({
           {p.target.type === "person" && p.company && (
             <p className="break-words text-[15px] text-neutral-500 dark:text-neutral-400">{p.company}</p>
           )}
+          {p.target.type === "company" && (
+            <p className="break-words text-[15px] text-neutral-500 dark:text-neutral-400">Company</p>
+          )}
         </div>
         <ul className="flex flex-col gap-1">
           {p.changes.map((c) => (

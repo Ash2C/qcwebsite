@@ -3,13 +3,22 @@
 import { useEffect, useRef, useState } from "react";
 import type { ContactHit } from "@/lib/monsoon/contacts";
 import { searchContacts, type EstateInfo } from "./api";
-import ProfileActions from "./ProfileActions";
+import ProfileActions, { type ProfileDraft } from "./ProfileActions";
 import ProfileView, { roleLabel, stageLabel } from "./ProfileView";
 import { card, secondaryButton } from "./styles";
 
 export type ContactTarget = { memberId?: string; personId?: string; orgId?: string };
-export type ContactsState = { query: string; open: ContactTarget | null };
-export const EMPTY_CONTACTS: ContactsState = { query: "", open: null };
+/** `draft` is what was typed in the open profile (an edit form or a note); it belongs to that contact only. */
+export type ContactsState = { query: string; open: ContactTarget | null; draft?: ProfileDraft | null };
+export const EMPTY_CONTACTS: ContactsState = { query: "", open: null, draft: null };
+
+const targetKey = (t: ContactTarget) => `${t.memberId ?? ""}|${t.personId ?? ""}|${t.orgId ?? ""}`;
+
+/** The state with another contact (or none) open; a draft typed for a different contact is dropped. */
+export function withOpen(s: ContactsState, open: ContactTarget | null): ContactsState {
+  const keep = open !== null && s.open !== null && targetKey(open) === targetKey(s.open);
+  return { ...s, open, draft: keep ? s.draft : null };
+}
 
 const DEBOUNCE_MS = 250;
 const FAILURE = "Could not load contacts. Check signal.";
@@ -66,7 +75,7 @@ export default function ContactsPanel({
     shownEstate.current = estate.key;
     setHits([]);
     setPhase("loading");
-    onChange((s) => ({ ...s, open: null }));
+    onChange((s) => withOpen(s, null));
   });
   const q = state.query.trim();
   const searching = q.length >= 2;
@@ -104,20 +113,24 @@ export default function ContactsPanel({
     const open = state.open;
     return (
       <ProfileView
-        key={`${open.memberId ?? ""}|${open.personId ?? ""}|${open.orgId ?? ""}`}
+        key={targetKey(open)}
         estate={estate}
         target={open}
-        onBack={() => onChange((s) => ({ ...s, open: null }))}
-        onOpen={(target) => onChange((s) => ({ ...s, open: target }))}
+        onBack={() => onChange((s) => withOpen(s, null))}
+        onOpen={(target) => onChange((s) => withOpen(s, target))}
         onUnauthorized={onUnauthorized}
-        actions={(profile, reload) => (
+        actions={(profile, reload, setViewBusy) => (
           <ProfileActions
             estate={estate}
             profile={profile}
             reload={reload}
             onUnauthorized={onUnauthorized}
             onBusy={onBusy}
+            setViewBusy={setViewBusy}
             onAsk={onAsk}
+            draftKey={targetKey(open)}
+            initialDraft={state.draft}
+            onDraft={(draft) => onChange((s) => (s.draft === draft || (!s.draft && !draft) ? s : { ...s, draft }))}
           />
         )}
       />
@@ -192,7 +205,7 @@ export default function ContactsPanel({
                 {target ? (
                   <button
                     type="button"
-                    onClick={() => onChange((s) => ({ ...s, open: target }))}
+                    onClick={() => onChange((s) => withOpen(s, target))}
                     className={`${rowClass} active:bg-neutral-100 dark:active:bg-white/10`}
                   >
                     {body}

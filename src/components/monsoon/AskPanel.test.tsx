@@ -529,6 +529,27 @@ describe("AskPanel", () => {
     expect(sent.length).toBeLessThan(5);
   });
 
+  it("counts a ref's company id toward the 50,000 characters too", async () => {
+    const user = userEvent.setup();
+    const ref = { memberId: "m".repeat(36), name: "n".repeat(10), company: null, kind: "company" as const, orgId: "o".repeat(36), personId: "p".repeat(36) };
+    const refs = Array.from({ length: 30 }, () => ref); // 30 x 118 characters, 30 x 82 without the company id
+    const content = "y".repeat(6770); // without orgId the history is 48,004 characters, with it 51,244
+    const turns: AskTurn[] = [
+      { id: "u1", role: "user", content },
+      { id: "a1", role: "assistant", content, refs },
+      { id: "u2", role: "user", content },
+      { id: "a2", role: "assistant", content, refs },
+      { id: "u3", role: "user", content },
+      { id: "a3", role: "assistant", content, refs },
+    ];
+    m.askCrm.mockResolvedValue(answer("ok"));
+    render(<Harness initial={{ turns, draft: "" }} />);
+    await ask(user, "next");
+    await screen.findByText("ok");
+    // Counting orgId the oldest pair no longer fits; leaving it out would send all seven messages.
+    expect(m.askCrm.mock.calls[0][0].messages).toHaveLength(5);
+  });
+
   it("clips a restored draft to 2,000 characters", async () => {
     const user = userEvent.setup();
     let resolve!: (v: never) => void;
@@ -660,6 +681,14 @@ describe("AskPanel contact chips and detail cards", () => {
     expect(open.mock.calls.map((c) => c[0])).toEqual([{ personId: "p1" }, { orgId: "o2" }, { memberId: "m3" }]);
   });
 
+  it("opens the person, not their company, for a person on the pipeline, and ignores a stray orgId on a person ref", async () => {
+    const user = userEvent.setup();
+    const open = withRefs([ref(1, { personId: "p1" }), ref(2, { orgId: "o2" })]);
+    await user.click(screen.getByRole("button", { name: "Person 1" }));
+    await user.click(screen.getByRole("button", { name: "Person 2" }));
+    expect(open.mock.calls.map((c) => c[0])).toEqual([{ personId: "p1" }, { memberId: "m2" }]);
+  });
+
   it("shows each contact once", () => {
     withRefs([ref(1, { personId: "p1" }), ref(2, { personId: "p1" })]);
     expect(screen.getAllByRole("button", { name: /Person/ })).toHaveLength(1);
@@ -686,6 +715,8 @@ describe("AskPanel contact chips and detail cards", () => {
     await ask(user, "Set Acme's site");
     expect(await screen.findByText("Edit details")).toBeInTheDocument();
     expect(screen.getByText("Website: (empty) → acme.com")).toBeInTheDocument();
+    // A company edit says plainly that it is the company.
+    expect(screen.getByText("Company")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(screen.getAllByText("Done. Acme Capital updated.").length).toBeGreaterThan(0));
     expect(m.actOnCrm).toHaveBeenCalledWith({ estate: "traxo", proposal: signed.proposal, signature: "sig-details" });

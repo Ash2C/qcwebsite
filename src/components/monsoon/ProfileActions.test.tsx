@@ -90,11 +90,13 @@ describe("ProfileActions buttons", () => {
     expect(screen.getByRole("button", { name: "Move stage" })).toBeInTheDocument();
   });
 
-  it("offers a company that is not on the pipeline only Edit", () => {
+  it("offers a company that is not on the pipeline no changes, and says why in one line", () => {
     view({ ...COMPANY, member: null, memberOf: null });
     expect(screen.queryByRole("button", { name: "Add note" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Move stage" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.getByText("Not on the pipeline. Capture or add a person here to start a timeline.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ask about this contact" })).toBeInTheDocument();
   });
 
   it("Ask about this contact hands over the draft without sending anything", async () => {
@@ -127,6 +129,49 @@ describe("Add note", () => {
     });
     expect(reload).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+  });
+
+  it("keeps the note in the box while its card is open, puts it back on Cancel, and empties it only after a confirmed save", async () => {
+    const user = userEvent.setup();
+    m.proposeChange.mockResolvedValue(proposed({ ...NOTE_SIGNED, text: undefined }));
+    m.actOnCrm.mockResolvedValue(acted("Done. Note added to Jane Tan."));
+    view();
+    await click(user, "Add note");
+    await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Called her");
+    await click(user, "Continue");
+    await screen.findByText("Confirm");
+    // The card is open and the note box is closed; Cancel on the card brings the note back.
+    await user.click(screen.getAllByRole("button", { name: "Cancel" })[0]);
+    expect(screen.getByPlaceholderText("Type or dictate a note")).toHaveValue("Called her");
+    await click(user, "Continue");
+    await screen.findByText("Confirm");
+    await click(user, "Confirm");
+    await screen.findByText("Done. Note added to Jane Tan.");
+    await click(user, "Add note");
+    expect(screen.getByPlaceholderText("Type or dictate a note")).toHaveValue("");
+  });
+
+  it("puts the note back as it was edited on the card", async () => {
+    const user = userEvent.setup();
+    m.proposeChange.mockResolvedValue(proposed({ ...NOTE_SIGNED, text: undefined }));
+    view();
+    await click(user, "Add note");
+    await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Called");
+    await click(user, "Continue");
+    await user.type(await screen.findByRole("textbox", { name: "Note text" }), " her");
+    await user.click(screen.getAllByRole("button", { name: "Cancel" })[0]);
+    expect(screen.getByPlaceholderText("Type or dictate a note")).toHaveValue("Called her");
+  });
+
+  it("keeps the note when the proposal is refused", async () => {
+    const user = userEvent.setup();
+    m.proposeChange.mockResolvedValue(refused("nope"));
+    view();
+    await click(user, "Add note");
+    await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Keep me");
+    await click(user, "Continue");
+    await screen.findByText("nope");
+    expect(screen.getByPlaceholderText("Type or dictate a note")).toHaveValue("Keep me");
   });
 
   it("addresses a person filed under a company by person id", async () => {
@@ -268,6 +313,28 @@ describe("Edit", () => {
       estate: "traxo", kind: "update_details", target: { personId: "p1" }, changes: { company: "Acme Cap" }, newCompany: true,
     });
     expect(await screen.findByText("Edit details")).toBeInTheDocument();
+  });
+
+  it("clears a refusal when a field is edited, so the different-company button never re-sends an older form", async () => {
+    const user = userEvent.setup();
+    const reason = "Acme Cap looks like Acme Capital, already on file. Use that name, or say it is a different company.";
+    m.proposeChange.mockResolvedValueOnce(refused(reason));
+    view();
+    await click(user, "Edit");
+    await user.clear(screen.getByLabelText("Company"));
+    await user.type(screen.getByLabelText("Company"), "Acme Cap");
+    await click(user, "Review changes");
+    expect(await screen.findByText(reason)).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Title"), "x");
+    expect(screen.queryByText(reason)).toBeNull();
+    expect(screen.queryByRole("button", { name: "It's a different company" })).toBeNull();
+    // Reviewing again sends the whole current form.
+    m.proposeChange.mockResolvedValueOnce(refused(reason));
+    await click(user, "Review changes");
+    expect(m.proposeChange.mock.calls[1][0].changes).toEqual({ title: "Partnerx", company: "Acme Cap" });
+    m.proposeChange.mockResolvedValueOnce(proposed(EDIT_SIGNED));
+    await click(user, "It's a different company");
+    expect(m.proposeChange.mock.calls[2][0]).toMatchObject({ changes: { title: "Partnerx", company: "Acme Cap" }, newCompany: true });
   });
 });
 
@@ -440,5 +507,80 @@ describe("busy reporting", () => {
     expect(onBusy).toHaveBeenLastCalledWith(false);
     resolveProposal(proposed(EDIT_SIGNED));
     await Promise.resolve();
+  });
+});
+
+describe("view busy reporting", () => {
+  it("tells the view to lock while proposing and confirming, releases after each, and on close", async () => {
+    const user = userEvent.setup();
+    let resolveProposal!: (v: never) => void;
+    let resolveAct!: (v: never) => void;
+    m.proposeChange.mockImplementationOnce(() => new Promise((r) => (resolveProposal = r as never)));
+    m.actOnCrm.mockImplementationOnce(() => new Promise((r) => (resolveAct = r as never)));
+    const setViewBusy = vi.fn();
+    const { unmount } = view(PERSON, { setViewBusy });
+    await click(user, "Edit");
+    await user.type(screen.getByLabelText("Title"), "x");
+    await click(user, "Review changes");
+    await waitFor(() => expect(setViewBusy).toHaveBeenLastCalledWith(true));
+    resolveProposal(proposed(EDIT_SIGNED));
+    await screen.findByText("Edit details");
+    await waitFor(() => expect(setViewBusy).toHaveBeenLastCalledWith(false));
+    await click(user, "Confirm");
+    await waitFor(() => expect(setViewBusy).toHaveBeenLastCalledWith(true));
+    resolveAct(acted("Done."));
+    await screen.findByText("Done.");
+    await waitFor(() => expect(setViewBusy).toHaveBeenLastCalledWith(false));
+    unmount();
+    expect(setViewBusy).toHaveBeenLastCalledWith(false);
+  });
+
+  it("releases when a proposal fails by network and when a 401 comes back", async () => {
+    const user = userEvent.setup();
+    m.proposeChange.mockRejectedValueOnce(new Error("net")).mockResolvedValueOnce({ status: 401, body: {} } as never);
+    const setViewBusy = vi.fn();
+    const { onUnauthorized } = view(PERSON, { setViewBusy });
+    await click(user, "Edit");
+    await user.type(screen.getByLabelText("Title"), "x");
+    await click(user, "Review changes");
+    await screen.findByText("Could not reach the server. Check signal and try again.");
+    expect(setViewBusy).toHaveBeenLastCalledWith(false);
+    await click(user, "Review changes");
+    await waitFor(() => expect(onUnauthorized).toHaveBeenCalled());
+    expect(setViewBusy).toHaveBeenLastCalledWith(false);
+  });
+});
+
+describe("drafts kept across the passcode screen", () => {
+  it("reports the open editor's values and the note as they are typed, and null when there is nothing", async () => {
+    const user = userEvent.setup();
+    const onDraft = vi.fn();
+    view(PERSON, { draftKey: "|p1|", onDraft });
+    expect(onDraft).toHaveBeenLastCalledWith(null);
+    await click(user, "Edit");
+    await user.type(screen.getByLabelText("Title"), "x");
+    const last = onDraft.mock.calls[onDraft.mock.calls.length - 1][0];
+    expect(last).toMatchObject({ for: "|p1|", panel: "edit", values: { title: "Partnerx", name: "Jane Tan" } });
+    await click(user, "Cancel");
+    expect(onDraft).toHaveBeenLastCalledWith(null);
+    await click(user, "Add note");
+    await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Hi");
+    expect(onDraft).toHaveBeenLastCalledWith({ for: "|p1|", panel: "note", note: "Hi", values: {} });
+  });
+
+  it("restores the editor values and the note from a draft for this contact", () => {
+    view(PERSON, {
+      draftKey: "|p1|",
+      initialDraft: { for: "|p1|", panel: "edit", note: "", values: { name: "Jane Tan", title: "Typed title" } },
+    });
+    expect(screen.getByLabelText("Title")).toHaveValue("Typed title");
+    cleanup();
+    view(PERSON, { draftKey: "|p1|", initialDraft: { for: "|p1|", panel: "note", note: "Half a note", values: {} } });
+    expect(screen.getByPlaceholderText("Type or dictate a note")).toHaveValue("Half a note");
+  });
+
+  it("ignores a draft that belongs to another contact", () => {
+    view(PERSON, { draftKey: "|p1|", initialDraft: { for: "|p2|", panel: "note", note: "Not yours", values: {} } });
+    expect(screen.queryByPlaceholderText("Type or dictate a note")).toBeNull();
   });
 });

@@ -38,7 +38,7 @@ export function localDate(): string {
 function size(m: AskMessage): number {
   let n = m.content.length;
   if (m.role === "assistant") {
-    for (const r of m.refs ?? []) n += r.memberId.length + r.name.length + (r.company?.length ?? 0) + (r.personId?.length ?? 0);
+    for (const r of m.refs ?? []) n += r.memberId.length + r.name.length + (r.company?.length ?? 0) + (r.personId?.length ?? 0) + (r.orgId?.length ?? 0);
   }
   return n;
 }
@@ -61,9 +61,11 @@ function toMessages(turns: AskTurn[]): AskMessage[] {
   return last;
 }
 
-// What opening a ref asks the server for: the person, else the company, else the member.
+// What opening a ref asks the server for: the person; else the company, only for a company ref; else the member.
 function refTarget(r: Ref): ContactTarget {
-  return r.personId ? { personId: r.personId } : r.orgId ? { orgId: r.orgId } : { memberId: r.memberId };
+  if (r.personId) return { personId: r.personId };
+  if (r.kind === "company" && r.orgId) return { orgId: r.orgId };
+  return { memberId: r.memberId };
 }
 
 // The contacts an answer named, as tappable chips (at most five, each contact once).
@@ -71,7 +73,8 @@ function RefChips({ refs, disabled, onOpen }: { refs: Ref[]; disabled: boolean; 
   const seen = new Set<string>();
   const chips: { key: string; ref: Ref }[] = [];
   for (const r of refs) {
-    const key = r.personId ?? r.orgId ?? r.memberId;
+    const t = refTarget(r);
+    const key = t.personId ?? t.orgId ?? t.memberId ?? r.memberId;
     if (seen.has(key)) continue;
     seen.add(key);
     chips.push({ key, ref: r });

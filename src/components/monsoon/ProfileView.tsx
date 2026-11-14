@@ -54,16 +54,85 @@ function mailHref(value: string): string | null {
   return `mailto:${encodeURIComponent(parts[0])}@${encodeURIComponent(parts[1])}`;
 }
 
-type PhoneSegment = { text: string; href: string | null };
+export type PhoneSegment = { text: string; href: string | null };
 
 // A phone number run: optional +, digits with spaces, dots, hyphens and brackets between them. It never
 // crosses a comma, semicolon, slash, letter or line break, so lists and labels split it naturally.
 const PHONE_RUN = /\+?\(?\d(?:[\d \t().-]*\d)?\)?/g;
 // An extension right after a number is not dialled: it stays text beside the link.
 const PHONE_EXT = /^[ \t]*(?:(?:x|ext\.?)[ \t]*|#)\d+/i;
+// The trunk prefix "(0)" written right after a country code is not dialled internationally.
+const TRUNK_ZERO = /^(\+\d{1,3}[ \t.-]*)\(0\)/;
+const isDigit = (c: string) => c >= "0" && c <= "9";
+const isGap = (c: string) => c === " " || c === "\t";
 
-// The stored value as text and tappable numbers, in its original order and wording.
-function phoneSegments(value: string): PhoneSegment[] {
+// Cuts one run into the pieces that are each a number, with the text between them. A " - " and one to
+// five digits closing the run, after a full number, are an extension: plain text. Two numbers separated
+// only by spaces, each side with at least 7 digits, are two pieces; where several gaps qualify the one
+// that splits the digits most evenly wins (the later on a tie), and each half is cut again the same way.
+// Every step is a single scan of its part and halves are about even, so the work stays near linear.
+type Piece = { text: string; number: boolean };
+function splitRun(run: string): Piece[] {
+  const n = run.length;
+  const pre = new Array<number>(n + 1).fill(0); // digits before each index
+  for (let i = 0; i < n; i++) pre[i + 1] = pre[i] + (isDigit(run[i]) ? 1 : 0);
+
+  // The extension at the end, if any: gap, "-", gap, one to five digits and an optional ")".
+  let end = n;
+  let ext = "";
+  let k = n;
+  if (k > 0 && run[k - 1] === ")") k--;
+  let m = k;
+  while (m > 0 && isDigit(run[m - 1])) m--;
+  if (k - m >= 1 && k - m <= 5 && m > 0 && isGap(run[m - 1])) {
+    let g = m;
+    while (g > 0 && isGap(run[g - 1])) g--;
+    if (g > 0 && run[g - 1] === "-" && g - 1 > 0 && isGap(run[g - 2])) {
+      let e = g - 1;
+      while (e > 0 && isGap(run[e - 1])) e--;
+      if (e > 0 && pre[e] >= 7) {
+        end = e;
+        ext = run.slice(e);
+      }
+    }
+  }
+
+  const cut = (a: number, b: number, out: Piece[]): void => {
+    let best = -1;
+    let bestEnd = 0;
+    let bestDiff = Infinity;
+    for (let i = a; i < b; i++) {
+      if (!isGap(run[i])) continue;
+      let j = i;
+      while (j < b && isGap(run[j])) j++;
+      const left = pre[i] - pre[a];
+      const right = pre[b] - pre[j];
+      const joined = (isDigit(run[i - 1]) || run[i - 1] === ")") && j < b && (isDigit(run[j]) || run[j] === "(");
+      if (joined && left >= 7 && right >= 7 && Math.abs(left - right) <= bestDiff) {
+        best = i;
+        bestEnd = j;
+        bestDiff = Math.abs(left - right);
+      }
+      i = j - 1;
+    }
+    if (best < 0) {
+      out.push({ text: run.slice(a, b), number: true });
+      return;
+    }
+    cut(a, best, out);
+    out.push({ text: run.slice(best, bestEnd), number: false });
+    cut(bestEnd, b, out);
+  };
+
+  const out: Piece[] = [];
+  cut(0, end, out);
+  if (ext) out.push({ text: ext, number: false });
+  return out;
+}
+
+// The stored value as text and tappable numbers, in its original order and wording. A tel: href only
+// ever holds an optional leading + and 7 to 15 digits; the visible text is always the stored text.
+export function phoneSegments(value: string): PhoneSegment[] {
   const out: PhoneSegment[] = [];
   let at = 0;
   const push = (text: string, href: string | null) => {
@@ -72,13 +141,17 @@ function phoneSegments(value: string): PhoneSegment[] {
   PHONE_RUN.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = PHONE_RUN.exec(value)) !== null) {
-    const run = m[0];
-    const digits = run.replace(/\D/g, "");
     push(value.slice(at, m.index), null);
-    const linkable = digits.length >= 7 && digits.length <= 15;
-    push(run, linkable ? `tel:${run.startsWith("+") ? "+" : ""}${digits}` : null);
-    at = m.index + run.length;
-    if (linkable) {
+    at = m.index + m[0].length;
+    let lastLinked = false;
+    for (const piece of splitRun(m[0])) {
+      const dial = piece.text.replace(TRUNK_ZERO, "$1");
+      const digits = dial.replace(/\D/g, "");
+      const linkable = piece.number && digits.length >= 7 && digits.length <= 15;
+      push(piece.text, linkable ? `tel:${piece.text.startsWith("+") ? "+" : ""}${digits}` : null);
+      lastLinked = linkable;
+    }
+    if (lastLinked) {
       const ext = PHONE_EXT.exec(value.slice(at));
       if (ext) {
         push(ext[0], null);
@@ -126,8 +199,10 @@ export default function ProfileView({
   onBack: () => void;
   onOpen: (target: ContactTarget) => void;
   onUnauthorized: () => void;
-  actions?: (profile: Profile, reload: () => void) => ReactNode;
+  /** Renders the profile's actions; `setBusy(true)` locks this view's own navigation until it is released. */
+  actions?: (profile: Profile, reload: () => void, setBusy: (busy: boolean) => void) => ReactNode;
 }) {
+  const [actionBusy, setActionBusy] = useState(false);
   const [phase, setPhase] = useState<Phase>("loading");
   const [profile, setProfile] = useState<Profile | null>(null);
   const [tick, setTick] = useState(0);
@@ -165,7 +240,8 @@ export default function ProfileView({
     <button
       type="button"
       onClick={onBack}
-      className="-ml-2 min-h-[44px] self-start px-2 text-[17px] font-medium text-[#0E7FA6] dark:text-[#6AE6FF]"
+      disabled={actionBusy}
+      className="-ml-2 min-h-[44px] self-start px-2 text-[17px] font-medium text-[#0E7FA6] disabled:opacity-50 dark:text-[#6AE6FF]"
     >
       ‹ Contacts
     </button>
@@ -235,6 +311,7 @@ export default function ProfileView({
               <button
                 type="button"
                 onClick={() => onOpen({ orgId: p.orgId! })}
+                disabled={actionBusy}
                 className={`${linkClass} min-h-[44px] align-baseline font-medium`}
               >
                 {p.company}
@@ -248,7 +325,7 @@ export default function ProfileView({
           {member && p.memberOf === "self" ? (
             <>
               <span className={chip}>{roleLabel(estate, member.role)}</span>
-              <span className={chip}>{stageLabel(member.stage)}</span>
+              <span className={chip}>{p.stages?.find((s) => s.key === member.stage)?.label ?? stageLabel(member.stage)}</span>
             </>
           ) : p.memberOf === "company" ? (
             <span className="break-words text-[15px] text-neutral-600 dark:text-neutral-300">
@@ -301,7 +378,7 @@ export default function ProfileView({
         ) : null}
       </dl>
 
-      {actions ? actions(p, reload) : null}
+      {actions ? actions(p, reload, setActionBusy) : null}
 
       {notes.length > 0 ? (
         <section className="flex flex-col gap-2">
@@ -325,7 +402,8 @@ export default function ProfileView({
                 <button
                   type="button"
                   onClick={() => onOpen({ personId: person.personId })}
-                  className="flex min-h-[56px] w-full flex-col justify-center px-4 py-2 text-left active:bg-neutral-100 dark:active:bg-white/10"
+                  disabled={actionBusy}
+                  className="flex min-h-[56px] w-full flex-col justify-center px-4 py-2 text-left active:bg-neutral-100 disabled:opacity-50 dark:active:bg-white/10"
                 >
                   <span className="break-words text-[17px] font-semibold text-neutral-900 dark:text-white">{person.name}</span>
                   {person.title ? (

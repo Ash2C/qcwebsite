@@ -1307,6 +1307,60 @@ describe("Profile actions and links", () => {
     expect(await screen.findByRole("textbox", { name: "Your question" })).toHaveValue("Who is warm?\nAbout Jane Tan: ");
   });
 
+  it("Ask about this contact does not add the line again when the draft already has it", async () => {
+    const user = userEvent.setup();
+    await openJane(user);
+    await user.click(screen.getByRole("button", { name: "Ask about this contact" }));
+    const box = await screen.findByRole("textbox", { name: "Your question" });
+    await user.type(box, "is she warm?");
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await user.click(await screen.findByRole("button", { name: "Ask about this contact" }));
+    expect(await screen.findByRole("textbox", { name: "Your question" })).toHaveValue("About Jane Tan: is she warm?");
+    // A bare line without the trailing space counts too.
+    await user.clear(screen.getByRole("textbox", { name: "Your question" }));
+    await user.type(screen.getByRole("textbox", { name: "Your question" }), "Who?{Shift>}{Enter}{/Shift}About Jane Tan:");
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await user.click(await screen.findByRole("button", { name: "Ask about this contact" }));
+    expect(await screen.findByRole("textbox", { name: "Your question" })).toHaveValue("Who?\nAbout Jane Tan:");
+  });
+
+  it("keeps the edit form's typing through a 401 and the passcode screen", async () => {
+    const user = userEvent.setup();
+    await openJane(user);
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.type(screen.getByLabelText("Title"), "x");
+    m.proposeChange.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never);
+    await user.click(screen.getByRole("button", { name: "Review changes" }));
+    await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
+    m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(await screen.findByLabelText("Title")).toHaveValue("Partnerx");
+  });
+
+  it("keeps the note's text through a 401 at Continue and at Confirm", async () => {
+    const user = userEvent.setup();
+    await openJane(user);
+    await user.click(screen.getByRole("button", { name: "Add note" }));
+    await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Called her");
+    m.proposeChange.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never);
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
+    m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(await screen.findByPlaceholderText("Type or dictate a note")).toHaveValue("Called her");
+  });
+
+  it("drops what was typed when another contact is opened or Back is pressed", async () => {
+    const user = userEvent.setup();
+    await openJane(user);
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.type(screen.getByLabelText("Title"), "x");
+    await user.click(screen.getByRole("button", { name: "‹ Contacts" }));
+    await user.click(await screen.findByRole("button", { name: /Jane Tan/ }));
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
+    expect(screen.getByLabelText("Title")).toHaveValue("Partner");
+  });
+
   it("locks the mode switch and estate buttons while a profile action is pending, then releases them", async () => {
     const user = userEvent.setup();
     await openJane(user);

@@ -8,7 +8,7 @@ import type { RefineOutput } from "@/lib/monsoon/refine";
 import { loadEstates, readCards, saveCard, signIn, type EstateInfo, type SaveBody } from "./api";
 import { downsizeImage } from "./image";
 import AskPanel, { EMPTY_ASK, type AskState } from "./AskPanel";
-import ContactsPanel, { EMPTY_CONTACTS, type ContactsState, type ContactTarget } from "./ContactsPanel";
+import ContactsPanel, { EMPTY_CONTACTS, withOpen, type ContactsState, type ContactTarget } from "./ContactsPanel";
 import BatchReview, { makeBatch, type Batch } from "./BatchReview";
 import { describeResult, type SavePrompt } from "./outcomes";
 import ContactFormFields, { type FormKey } from "./ContactFormFields";
@@ -240,14 +240,16 @@ export default function MonsoonApp() {
   // A chip in an answer: Contacts with that profile open; the Ask conversation stays as it is.
   function openContact(target: ContactTarget) {
     if (askBusy || profileBusy) return;
-    setContacts((c) => ({ ...c, open: target }));
+    setContacts((c) => withOpen(c, target));
     setMode("contacts");
   }
 
   // Ask about the open profile: the draft is prefilled, never sent, and never overwrites typed text.
   function askAbout(text: string) {
     if (profileBusy) return;
-    setAsk((a) => ({ ...a, draft: (a.draft.trim() === "" ? text : a.draft + "\n" + text).slice(0, 2000) }));
+    // The draft already has a line that starts with this text: leave it as it is.
+    const has = (a: AskState) => a.draft.split("\n").some((l) => l.startsWith(text) || l.trimEnd() === text.trimEnd());
+    setAsk((a) => (has(a) ? a : { ...a, draft: (a.draft.trim() === "" ? text : a.draft + "\n" + text).slice(0, 2000) }));
     setFocusAsk(true);
     setMode("ask");
   }

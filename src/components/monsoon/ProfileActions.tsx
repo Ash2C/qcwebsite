@@ -12,6 +12,11 @@ const MAX_VALUE = 300;
 const LOOKALIKE = "say it is a different company";
 
 type Panel = "note" | "stage" | "edit" | null;
+/**
+ * What the user has typed in this profile, held by the parent (MonsoonApp) so it survives the
+ * passcode screen. `for` names the contact it belongs to; a draft for another contact is ignored.
+ */
+export type ProfileDraft = { for: string; panel: "note" | "edit"; note: string; values: Record<string, string> };
 type Target = ProposeBody["target"];
 type PersonField = "name" | "title" | "company" | "email" | "phone" | "linkedin" | "country";
 type CompanyField = "website" | "country";
@@ -45,27 +50,39 @@ export default function ProfileActions({
   reload,
   onUnauthorized,
   onBusy,
+  setViewBusy,
   onAsk,
+  draftKey,
+  initialDraft,
+  onDraft,
 }: {
   estate: EstateInfo;
   profile: Profile;
   reload: () => void;
   onUnauthorized: () => void;
   onBusy?: (busy: boolean) => void;
+  /** Tells the profile view to lock its own navigation while this is true; released on every exit path. */
+  setViewBusy?: (busy: boolean) => void;
   /** Switches to Ask with this text as the draft (the Ask about this contact button). */
   onAsk?: (text: string) => void;
+  /** Names the contact the drafts belong to. */
+  draftKey?: string;
+  /** The draft kept from before the passcode screen, restored only when it is for this contact. */
+  initialDraft?: ProfileDraft | null;
+  /** Called with what is typed whenever it changes (null when nothing is). */
+  onDraft?: (draft: ProfileDraft | null) => void;
 }) {
   const ids = useId();
   const p = profile;
-  const [panel, setPanel] = useState<Panel>(null);
-  const [note, setNote] = useState("");
-  const [values, setValues] = useState<Record<string, string>>({});
+  const restored = initialDraft && initialDraft.for === draftKey ? initialDraft : null;
+  const [panel, setPanel] = useState<Panel>(restored ? restored.panel : null);
+  const [note, setNote] = useState(restored?.note ?? "");
+  const [values, setValues] = useState<Record<string, string>>(restored?.panel === "edit" ? restored.values : {});
   const [proposing, setProposing] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [cardState, setCardState] = useState<AskCard | null>(null);
   const cardRef = useRef<AskCard | null>(null);
   const proposingRef = useRef(false);
-  const lastEdit = useRef<Record<string, string> | null>(null);
   // Bumped when this view closes; a result that arrives later is dropped.
   const genRef = useRef(0);
   useEffect(() => {
@@ -92,15 +109,37 @@ export default function ProfileActions({
     patch: patchCard,
     generation: () => genRef.current,
     onUnauthorized,
-    onDone: () => reload(),
+    onDone: (card) => {
+      // The note box is emptied only once the note is saved.
+      if (card.signed.proposal.kind === "add_note") setNote("");
+      reload();
+    },
   });
 
   const working = cardState?.state === "working";
   const busy = proposing || working;
   useEffect(() => {
     onBusy?.(busy);
-    return () => onBusy?.(false);
-  }, [busy, onBusy]);
+    setViewBusy?.(busy);
+    return () => {
+      onBusy?.(false);
+      setViewBusy?.(false);
+    };
+  }, [busy, onBusy, setViewBusy]);
+
+  // Keep the parent's copy of what is typed current. Only the open editor's values and the note count.
+  const onDraftRef = useRef(onDraft);
+  onDraftRef.current = onDraft;
+  useEffect(() => {
+    const key = draftKey ?? "";
+    onDraftRef.current?.(
+      panel === "edit"
+        ? { for: key, panel: "edit", note, values }
+        : note !== ""
+          ? { for: key, panel: "note", note, values: {} }
+          : null,
+    );
+  }, [panel, note, values, draftKey]);
 
   const isCompany = p.kind === "company";
   // Edits address the person or company itself. Notes and stage moves address the timeline's member;
@@ -114,6 +153,8 @@ export default function ProfileActions({
         : { personId: p.personId ?? undefined };
   const canNote = !isCompany || p.member !== null;
   const canMove = p.memberOf !== null && p.member !== null;
+  // A company that is not on the pipeline has no timeline to log to, so it offers no changes at all.
+  const offline = isCompany && p.member === null;
 
   async function propose(body: Omit<ProposeBody, "estate">) {
     if (proposingRef.current || busy) return;
@@ -130,7 +171,6 @@ export default function ProfileActions({
         if (res.body.ok) {
           const signed = res.body.signed;
           setCard({ id: crypto.randomUUID(), signed, text: signed.text ?? body.text ?? "", state: "open" });
-          if (body.kind === "add_note") setNote("");
           setPanel(null);
         } else {
           setRefusal(res.body.reason);
@@ -157,17 +197,20 @@ export default function ProfileActions({
   }
 
   function review(newCompany: boolean) {
-    let changes = lastEdit.current;
-    if (!newCompany || !changes) {
-      changes = {};
-      for (const field of isCompany ? COMPANY_FIELDS : PERSON_FIELDS) {
-        const next = (values[field] ?? "").trim();
-        if (next !== stored(p, field).trim()) changes[field] = next;
-      }
+    // Always the form as it is now, so "It's a different company" never sends an older edit.
+    const changes: Record<string, string> = {};
+    for (const field of isCompany ? COMPANY_FIELDS : PERSON_FIELDS) {
+      const next = (values[field] ?? "").trim();
+      if (next !== stored(p, field).trim()) changes[field] = next;
     }
     if (Object.keys(changes).length === 0) return setRefusal("Nothing to change.");
-    lastEdit.current = changes;
     void propose({ kind: "update_details", target: editTarget, changes, ...(newCompany ? { newCompany: true } : {}) });
+  }
+
+  // Editing a field clears a refusal that was about the form as it was.
+  function edit(field: string, value: string) {
+    setRefusal(null);
+    setValues((v) => ({ ...v, [field]: value }));
   }
 
   const noteBlank = note.trim() === "";
@@ -175,7 +218,7 @@ export default function ProfileActions({
   const buttons: { key: Exclude<Panel, null>; label: string }[] = [
     ...(canNote ? [{ key: "note" as const, label: "Add note" }] : []),
     ...(canMove ? [{ key: "stage" as const, label: "Move stage" }] : []),
-    { key: "edit", label: "Edit" },
+    ...(offline ? [] : [{ key: "edit" as const, label: "Edit" }]),
   ];
   const refusalBlock = refusal ? (
     <div className="flex flex-col gap-2">
@@ -192,20 +235,26 @@ export default function ProfileActions({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className={`grid gap-2 ${buttons.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
-        {buttons.map((b) => (
-          <button
-            key={b.key}
-            type="button"
-            aria-pressed={panel === b.key}
-            disabled={busy}
-            onClick={() => toggle(b.key)}
-            className={`${secondaryButton} !px-2 ${panel === b.key ? "ring-2 ring-[#0E7FA6] dark:ring-[#6AE6FF]" : ""}`}
-          >
-            {b.label}
-          </button>
-        ))}
-      </div>
+      {offline ? (
+        <p className="px-1 text-[15px] text-neutral-600 dark:text-neutral-300">
+          Not on the pipeline. Capture or add a person here to start a timeline.
+        </p>
+      ) : (
+        <div className={`grid gap-2 ${buttons.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
+          {buttons.map((b) => (
+            <button
+              key={b.key}
+              type="button"
+              aria-pressed={panel === b.key}
+              disabled={busy}
+              onClick={() => toggle(b.key)}
+              className={`${secondaryButton} !px-2 ${panel === b.key ? "ring-2 ring-[#0E7FA6] dark:ring-[#6AE6FF]" : ""}`}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {panel === "note" && (
         <div className={panelBox}>
@@ -277,7 +326,7 @@ export default function ProfileActions({
                     {DETAIL_LABELS[field]}
                   </label>
                   {field === "phone" ? (
-                    <textarea rows={2} {...common} onChange={(e) => setValues((v) => ({ ...v, [field]: e.target.value }))} />
+                    <textarea rows={2} {...common} onChange={(e) => edit(field, e.target.value)} />
                   ) : (
                     <input
                       type="text"
@@ -286,7 +335,7 @@ export default function ProfileActions({
                       autoCorrect="off"
                       spellCheck={false}
                       {...common}
-                      onChange={(e) => setValues((v) => ({ ...v, [field]: e.target.value }))}
+                      onChange={(e) => edit(field, e.target.value)}
                     />
                   )}
                 </div>
@@ -311,7 +360,14 @@ export default function ProfileActions({
           onText={(text) => patchCard(cardState.id, { text })}
           onConfirm={() => void confirm(cardState)}
           onCancel={() => {
-            if (cardRef.current?.state === "open") patchCard(cardState.id, { state: "cancelled", message: undefined });
+            const open = cardRef.current;
+            if (open?.state !== "open") return;
+            patchCard(cardState.id, { state: "cancelled", message: undefined });
+            if (open.signed.proposal.kind === "add_note") {
+              // The note goes back into the note box, as it stood on the card.
+              setNote(open.text);
+              setPanel("note");
+            }
           }}
         />
       )}

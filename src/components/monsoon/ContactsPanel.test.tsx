@@ -232,6 +232,38 @@ describe("ContactsPanel", () => {
     expect(screen.getByRole("textbox", { name: "Search contacts" })).toBeInTheDocument();
   });
 
+  it("ignores a profile response that arrives after Back", async () => {
+    m.searchContacts.mockResolvedValue(hits(SELF));
+    let resolveProfile!: (v: never) => void;
+    m.loadProfile.mockImplementationOnce(() => new Promise((r) => (resolveProfile = r as never)));
+    render(<Harness />);
+    await advance(0);
+    fireEvent.click(screen.getByRole("button", { name: /Jane Tan/ }));
+    await advance(0);
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Contacts/ }));
+    await advance(0);
+    expect(screen.getByRole("textbox", { name: "Search contacts" })).toBeInTheDocument();
+    await act(async () => resolveProfile({ status: 200, body: { profile: { ...SELF, phone: null, linkedin: null, country: null, website: null, notes: null, timelineOf: null, timeline: [], timelineTotal: 0, people: [], stages: [] } } } as never));
+    await advance(0);
+    expect(screen.getByRole("textbox", { name: "Search contacts" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Jane Tan" })).toBeNull();
+  });
+
+  it("closes a loaded profile when the estate changes, and does not show it again", async () => {
+    m.searchContacts.mockResolvedValue(hits());
+    m.loadProfile.mockResolvedValue({ status: 200, body: { profile: { ...SELF, phone: null, linkedin: null, country: null, website: null, notes: null, timelineOf: null, timeline: [], timelineTotal: 0, people: [], stages: [] } } } as never);
+    const open = { query: "", open: { personId: "p1" } };
+    const { rerender } = render(<Harness initial={open} />);
+    await advance(0);
+    expect(screen.getByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
+    rerender(<Harness initial={open} estate={OTHER} />);
+    await advance(0);
+    expect(screen.queryByRole("heading", { name: "Jane Tan" })).toBeNull();
+    expect(screen.getByRole("textbox", { name: "Search contacts" })).toBeInTheDocument();
+    expect(m.loadProfile).toHaveBeenCalledTimes(1);
+  });
+
   it("opens a company hit without an orgId by its memberId, and leaves a row with no id untappable", async () => {
     const byMember = { ...COMPANY, orgId: null };
     const noId = { ...COMPANY, orgId: null, name: "Ghost Co", member: null, memberOf: null };
