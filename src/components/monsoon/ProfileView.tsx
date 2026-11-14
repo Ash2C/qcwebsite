@@ -62,12 +62,12 @@ const PHONE_RUN = /\+?\(?\d(?:[\d \t().-]*\d)?\)?/g;
 // An extension right after a number is not dialled: it stays text beside the link.
 const PHONE_EXT = /^[ \t]*(?:(?:x|ext\.?)[ \t]*|#)\d+/i;
 // The trunk prefix "(0)" written right after a country code is not dialled internationally.
-const TRUNK_ZERO = /^(\+\d{1,3}[ \t.-]*)\(0\)/;
+const TRUNK_ZERO = /^(\+\d{1,3}\)?[ \t.-]*)\(0\)/;
 const isDigit = (c: string) => c >= "0" && c <= "9";
 const isGap = (c: string) => c === " " || c === "\t";
 
 // Cuts one run into the pieces that are each a number, with the text between them. A " - " and one to
-// five digits closing the run, after a full number, are an extension: plain text. Two numbers separated
+// five digits closing the run, after a number of at least 10 digits, are an extension: plain text. Two numbers separated
 // only by spaces, each side with at least 7 digits, are two pieces; where several gaps qualify the one
 // that splits the digits most evenly wins (the later on a tie), and each half is cut again the same way.
 // Every step is a single scan of its part and halves are about even, so the work stays near linear.
@@ -90,7 +90,7 @@ function splitRun(run: string): Piece[] {
     if (g > 0 && run[g - 1] === "-" && g - 1 > 0 && isGap(run[g - 2])) {
       let e = g - 1;
       while (e > 0 && isGap(run[e - 1])) e--;
-      if (e > 0 && pre[e] >= 7) {
+      if (e > 0 && pre[e] >= 10) {
         end = e;
         ext = run.slice(e);
       }

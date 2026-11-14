@@ -50,10 +50,14 @@ const MAX_VALUE = 300;
 const MAX_FROM = 2000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NO_CONTACT = "No such contact.";
-// Postgres's default name for UNIQUE NULLS NOT DISTINCT (org_id, name_key) on people (unnamed in the schema).
-const PEOPLE_NAME_KEY = "people_org_id_name_key_key";
-// Postgres's default name for UNIQUE NULLS NOT DISTINCT (org_id, person_id) on members.
-const MEMBERS_TARGET_KEY = "members_org_id_person_id_key";
+// A unique violation is told apart by its table, not its constraint name: the unique keys are unnamed in
+// the schema, and a database whose columns were renamed (Traxo: firm_id) carries other names. Only the
+// primary key is excluded; the id is never written, so any other unique violation on the table is the
+// name or membership clash.
+const isUniqueOn = (err: unknown, table: string, pkey: string): boolean => {
+  const e = err as { code?: unknown; table?: unknown; constraint?: unknown } | null;
+  return e?.code === "23505" && e.table === table && e.constraint !== pkey;
+};
 const FIELD_ORDER: readonly DetailField[] = ["name", "title", "email", "phone", "linkedin", "country", "company", "website"];
 const PERSON_FIELDS: readonly DetailField[] = ["name", "title", "email", "phone", "linkedin", "country", "company"];
 const ORG_FIELDS: readonly DetailField[] = ["website", "country"];
@@ -275,8 +279,7 @@ export async function applyDetails(db: ClientBase, proposal: DetailsProposal): P
   try {
     return await applyOnce(db, proposal);
   } catch (err) {
-    const e = err as { code?: unknown; constraint?: unknown };
-    if (e?.code === "23505" && e.constraint === MEMBERS_TARGET_KEY && proposal.addsToPipeline !== null) {
+    if (isUniqueOn(err, "members", "members_pkey") && proposal.addsToPipeline !== null) {
       return applyOnce(db, proposal);
     }
     throw err;
@@ -356,8 +359,7 @@ function applyOnce(db: ClientBase, proposal: DetailsProposal): Promise<ApplyResu
         summary,
       ]);
     } catch (err) {
-      const e = err as { code?: unknown; constraint?: unknown };
-      if (e?.code === "23505" && e.constraint === PEOPLE_NAME_KEY) return result("collision", [], [], resultingName);
+      if (isUniqueOn(err, "people", "people_pkey")) return result("collision", [], [], resultingName);
       throw err;
     }
     return result(skipped.length > 0 ? "partly" : "updated", fresh.map((c) => c.field), skipped, resultingName, true);

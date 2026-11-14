@@ -344,7 +344,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
           return async (text: unknown, ...rest: unknown[]) => {
             if (typeof text === "string" && text.startsWith("INSERT INTO members") && failed === 0) {
               failed++;
-              throw Object.assign(new Error("duplicate"), { code: "23505", constraint: "members_org_id_person_id_key" });
+              throw Object.assign(new Error("duplicate"), { code: "23505", table: "members", constraint: "members_firm_id_person_id_key" });
             }
             // The concurrent capture commits its member before the retry begins.
             if (failed === 1 && !inserted && text === "BEGIN ISOLATION LEVEL READ COMMITTED") {
@@ -368,11 +368,56 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
       expect((await db.query("SELECT title FROM people WHERE id = $1", [id.sam])).rows[0].title).toBe("Associate");
     });
 
-    it("names the members unique key the retry looks for", async () => {
+    it("reports the members clash by table, with the constraint name of this schema", async () => {
       const err = await db
         .query("INSERT INTO members (person_id, role, stage, owner, source) VALUES ($1, 'investor', 'contacted', 'VF', 'test')", [id.liwei])
         .catch((e) => e);
-      expect(err).toMatchObject({ code: "23505", constraint: "members_org_id_person_id_key" });
+      expect(err).toMatchObject({ code: "23505", table: "members", constraint: "members_org_id_person_id_key" });
+    });
+
+    it("reports a name collision by table, whatever the unique key is called (Traxo-style names)", async () => {
+      const p = await proposed({ personId: id.liwei }, { title: "Director" });
+      const before = await snapshot();
+      const renamed = new Proxy(db, {
+        get(target, prop) {
+          if (prop !== "query") return Reflect.get(target, prop);
+          return (text: unknown, ...rest: unknown[]) => {
+            if (typeof text === "string" && text.startsWith("UPDATE people")) {
+              return Promise.reject(Object.assign(new Error("duplicate"), { code: "23505", table: "people", constraint: "people_firm_id_name_key_key" }));
+            }
+            return (target.query as (...a: unknown[]) => Promise<unknown>)(text, ...rest);
+          };
+        },
+      });
+      expect(await applyDetails(renamed, p)).toEqual({ status: "collision", written: [], skipped: [], name: "Li Wei" });
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("retries the member insert once by table, with a Traxo-style constraint name", async () => {
+      const p = await proposed({ personId: id.sam }, { title: "Associate" });
+      let inserts = 0;
+      const renamed = new Proxy(db, {
+        get(target, prop) {
+          if (prop !== "query") return Reflect.get(target, prop);
+          const run = target.query.bind(target) as (...a: unknown[]) => Promise<unknown>;
+          return async (text: unknown, ...rest: unknown[]) => {
+            if (typeof text === "string" && text.startsWith("INSERT INTO members")) {
+              inserts++;
+              if (inserts === 1) {
+                throw Object.assign(new Error("duplicate"), { code: "23505", table: "members", constraint: "members_firm_id_person_id_key" });
+              }
+            }
+            if (inserts === 1 && text === "BEGIN ISOLATION LEVEL READ COMMITTED") {
+              inserts = 2; // the concurrent capture's member is committed before the retry begins
+              await run("INSERT INTO members (person_id, role, stage, owner, source) VALUES ($1, 'investor', 'contacted', 'VF', 'test')", [id.sam]);
+            }
+            return run(text, ...rest);
+          };
+        },
+      });
+      expect((await applyDetails(renamed, p)).status).toBe("updated");
+      expect(await count("members", `person_id = '${id.sam}'`)).toBe(1);
+      expect(await count("touches", "kind = 'system'")).toBe(1);
     });
 
     it("rethrows when the member insert violates the unique key twice, writing nothing", async () => {
@@ -383,7 +428,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
           if (prop !== "query") return Reflect.get(target, prop);
           return (text: unknown, ...rest: unknown[]) => {
             if (typeof text === "string" && text.startsWith("INSERT INTO members")) {
-              return Promise.reject(Object.assign(new Error("duplicate"), { code: "23505", constraint: "members_org_id_person_id_key" }));
+              return Promise.reject(Object.assign(new Error("duplicate"), { code: "23505", table: "members", constraint: "members_org_id_person_id_key" }));
             }
             return (target.query as (...a: unknown[]) => Promise<unknown>)(text, ...rest);
           };
@@ -464,7 +509,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
           if (prop !== "query") return Reflect.get(target, prop);
           return (text: unknown, ...rest: unknown[]) => {
             if (typeof text === "string" && text.startsWith("UPDATE people")) {
-              return Promise.reject(Object.assign(new Error("duplicate"), { code: "23505", constraint: "some_other_key" }));
+              return Promise.reject(Object.assign(new Error("duplicate"), { code: "23505", table: "people", constraint: "people_pkey" }));
             }
             return (target.query as (...a: unknown[]) => Promise<unknown>)(text, ...rest);
           };
