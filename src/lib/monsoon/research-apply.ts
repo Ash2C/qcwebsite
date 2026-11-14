@@ -90,6 +90,6 @@ function applyOnce(db: ClientBase, proposal: ResearchProposal, ticked: string[],
       OWNER,
       lines.join("\n\n"),
     ]);
-    return out(skippedLabels.length > 0 && written.length > 0 ? "partly" : "saved", written, skippedLabels, person.name, true);
+    return out(skippedLabels.length > 0 ? "partly" : "saved", written, skippedLabels, person.name, true);
   });
 }

@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BLOCKED_DOMAINS,
+  NOT_COMPANY_SITES,
   FREE_MAIL,
   anchorsOf,
   hasAnchor,
@@ -291,6 +292,99 @@ describe("vet hardening", () => {
   it("freezes the domain lists", () => {
     expect(Object.isFrozen(BLOCKED_DOMAINS)).toBe(true);
     expect(Object.isFrozen(FREE_MAIL)).toBe(true);
+  });
+});
+
+describe("vet vouching and summary", () => {
+  const nothing = { outcome: "nothing" };
+  const NO_SITE = { ...SUBJECT, companyWebsite: null };
+  const NEWS = "https://news.example.test/ada";
+  const EVIL = "https://evil.example/about";
+  const EMAIL_PAGE = "https://www.examplecorp.test/team/ada";
+  const kept = (r: ReturnType<typeof vet>) => (r.outcome === "findings" ? r.findings.map((x) => x.field) : []);
+
+  it("drops an injected page that claims to be the website and offers its own email while a site is on file", () => {
+    const returned = [...RETURNED, EVIL];
+    const r = vet(
+      raw({
+        findings: [f("company_website", "https://evil.example", EVIL), f("work_email", "mia@evil.example", EVIL)],
+      }),
+      returned,
+      SUBJECT,
+    );
+    expect(r).toEqual(nothing);
+  });
+
+  it("with a website on file, a website finding does not add a vouching host", () => {
+    const returned = [...RETURNED, EVIL];
+    const r = vet(raw({ findings: [f("company_website", "https://evil.example", EVIL), f("work_phone", "+886 2 5555 0100", EVIL)] }), returned, SUBJECT);
+    expect(kept(r)).not.toContain("phone");
+  });
+
+  it("with no website on file, a found website still vouches for an email on that domain", () => {
+    const r = vet(
+      raw({ findings: [f("company_website", "https://examplecorp.test", EMAIL_PAGE), f("work_email", "ada.t@examplecorp.test", EMAIL_PAGE)] }),
+      RETURNED,
+      NO_SITE,
+    );
+    expect(kept(r)).toEqual(["website", "email"]);
+  });
+
+  it.each([
+    ["a different domain on the vouching page", "ada@other.example"],
+    ["a lookalike domain", "ada@examplecorp.test.evil.example"],
+    ["consecutive dots", "ada@examplecorp..test"],
+    ["a dot-less local mismatch", "ada..t@examplecorp.test"],
+  ])("drops an email with %s", (_n, email) => {
+    expect(vet(raw({ findings: [f("work_email", email, EMAIL_PAGE)] }), RETURNED, SUBJECT)).toEqual(nothing);
+  });
+
+  it("accepts an email on a subdomain or a parent domain of the vouching host", () => {
+    const sub = vet(raw({ findings: [f("work_email", "ada@mail.examplecorp.test", EMAIL_PAGE)] }), RETURNED, SUBJECT);
+    expect(kept(sub)).toEqual(["email"]);
+    const parentSite = { ...SUBJECT, companyWebsite: "https://www.team.examplecorp.test" };
+    const returned = [...RETURNED, "https://team.examplecorp.test/ada"];
+    const parent = vet(raw({ findings: [f("work_email", "ada.t@examplecorp.test", "https://team.examplecorp.test/ada")] }), returned, parentSite);
+    expect(kept(parent)).toEqual(["email"]);
+  });
+
+  it("freezes and applies the not-a-company-site list, including subdomains", () => {
+    expect(Object.isFrozen(NOT_COMPANY_SITES)).toBe(true);
+    for (const h of NOT_COMPANY_SITES) {
+      for (const host of [h, "acme." + h]) {
+        const src = `https://${host}/p`;
+        expect(vet(raw({ findings: [f("company_website", `https://${host}`, src)] }), [...RETURNED, src], NO_SITE)).toEqual(nothing);
+      }
+    }
+  });
+
+  it("strips a trailing dot from the email domain anchor", () => {
+    const a = anchorsOf({ ...SUBJECT, company: null, email: "ada@gmail.com." });
+    expect(a.emailDomain).toBeNull();
+    expect(anchorsOf({ ...SUBJECT, email: "ada@work.test." }).emailDomain).toBe("work.test");
+  });
+
+  it("collapses whitespace and line breaks in the summary", () => {
+    const r = vet(raw({ summary: "  Ada leads\n\n research.\t  She\r\nwrites.  ", summary_sources: [NEWS] }), RETURNED, SUBJECT);
+    expect(r.outcome === "findings" && r.summary).toBe("Ada leads research. She writes.");
+  });
+
+  it.each([
+    ["an email", "Reach her at ada@home.example for more."],
+    ["an http URL", "See http://home.example/ada for more."],
+    ["an https URL", "See https://home.example/ada for more."],
+    ["a www address", "See www.home.example for more."],
+    ["a plain phone", "Call +886 912 345 678 any time."],
+    ["a dashed phone", "Call 555-0100-22 any time."],
+    ["a bracketed phone", "Call (02) 5555 0100 any time."],
+    ["a dotted phone", "Call 555.0100.22 any time."],
+  ])("drops a summary containing %s", (_n, summary) => {
+    expect(vet(raw({ summary, summary_sources: [NEWS] }), RETURNED, SUBJECT)).toEqual(nothing);
+  });
+
+  it("keeps a summary with a year and short numbers", () => {
+    const r = vet(raw({ summary: "Ada joined in 2019 and manages 12 analysts across 3 teams.", summary_sources: [NEWS] }), RETURNED, SUBJECT);
+    expect(r.outcome).toBe("findings");
   });
 });
 

@@ -26,6 +26,12 @@ export const FREE_MAIL: readonly string[] = Object.freeze([
   "me.com", "aol.com", "proton.me", "protonmail.com", "qq.com", "163.com",
 ]);
 
+/** Publishing, social and reference sites: never a company's own website. */
+export const NOT_COMPANY_SITES: readonly string[] = Object.freeze([
+  "medium.com", "substack.com", "wordpress.com", "blogspot.com", "wixsite.com", "github.io", "notion.site",
+  "x.com", "twitter.com", "youtube.com", "crunchbase.com", "bloomberg.com", "wikipedia.org", "linktr.ee", "about.me",
+]);
+
 const MAX_VALUE = 300;
 const MAX_SUMMARY = 2000;
 const MAX_IDENTITY = 400;
@@ -89,7 +95,7 @@ export function anchorsOf(s: ResearchSubject): { company: string | null; emailDo
   let emailDomain: string | null = null;
   const e = s.email?.trim().toLowerCase();
   if (e && e.includes("@")) {
-    const d = e.slice(e.lastIndexOf("@") + 1);
+    const d = e.slice(e.lastIndexOf("@") + 1).replace(/\.+$/, "");
     if (d && !FREE_MAIL.includes(d)) emailDomain = d;
   }
   const li = s.linkedin?.trim() ?? null;
@@ -262,9 +268,13 @@ export function vet(raw: RawResearch, returned: string[], subject: ResearchSubje
       const host = cleanHost(u.hostname);
       if (!host.includes(".") || host === "localhost" || host.endsWith(".localhost")) continue;
       if (/^[\d.]+$/.test(host) || host.includes(":") || u.hostname.startsWith("[")) continue;
+      if (NOT_COMPANY_SITES.some((d) => hostMatches(host, d))) continue;
       if (isBlockedHost(host) || hostMatches(host, "linkedin.com") || FREE_MAIL.some((d) => hostMatches(host, d))) continue;
       // The site must vouch for itself: the cited page is on the website's own host.
       if (hostOf(it.source) !== host) continue;
+      // Research fills an empty website; it does not replace the one on file with a page's claim.
+      const onFileSite = siteHost(subject.companyWebsite);
+      if (onFileSite !== null && onFileSite !== host) continue;
       if (finish(it, `https://${u.hostname.toLowerCase().replace(/\.+$/, "")}`, "company")) websiteHost = host;
     } else if (it.field === "country") {
       if (it.value.length > 60 || !/^[\p{L}\p{M} .'-]+$/u.test(it.value)) continue;
@@ -273,14 +283,18 @@ export function vet(raw: RawResearch, returned: string[], subject: ResearchSubje
   }
 
   // Work email and phone, only from the employer's own site.
-  const employerHosts = [siteHost(subject.companyWebsite), websiteHost].filter((h): h is string => !!h);
+  // A website on file is the only voucher; a found website counts only when none is on file.
+  const onFileHost = siteHost(subject.companyWebsite);
+  const employerHosts = onFileHost ? [onFileHost] : websiteHost ? [websiteHost] : [];
   for (const it of emailPhone) {
     const sh = hostOf(it.source);
     if (!sh || !employerHosts.some((h) => hostMatches(sh, h))) continue;
     if (it.field === "email") {
-      if (it.value.length > 120 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(it.value)) continue;
+      if (it.value.length > 120 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(it.value) || it.value.includes("..")) continue;
       const domain = cleanHost(it.value.slice(it.value.lastIndexOf("@") + 1));
       if (FREE_MAIL.some((d) => hostMatches(domain, d))) continue;
+      // The address must belong to the vouching site: same domain, a subdomain or a parent of it.
+      if (!employerHosts.some((h) => hostMatches(domain, h) || hostMatches(h, domain))) continue;
     } else if (!/^\+?[0-9 ().-]{7,25}$/.test(it.value)) {
       continue;
     }
@@ -296,7 +310,11 @@ export function vet(raw: RawResearch, returned: string[], subject: ResearchSubje
     source: k.source,
   }));
 
-  let summary = typeof raw.summary === "string" ? raw.summary.trim() : "";
+  let summary = typeof raw.summary === "string" ? raw.summary.replace(/\s+/g, " ").trim() : "";
+  // The summary is free text: contact details and links do not belong in it.
+  if (/[^\s@]+@[^\s@]+/.test(summary) || /https?:\/\/|www\./i.test(summary) || /\+?\d(?:[\s.\-()]*\d){6,}/.test(summary)) {
+    summary = "";
+  }
   const summarySources: string[] = [];
   if (Array.isArray(raw.summary_sources)) {
     for (const src of raw.summary_sources) {

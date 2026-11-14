@@ -390,6 +390,10 @@ describe("apply_research", () => {
   it.each([
     ["partly", ["Title"], ["LinkedIn"], "Saved Title. LinkedIn changed in the meantime and was left alone."],
     ["partly", ["Title"], ["LinkedIn", "Country"], "Saved Title. LinkedIn, Country changed in the meantime and were left alone."],
+    ["partly", [], ["Title"], "Saved the summary. Title changed in the meantime and was left alone."],
+    ["partly", [], ["Title", "LinkedIn"], "Saved the summary. Title, LinkedIn changed in the meantime and were left alone."],
+    ["unchanged", [], ["Title"], "Nothing saved. Title changed in the meantime."],
+    ["unchanged", [], ["Title", "LinkedIn"], "Nothing saved. Title, LinkedIn changed in the meantime."],
     ["unchanged", [], [], "Nothing changed. Li Wei was already up to date."],
     ["missing", [], [], "Li Wei is no longer on file; nothing changed."],
     ["unlogged", [], [], "Li Wei is no longer on the pipeline, so the research could not be logged; nothing changed."],

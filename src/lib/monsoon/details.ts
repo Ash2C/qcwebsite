@@ -309,30 +309,36 @@ export async function applyRowChanges(
   const out = { found: true, name, orgId: row.orgId, written: fresh, skipped };
   if (fresh.length === 0) return out;
 
-  if (target.type === "person") {
-    const set = new Map<string, string | null>();
-    let orgId: string | null | undefined;
-    for (const c of fresh) {
-      const column = PERSON_COLUMN_OF[c.field];
-      if (column) set.set(column, c.to);
-      if (c.field === "name") set.set("name_key", nameKey(c.to as string));
-      if (c.field === "company") orgId = c.to === null ? null : await findOrCreateOrg(db, c.to);
+  try {
+    if (target.type === "person") {
+      const set = new Map<string, string | null>();
+      let orgId: string | null | undefined;
+      for (const c of fresh) {
+        const column = PERSON_COLUMN_OF[c.field];
+        if (column) set.set(column, c.to);
+        if (c.field === "name") set.set("name_key", nameKey(c.to as string));
+        if (c.field === "company") orgId = c.to === null ? null : await findOrCreateOrg(db, c.to);
+      }
+      const params: unknown[] = [target.id];
+      for (const column of PERSON_DETAIL_COLUMNS) {
+        const on = column === "org_id" ? orgId !== undefined : set.has(column);
+        params.push(on, column === "org_id" ? (orgId ?? null) : (set.get(column) ?? null));
+      }
+      await db.query(UPDATE_PEOPLE, params);
+    } else {
+      const set = new Map<string, string | null>();
+      for (const c of fresh) {
+        const column = ORG_COLUMN_OF[c.field];
+        if (column) set.set(column, c.to);
+      }
+      const params: unknown[] = [target.id];
+      for (const column of ORG_DETAIL_COLUMNS) params.push(set.has(column), set.get(column) ?? null);
+      await db.query(UPDATE_ORGS, params);
     }
-    const params: unknown[] = [target.id];
-    for (const column of PERSON_DETAIL_COLUMNS) {
-      const on = column === "org_id" ? orgId !== undefined : set.has(column);
-      params.push(on, column === "org_id" ? (orgId ?? null) : (set.get(column) ?? null));
-    }
-    await db.query(UPDATE_PEOPLE, params);
-  } else {
-    const set = new Map<string, string | null>();
-    for (const c of fresh) {
-      const column = ORG_COLUMN_OF[c.field];
-      if (column) set.set(column, c.to);
-    }
-    const params: unknown[] = [target.id];
-    for (const column of ORG_DETAIL_COLUMNS) params.push(set.has(column), set.get(column) ?? null);
-    await db.query(UPDATE_ORGS, params);
+  } catch (err) {
+    // The caller names the row as it would have been after the change, not as the proposal saw it.
+    if (err && typeof err === "object") (err as { resultingName?: string }).resultingName = name;
+    throw err;
   }
   return out;
 }
@@ -358,11 +364,9 @@ function applyOnce(db: ClientBase, proposal: DetailsProposal): Promise<ApplyResu
     });
 
     // A unique violation (a namesake appeared since the proposal) is reported; the caller rolls back.
-    let resultingName = changes.find((c) => c.field === "name")?.to ?? proposal.targetName;
     try {
       const done = await applyRowChanges(db, target, changes);
       if (!done.found) return result("missing", [], [], proposal.targetName);
-      resultingName = done.name;
       const skipped = done.skipped;
       if (done.written.length === 0) return result("unchanged", [], skipped, done.name);
 
@@ -383,7 +387,9 @@ function applyOnce(db: ClientBase, proposal: DetailsProposal): Promise<ApplyResu
       ]);
       return result(skipped.length > 0 ? "partly" : "updated", done.written.map((c) => c.field), skipped, done.name, true);
     } catch (err) {
-      if (isUniqueOn(err, "people", "people_pkey")) return result("collision", [], [], resultingName);
+      if (isUniqueOn(err, "people", "people_pkey")) {
+        return result("collision", [], [], (err as { resultingName?: string }).resultingName ?? proposal.targetName);
+      }
       throw err;
     }
   });

@@ -438,6 +438,23 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
       expect(await snapshot()).toEqual(before);
     });
 
+    it("names the collision after the name on the row now, not the stale proposed name", async () => {
+      const p = await proposed({ personId: id.liwei }, { title: "Director", name: "Li Wei Chen" });
+      await db.query("UPDATE people SET name = 'Li Wei Zed', name_key = 'li wei zed' WHERE id = $1", [id.liwei]);
+      const clash = new Proxy(db, {
+        get(target, prop) {
+          if (prop !== "query") return Reflect.get(target, prop);
+          return (text: unknown, ...rest: unknown[]) => {
+            if (typeof text === "string" && text.startsWith("UPDATE people")) {
+              return Promise.reject(Object.assign(new Error("duplicate"), { code: "23505", table: "people", constraint: "people_firm_id_name_key_key" }));
+            }
+            return (target.query as (...a: unknown[]) => Promise<unknown>)(text, ...rest);
+          };
+        },
+      });
+      expect(await applyDetails(clash, p)).toEqual({ status: "collision", written: [], skipped: [], name: "Li Wei Zed" });
+    });
+
     it("adds no member when nothing is written", async () => {
       const p = await proposed({ personId: id.sam }, { title: "Associate" });
       await db.query("UPDATE people SET title = 'Other' WHERE id = $1", [id.sam]);

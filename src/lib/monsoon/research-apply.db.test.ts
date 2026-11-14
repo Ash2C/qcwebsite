@@ -193,6 +193,32 @@ describe.skipIf(!testDb.available)("Applying research (real Postgres)", () => {
     expect(await systemTouches()).toHaveLength(0);
   });
 
+  it("a summary saved while every ticked finding is stale reports partly, with nothing written", async () => {
+    await db.query("UPDATE people SET title = 'VP' WHERE id = $1", [id.jane]);
+    const r = await applyResearch(db, proposal(), ["f1"], "Jane runs the desk.");
+    expect(r).toEqual({ status: "partly", written: [], skipped: ["Title"], name: "Jane Tan" });
+    const t = await systemTouches();
+    expect(t).toHaveLength(1);
+    expect(t[0].summary).toBe(`Research saved:
+
+Jane runs the desk.
+
+Sources: ${U.sum}`);
+  });
+
+  it("leaves every other person column untouched", async () => {
+    await db.query("UPDATE people SET email = 'jane@northwind.example', phone = '+65 5555 0100', country = 'Singapore' WHERE id = $1", [id.jane]);
+    const cols = "name, name_key, org_id, email, phone, country, linkedin_url, source";
+    const before = (await db.query(`SELECT ${cols} FROM people WHERE id = $1`, [id.jane])).rows[0];
+    await applyResearch(db, proposal(), ["f1", "f2"], "");
+    const after = (await db.query(`SELECT ${cols}, title FROM people WHERE id = $1`, [id.jane])).rows[0];
+    const { title, linkedin_url, ...rest } = after;
+    const { linkedin_url: _l, ...beforeRest } = before;
+    expect(title).toBe("Director");
+    expect(linkedin_url).toBe("https://linkedin.com/in/jane-tan");
+    expect(rest).toEqual(beforeRest);
+  });
+
   it("reports a deleted person as missing", async () => {
     const r = await applyResearch(db, proposal({ person: { id: randomUUID(), name: "Gone Person" } }), ["f1"], "");
     expect(r).toEqual({ status: "missing", written: [], skipped: [], name: "Gone Person" });

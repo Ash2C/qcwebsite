@@ -83,8 +83,12 @@ export async function POST(request: Request) {
         const done = await applyResearch(db, proposal, ticked, text);
         const messages = {
           saved: `Done. Research saved for ${done.name}.`,
-          partly: `Saved ${done.written.join(", ")}. ${done.skipped.join(", ")} changed in the meantime and ${done.skipped.length === 1 ? "was" : "were"} left alone.`,
-          unchanged: `Nothing changed. ${done.name} was already up to date.`,
+          partly: `Saved ${done.written.length > 0 ? done.written.join(", ") : "the summary"}. ${done.skipped.join(", ")} changed in the meantime and ${done.skipped.length === 1 ? "was" : "were"} left alone.`,
+          // Nothing written and no summary: either truly empty, or every ticked finding went stale.
+          unchanged:
+            done.skipped.length > 0
+              ? `Nothing saved. ${done.skipped.join(", ")} changed in the meantime.`
+              : `Nothing changed. ${done.name} was already up to date.`,
           missing: `${proposal.person.name} is no longer on file; nothing changed.`,
           unlogged: `${proposal.person.name} is no longer on the pipeline, so the research could not be logged; nothing changed.`,
         };
