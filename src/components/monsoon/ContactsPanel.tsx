@@ -10,7 +10,8 @@ import { card, secondaryButton } from "./styles";
 
 export type ContactTarget = { memberId?: string; personId?: string; orgId?: string };
 /** `draft` is what was typed in the open profile (an edit form or a note); it belongs to that contact only. */
-export type ContactsState = { query: string; open: ContactTarget | null; draft?: ProfileDraft | null };
+/** `autoResearch` asks the open profile to start research once it has loaded; the profile reports it consumed. */
+export type ContactsState = { query: string; open: ContactTarget | null; draft?: ProfileDraft | null; autoResearch?: boolean };
 export const EMPTY_CONTACTS: ContactsState = { query: "", open: null, draft: null };
 
 const targetKey = (t: ContactTarget) => `${t.memberId ?? ""}|${t.personId ?? ""}|${t.orgId ?? ""}`;
@@ -18,7 +19,12 @@ const targetKey = (t: ContactTarget) => `${t.memberId ?? ""}|${t.personId ?? ""}
 /** The state with another contact (or none) open; a draft typed for a different contact is dropped. */
 export function withOpen(s: ContactsState, open: ContactTarget | null): ContactsState {
   const keep = open !== null && s.open !== null && targetKey(open) === targetKey(s.open);
-  return { ...s, open, draft: keep ? s.draft : null };
+  return { ...s, open, draft: keep ? s.draft : null, autoResearch: false };
+}
+
+/** The state with that person's profile open and research to start on it. */
+export function withOpenResearch(s: ContactsState, personId: string): ContactsState {
+  return { ...withOpen(s, { personId }), autoResearch: true };
 }
 
 const DEBOUNCE_MS = 250;
@@ -129,6 +135,8 @@ export default function ContactsPanel({
             onBusy={onBusy}
             setViewBusy={setViewBusy}
             onAsk={onAsk}
+            autoResearch={state.autoResearch === true}
+            onAutoResearchDone={() => onChange((s) => (s.autoResearch ? { ...s, autoResearch: false } : s))}
             draftKey={targetKey(open)}
             initialDraft={state.draft}
             onDraft={(draft) => onChange((s) => (s.draft === draft || (!s.draft && !draft) ? s : { ...s, draft }))}

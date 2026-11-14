@@ -72,7 +72,7 @@ describe("runAsk", () => {
     const req = s.calls[0];
     expect(req.model).toBe("claude-haiku-5-5");
     expect(req.max_tokens).toBe(4096);
-    expect((req.tools as { name: string }[]).length).toBe(11);
+    expect((req.tools as { name: string }[]).length).toBe(12);
     expect(req.tool_choice).toBeUndefined();
     expect(req.messages).toEqual([{ role: "user", content: "who is Jane?" }]);
     expect(vocabulary).toHaveBeenCalledTimes(1);
@@ -360,6 +360,27 @@ Jane and Li are due.
     const s = setup([use("t", "propose_note", { member_id: "m1", text: "hi" }), text("Ready to confirm.")]);
     const out = await s.run();
     expect(out.proposals).toEqual([signed]);
+  });
+
+  it("passes a research offer through, the latest one, and leaves the key out when there is none", async () => {
+    const first = { personId: "p1", name: "Jane Tan", company: "Acme" };
+    const second = { personId: "p2", name: "Raj Mehta", company: null };
+    runTool
+      .mockResolvedValueOnce({ result: { offered: true }, refs: [], research: first })
+      .mockResolvedValueOnce({ result: { offered: true }, refs: [], research: second });
+    const s = setup([use("t", "propose_research", { person_id: "p1" }), use("u", "propose_research", { person_id: "p2" }), text("Offered.")]);
+    const out = await s.run();
+    expect(out.research).toEqual(second);
+    expect(out.proposals).toEqual([]);
+    const plain = await setup([text("Hi.")]).run();
+    expect("research" in plain).toBe(false);
+  });
+
+  it("tells the model to offer research only when asked and never to state facts from its own knowledge", () => {
+    const sys = buildSystem("Traxo", VOCAB, "2026-11-14");
+    expect(sys).toContain("propose_research");
+    expect(sys).toMatch(/only when the user asks for research/);
+    expect(sys).toMatch(/Never state facts about a person from your own knowledge/);
   });
 
   it("returns a propose_update proposal, and counts it toward the cap of four", async () => {

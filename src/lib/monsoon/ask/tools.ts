@@ -1,7 +1,9 @@
-// The assistant's toolbox: eleven fixed tools. Eight read the CRM; three only prepare a change and
-// return a signed proposal. Nothing in this file writes to the database.
+// The assistant's toolbox: twelve fixed tools. Eight read the CRM; three only prepare a change and
+// return a signed proposal; one offers research, which the user starts with a button. Nothing in this
+// file writes to the database, searches the web or calls a model.
 import type { ClientBase } from "pg";
 import { DETAIL_LABELS, proposeDetails, type DetailInput } from "../details";
+import { readSubject } from "../research-subject";
 import { estateByKey, type EstateKey } from "../estates";
 import { proposeNote, proposeStage, type Target } from "./actions";
 import type { DetailField, SignedProposal } from "./proposal";
@@ -33,7 +35,9 @@ export type ToolContext = {
   /** Milliseconds left in the request; bounds each query's statement timeout. */
   remainingMs?: () => number;
 };
-export type ToolOutcome = { result: unknown; refs: Ref[]; proposal?: SignedProposal };
+/** An offer to research one person; the user runs it from the profile. */
+export type ResearchOffer = { personId: string; name: string; company: string | null };
+export type ToolOutcome = { result: unknown; refs: Ref[]; proposal?: SignedProposal; research?: ResearchOffer };
 
 type Prop = { type: "string" | "integer"; description: string; enum?: string[] };
 type ToolDef = {
@@ -136,6 +140,11 @@ export const TOOLS: ToolDef[] = [
         enum: ["yes"],
       },
     },
+  ),
+  tool(
+    "propose_research",
+    "Offer to research a person on the web. It searches nothing: the user sees a button and runs the research from the person's profile. Use it only when the user asks in their current message for research on a person. Give member_id or person_id. It does not work on a company.",
+    { member_id: MEMBER_ID, person_id: PERSON_ID },
   ),
 ];
 
@@ -361,6 +370,15 @@ async function dispatch(ctx: ToolContext, name: string, a: Record<string, string
         result: { status: "shown to the user for confirmation; not done yet", change: describeChange(r.signed) },
         refs: [],
         proposal: r.signed,
+      };
+    }
+    case "propose_research": {
+      const r = await readSubject(db, target);
+      if (!r.ok) return fail(r.reason === "company" ? "Research works on a person. Open a person's profile." : "No such contact.");
+      return {
+        result: { offered: true, status: "the user sees a Run research button; nothing has been searched" },
+        refs: [],
+        research: { personId: r.person.id, name: r.person.name, company: r.company?.name ?? null },
       };
     }
     default:

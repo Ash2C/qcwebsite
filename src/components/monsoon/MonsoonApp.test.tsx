@@ -19,6 +19,7 @@ vi.mock("./api", () => ({
   searchContacts: vi.fn(),
   loadProfile: vi.fn(),
   proposeChange: vi.fn(),
+  researchContact: vi.fn(),
 }));
 vi.mock("./image", () => ({
   downsizeImage: vi.fn(),
@@ -1327,6 +1328,33 @@ describe("Profile actions and links", () => {
     await user.click(screen.getByRole("button", { name: "Ask" }));
     expect(await screen.findByText("Jane is warm.")).toBeInTheDocument();
     expect(screen.getByText("Who is warm?")).toBeInTheDocument();
+  });
+
+  it("Run research on an offer opens the profile and starts research there once", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.loadProfile.mockResolvedValue({ status: 200, body: { profile: PROFILE } } as never);
+    m.researchContact.mockResolvedValue({ status: 200, body: { status: "none", message: "Nothing I'd trust. No changes suggested." } } as never);
+    m.askCrm.mockResolvedValue({
+      status: 200,
+      body: { answer: "I can look into her.", refs: [], proposals: [], research: { personId: "p1", name: "Jane Tan", company: "Acme Capital" } },
+    } as never);
+    render(<MonsoonApp />);
+    await ready();
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Research Jane");
+    await user.click(screen.getByRole("button", { name: "Send question" }));
+    await user.click(await screen.findByRole("button", { name: "Run research" }));
+    expect(await screen.findByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
+    await waitFor(() => expect(m.researchContact).toHaveBeenCalledTimes(1));
+    expect(m.researchContact).toHaveBeenCalledWith({ estate: "traxo", personId: "p1" });
+    expect(await screen.findByText("Nothing I'd trust. No changes suggested.")).toBeInTheDocument();
+    // Leaving and returning does not start it again.
+    await user.click(screen.getByRole("button", { name: "Capture" }));
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await screen.findByRole("heading", { name: "Jane Tan" });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(m.researchContact).toHaveBeenCalledTimes(1);
   });
 
   it("Ask about this contact switches to Ask with the draft and focuses the box, without sending", async () => {

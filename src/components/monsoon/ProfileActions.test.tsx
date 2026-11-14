@@ -599,6 +599,27 @@ const RESEARCH_SIGNED = {
 };
 const found = { status: 200, body: { status: "findings", signed: RESEARCH_SIGNED, summary: "She founded Acme." } } as never;
 
+describe("Research started from the assistant", () => {
+  it("runs once when autoResearch is set, reports it consumed, and not again on re-render", async () => {
+    m.researchContact.mockResolvedValue({ status: 200, body: { status: "none", message: "Nothing I'd trust. No changes suggested." } } as never);
+    const onAutoResearchDone = vi.fn();
+    const { rerender, ...h } = view(PERSON, { autoResearch: true, onAutoResearchDone });
+    await waitFor(() => expect(m.researchContact).toHaveBeenCalledTimes(1));
+    expect(m.researchContact).toHaveBeenCalledWith({ estate: "traxo", personId: "p1" });
+    expect(onAutoResearchDone).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Nothing I'd trust. No changes suggested.")).toBeInTheDocument();
+    rerender(<ProfileActions estate={ESTATE} profile={PERSON as never} reload={h.reload} onUnauthorized={h.onUnauthorized} autoResearch onAutoResearchDone={onAutoResearchDone} />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(m.researchContact).toHaveBeenCalledTimes(1);
+  });
+
+  it("does nothing without the flag", async () => {
+    view(PERSON);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(m.researchContact).not.toHaveBeenCalled();
+  });
+});
+
 describe("Research", () => {
   it("is absent on a company profile", () => {
     view(COMPANY);

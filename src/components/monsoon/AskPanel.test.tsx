@@ -54,14 +54,16 @@ function Harness({
   estate = ESTATE,
   onUnauthorized = () => {},
   onBusy,
+  onResearch,
 }: {
+  onResearch?: (personId: string) => void;
   initial?: AskState;
   estate?: typeof ESTATE;
   onUnauthorized?: () => void;
   onBusy?: (b: boolean) => void;
 }) {
   const [state, setState] = useState<AskState>(initial);
-  return <AskPanel estate={estate} state={state} onChange={setState} onUnauthorized={onUnauthorized} onBusy={onBusy} />;
+  return <AskPanel estate={estate} state={state} onChange={setState} onUnauthorized={onUnauthorized} onBusy={onBusy} onResearch={onResearch} />;
 }
 
 async function ask(user: User, text: string) {
@@ -729,5 +731,31 @@ describe("AskPanel contact chips and detail cards", () => {
     );
     expect(screen.getByRole("textbox", { name: "Your question" })).toHaveFocus();
     expect(onFocused).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("research offer", () => {
+  const offer = { personId: "p1", name: "Jane Tan", company: "Acme Capital" };
+  const withResearch = (text: string) => ({ status: 200, body: { answer: text, refs: [], proposals: [], research: offer } }) as never;
+
+  it("shows a Research card and Run research opens the person once", async () => {
+    m.askCrm.mockResolvedValue(withResearch("I can look into her."));
+    const onResearch = vi.fn();
+    const user = userEvent.setup();
+    render(<Harness onResearch={onResearch} />);
+    await ask(user, "research Jane");
+    expect(await screen.findByText("Research: Jane Tan")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Run research" }));
+    expect(onResearch).toHaveBeenCalledTimes(1);
+    expect(onResearch).toHaveBeenCalledWith("p1");
+  });
+
+  it("shows no card when there is no offer", async () => {
+    m.askCrm.mockResolvedValue(answer("Nothing."));
+    const user = userEvent.setup();
+    render(<Harness onResearch={vi.fn()} />);
+    await ask(user, "hello");
+    await screen.findByText("Nothing.");
+    expect(screen.queryByRole("button", { name: "Run research" })).toBeNull();
   });
 });

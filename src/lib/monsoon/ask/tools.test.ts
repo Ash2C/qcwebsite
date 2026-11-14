@@ -16,6 +16,9 @@ vi.mock("./actions", () => a);
 const { d } = vi.hoisted(() => ({ d: { proposeDetails: vi.fn() } }));
 vi.mock("../details", async (orig) => ({ ...(await orig<typeof import("../details")>()), ...d }));
 
+const { rs } = vi.hoisted(() => ({ rs: { readSubject: vi.fn() } }));
+vi.mock("../research-subject", () => rs);
+
 import { refKey, runTool, TOOLS, type ToolContext } from "./tools";
 
 const db = { fake: true } as unknown as ClientBase;
@@ -23,11 +26,11 @@ const ctx: ToolContext = { db, estate: "traxo", today: "2026-11-13", nowMs: 1_00
 const ID = "11111111-1111-4111-8111-111111111111";
 
 beforeEach(() => {
-  for (const f of [...Object.values(q), ...Object.values(a), ...Object.values(d)]) f.mockReset();
+  for (const f of [...Object.values(q), ...Object.values(a), ...Object.values(d), ...Object.values(rs)]) f.mockReset();
 });
 
 describe("TOOLS", () => {
-  it("has exactly the eleven tools, each with an object schema", () => {
+  it("has exactly the twelve tools, each with an object schema", () => {
     expect(TOOLS.map((t) => t.name)).toEqual([
       "find_contacts",
       "get_contact",
@@ -40,6 +43,7 @@ describe("TOOLS", () => {
       "propose_note",
       "propose_stage",
       "propose_update",
+      "propose_research",
     ]);
     for (const t of TOOLS) {
       expect(t.input_schema).toMatchObject({ type: "object" });
@@ -273,7 +277,7 @@ describe("bad calls", () => {
       expect(out.refs).toEqual([]);
       expect(out.proposal).toBeUndefined();
     }
-    for (const f of [...Object.values(q), ...Object.values(a), ...Object.values(d)]) expect(f).not.toHaveBeenCalled();
+    for (const f of [...Object.values(q), ...Object.values(a), ...Object.values(d), ...Object.values(rs)]) expect(f).not.toHaveBeenCalled();
   });
 
   it("does not leak the message of a thrown query", async () => {
@@ -554,5 +558,47 @@ describe("propose_update", () => {
     const out = await runTool(ctx, "propose_update", { member_id: ID, title: "CFO" });
     expect(JSON.stringify(out)).not.toContain("secret");
     spy.mockRestore();
+  });
+});
+
+describe("propose_research", () => {
+  const ok = (company: string | null) => ({
+    ok: true,
+    subject: { name: "Jane Tan", company },
+    person: { id: ID, name: "Jane Tan" },
+    company: company ? { id: "o1", name: company } : null,
+    logMemberId: null,
+  });
+
+  it("offers research for a person and carries the offer; it searches nothing", async () => {
+    rs.readSubject.mockResolvedValue(ok("Acme Capital"));
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const out = await runTool(ctx, "propose_research", { person_id: ID });
+    expect(rs.readSubject).toHaveBeenCalledWith(db, { personId: ID });
+    expect(out.result).toMatchObject({ offered: true });
+    expect(out.research).toEqual({ personId: ID, name: "Jane Tan", company: "Acme Capital" });
+    expect(out.proposal).toBeUndefined();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("passes a member id through and reports no company as null", async () => {
+    rs.readSubject.mockResolvedValue(ok(null));
+    const out = await runTool(ctx, "propose_research", { member_id: ID });
+    expect(rs.readSubject).toHaveBeenCalledWith(db, { memberId: ID });
+    expect(out.research).toEqual({ personId: ID, name: "Jane Tan", company: null });
+  });
+
+  it("refuses a company with the plain sentence", async () => {
+    rs.readSubject.mockResolvedValue({ ok: false, reason: "company" });
+    const out = await runTool(ctx, "propose_research", { member_id: ID });
+    expect(out.result).toEqual({ error: "Research works on a person. Open a person's profile." });
+    expect(out.research).toBeUndefined();
+  });
+
+  it("refuses an unknown id and a call with no id", async () => {
+    rs.readSubject.mockResolvedValue({ ok: false, reason: "missing" });
+    expect((await runTool(ctx, "propose_research", { person_id: ID })).result).toEqual({ error: "No such contact." });
+    expect((await runTool(ctx, "propose_research", {})).result).toEqual({ error: "No such contact." });
   });
 });

@@ -58,6 +58,8 @@ export default function ProfileActions({
   onBusy,
   setViewBusy,
   onAsk,
+  autoResearch,
+  onAutoResearchDone,
   draftKey,
   initialDraft,
   onDraft,
@@ -71,6 +73,10 @@ export default function ProfileActions({
   setViewBusy?: (busy: boolean) => void;
   /** Switches to Ask with this text as the draft (the Ask about this contact button). */
   onAsk?: (text: string) => void;
+  /** Start research once, as if the Research button had been tapped (the assistant offered it). */
+  autoResearch?: boolean;
+  /** Called once when autoResearch has been acted on, so the request is not repeated. */
+  onAutoResearchDone?: () => void;
   /** Names the contact the drafts belong to. */
   draftKey?: string;
   /** The draft kept from before the passcode screen, restored only when it is for this contact. */
@@ -234,6 +240,23 @@ export default function ProfileActions({
       if (gen === genRef.current) setResearching(false);
     }
   }
+
+  // The assistant's offer: research runs once for this request. The timer lets a development
+  // double-mount settle first; the ref makes sure only one run ever starts.
+  const autoRef = useRef(false);
+  const researchRef = useRef(research);
+  researchRef.current = research;
+  useEffect(() => {
+    if (!autoResearch) return;
+    const timer = setTimeout(() => {
+      if (autoRef.current) return;
+      autoRef.current = true;
+      onAutoResearchDone?.();
+      void researchRef.current();
+    }, 0);
+    return () => clearTimeout(timer);
+    // The request is consumed by onAutoResearchDone; only the flag matters here.
+  }, [autoResearch]);
 
   function toggle(next: Exclude<Panel, null>) {
     if (busy) return;

@@ -2,11 +2,11 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AskMessage } from "@/lib/monsoon/ask/loop";
-import type { Ref } from "@/lib/monsoon/ask/tools";
+import type { Ref, ResearchOffer } from "@/lib/monsoon/ask/tools";
 import { askCrm, type EstateInfo } from "./api";
 import ChangeCard, { describeChange } from "./ChangeCard";
 import type { ContactTarget } from "./ContactsPanel";
-import { primaryButton, secondaryButton } from "./styles";
+import { card as cardClass, primaryButton, secondaryButton } from "./styles";
 import { useCardConfirm, type AskCard } from "./useCardConfirm";
 
 export type { AskCard };
@@ -16,6 +16,7 @@ export type AskTurn = {
   content: string;
   refs?: Ref[];
   cards?: AskCard[];
+  research?: ResearchOffer;
 };
 export type AskState = { turns: AskTurn[]; draft: string };
 export const EMPTY_ASK: AskState = { turns: [], draft: "" };
@@ -105,6 +106,7 @@ export default function AskPanel({
   onUnauthorized,
   onBusy,
   onOpenContact,
+  onResearch,
   focusOnOpen,
   onFocused,
 }: {
@@ -114,6 +116,8 @@ export default function AskPanel({
   onUnauthorized: () => void;
   onBusy?: (busy: boolean) => void;
   onOpenContact?: (target: ContactTarget) => void;
+  /** Run research: opens that person's profile and starts research there. */
+  onResearch?: (personId: string) => void;
   /** Focus the question box when this panel opens, then report it through onFocused. */
   focusOnOpen?: boolean;
   onFocused?: () => void;
@@ -206,7 +210,7 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
         restore();
         onUnauthorized();
       } else if (res.status === 200 && res.body && "answer" in res.body) {
-        const { answer, refs, proposals } = res.body;
+        const { answer, refs, proposals, research } = res.body;
         const cards: AskCard[] = (proposals ?? []).map((signed) => ({
           id: crypto.randomUUID(),
           signed,
@@ -217,7 +221,7 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
           ...prev,
           turns: [
             ...prev.turns,
-            { id: crypto.randomUUID(), role: "assistant", content: answer, refs, ...(cards.length ? { cards } : {}) },
+            { id: crypto.randomUUID(), role: "assistant", content: answer, refs, ...(cards.length ? { cards } : {}), ...(research ? { research } : {}) },
           ],
         }));
       } else {
@@ -312,6 +316,22 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
             </div>
             {t.role === "assistant" && t.refs && t.refs.length > 0 && onOpenContact ? (
               <RefChips refs={t.refs} disabled={busy} onOpen={onOpenContact} />
+            ) : null}
+            {t.research && onResearch ? (
+              <div className={`${cardClass} flex min-w-0 flex-col gap-3 p-4`}>
+                <p className="break-words text-[17px] font-semibold">{`Research: ${t.research.name}`}</p>
+                {t.research.company ? (
+                  <p className="break-words text-[15px] text-neutral-600 dark:text-neutral-300">{t.research.company}</p>
+                ) : null}
+                <button
+                  type="button"
+                  disabled={busy}
+                  className={primaryButton}
+                  onClick={() => onResearch(t.research!.personId)}
+                >
+                  Run research
+                </button>
+              </div>
             ) : null}
             {t.cards?.map((c) => (
               <ChangeCard

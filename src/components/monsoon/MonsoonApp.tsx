@@ -9,7 +9,7 @@ import type { RefineOutput } from "@/lib/monsoon/refine";
 import { loadEstates, readCards, saveCard, signIn, type EstateInfo, type SaveBody } from "./api";
 import { downsizeImage } from "./image";
 import AskPanel, { EMPTY_ASK, type AskState } from "./AskPanel";
-import ContactsPanel, { EMPTY_CONTACTS, withOpen, type ContactsState, type ContactTarget } from "./ContactsPanel";
+import ContactsPanel, { EMPTY_CONTACTS, withOpen, withOpenResearch, type ContactsState, type ContactTarget } from "./ContactsPanel";
 import BatchReview, { makeBatch, type Batch } from "./BatchReview";
 import { describeResult, type SavePrompt } from "./outcomes";
 import ContactFormFields, { type FormKey } from "./ContactFormFields";
@@ -273,6 +273,13 @@ export default function MonsoonApp() {
   function openContact(target: ContactTarget) {
     if (askBusy || profileBusy) return;
     setContacts((c) => withOpen(c, target));
+    setMode("contacts");
+  }
+
+  // "Run research" on an offer: the person's profile opens in Contacts and research starts there.
+  function openAndResearch(personId: string) {
+    if (askBusy || profileBusy) return;
+    setContacts((c) => withOpenResearch(c, personId));
     setMode("contacts");
   }
 
@@ -652,6 +659,7 @@ export default function MonsoonApp() {
             onUnauthorized={() => setPhase("locked")}
             onBusy={setAskBusy}
             onOpenContact={openContact}
+            onResearch={openAndResearch}
             focusOnOpen={focusAsk}
             onFocused={() => setFocusAsk(false)}
           />
