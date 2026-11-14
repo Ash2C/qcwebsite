@@ -617,3 +617,86 @@ describe("AskPanel", () => {
     });
   });
 });
+
+describe("AskPanel contact chips and detail cards", () => {
+  const ref = (n: number, extra: Record<string, unknown> = {}) => ({
+    memberId: `m${n}`, name: `Person ${n}`, company: "Acme", kind: "person", ...extra,
+  });
+
+  function withRefs(refs: unknown[], onOpenContact = vi.fn()) {
+    const initial: AskState = {
+      turns: [
+        { id: "u", role: "user", content: "Who?" },
+        { id: "a", role: "assistant", content: "These people.", refs: refs as never },
+      ],
+      draft: "",
+    };
+    function H() {
+      const [state, setState] = useState<AskState>(initial);
+      return <AskPanel estate={ESTATE} state={state} onChange={setState} onUnauthorized={() => {}} onOpenContact={onOpenContact} />;
+    }
+    render(<H />);
+    return onOpenContact;
+  }
+
+  it("shows at most five chips labelled with the contact's name", () => {
+    withRefs([1, 2, 3, 4, 5, 6, 7].map((n) => ref(n)));
+    const chips = screen.getByLabelText("Contacts mentioned");
+    expect(Array.from(chips.querySelectorAll("button")).map((b) => b.textContent)).toEqual([
+      "Person 1", "Person 2", "Person 3", "Person 4", "Person 5",
+    ]);
+  });
+
+  it("opens the person when the ref has one, else the company, else the member", async () => {
+    const user = userEvent.setup();
+    const open = withRefs([
+      ref(1, { personId: "p1", orgId: "o1" }),
+      ref(2, { orgId: "o2", kind: "company" }),
+      ref(3),
+    ]);
+    await user.click(screen.getByRole("button", { name: "Person 1" }));
+    await user.click(screen.getByRole("button", { name: "Person 2" }));
+    await user.click(screen.getByRole("button", { name: "Person 3" }));
+    expect(open.mock.calls.map((c) => c[0])).toEqual([{ personId: "p1" }, { orgId: "o2" }, { memberId: "m3" }]);
+  });
+
+  it("shows each contact once", () => {
+    withRefs([ref(1, { personId: "p1" }), ref(2, { personId: "p1" })]);
+    expect(screen.getAllByRole("button", { name: /Person/ })).toHaveLength(1);
+  });
+
+  it("shows no chips without refs", () => {
+    withRefs([]);
+    expect(screen.queryByLabelText("Contacts mentioned")).toBeNull();
+  });
+
+  it("renders an assistant's update_details proposal as the edit card and confirms it", async () => {
+    const user = userEvent.setup();
+    const signed = {
+      proposal: {
+        kind: "update_details", estate: "traxo", target: { type: "company", id: "o1" }, targetName: "Acme Capital",
+        company: null, changes: [{ field: "website", from: null, to: "acme.com" }], logMemberId: "m1",
+        addsToPipeline: null, expires: 1,
+      },
+      signature: "sig-details",
+    };
+    m.askCrm.mockResolvedValue(answer("Here is the change.", [signed]));
+    m.actOnCrm.mockResolvedValue({ status: 200, body: { status: "updated", message: "Done. Acme Capital updated." } } as never);
+    render(<Harness />);
+    await ask(user, "Set Acme's site");
+    expect(await screen.findByText("Edit details")).toBeInTheDocument();
+    expect(screen.getByText("Website: (empty) → acme.com")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(screen.getAllByText("Done. Acme Capital updated.").length).toBeGreaterThan(0));
+    expect(m.actOnCrm).toHaveBeenCalledWith({ estate: "traxo", proposal: signed.proposal, signature: "sig-details" });
+  });
+
+  it("focuses the question box on opening when asked, once", async () => {
+    const onFocused = vi.fn();
+    render(
+      <AskPanel estate={ESTATE} state={{ turns: [], draft: "About Jane: " }} onChange={() => {}} onUnauthorized={() => {}} focusOnOpen onFocused={onFocused} />,
+    );
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveFocus();
+    expect(onFocused).toHaveBeenCalledTimes(1);
+  });
+});

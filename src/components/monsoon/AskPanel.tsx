@@ -3,18 +3,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AskMessage } from "@/lib/monsoon/ask/loop";
 import type { Ref } from "@/lib/monsoon/ask/tools";
-import type { SignedProposal } from "@/lib/monsoon/ask/proposal";
-import { actOnCrm, askCrm, type EstateInfo } from "./api";
+import { askCrm, type EstateInfo } from "./api";
 import ChangeCard, { describeChange } from "./ChangeCard";
+import type { ContactTarget } from "./ContactsPanel";
 import { primaryButton, secondaryButton } from "./styles";
+import { useCardConfirm, type AskCard } from "./useCardConfirm";
 
-export type AskCard = {
-  id: string;
-  signed: SignedProposal;
-  text: string;
-  state: "open" | "working" | "done" | "cancelled" | "failed";
-  message?: string;
-};
+export type { AskCard };
 export type AskTurn = {
   id: string;
   role: "user" | "assistant" | "note";
@@ -29,7 +24,7 @@ const MAX_SENT = 24;
 const MAX_SENT_CHARS = 50_000;
 const MAX_DRAFT = 2000;
 const ASK_FAILURE = "Could not get an answer. Check signal and try again.";
-const SAVE_FAILURE = "Could not save. Check signal and try again.";
+const MAX_CHIPS = 5;
 const SUGGESTIONS = ["Who should I chase this week?", "Summarise the pipeline", "Tell me about "];
 
 // The phone's local date, never the UTC one.
@@ -66,6 +61,39 @@ function toMessages(turns: AskTurn[]): AskMessage[] {
   return last;
 }
 
+// What opening a ref asks the server for: the person, else the company, else the member.
+function refTarget(r: Ref): ContactTarget {
+  return r.personId ? { personId: r.personId } : r.orgId ? { orgId: r.orgId } : { memberId: r.memberId };
+}
+
+// The contacts an answer named, as tappable chips (at most five, each contact once).
+function RefChips({ refs, disabled, onOpen }: { refs: Ref[]; disabled: boolean; onOpen: (t: ContactTarget) => void }) {
+  const seen = new Set<string>();
+  const chips: { key: string; ref: Ref }[] = [];
+  for (const r of refs) {
+    const key = r.personId ?? r.orgId ?? r.memberId;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    chips.push({ key, ref: r });
+    if (chips.length === MAX_CHIPS) break;
+  }
+  return (
+    <div className="flex flex-wrap gap-2" aria-label="Contacts mentioned">
+      {chips.map(({ key, ref }) => (
+        <button
+          key={key}
+          type="button"
+          disabled={disabled}
+          onClick={() => onOpen(refTarget(ref))}
+          className="min-h-[44px] max-w-full break-words rounded-full bg-[#0E7FA6]/10 px-4 text-[16px] font-semibold text-[#0E7FA6] active:bg-[#0E7FA6]/20 disabled:opacity-50 dark:bg-[#6AE6FF]/15 dark:text-[#6AE6FF]"
+        >
+          {ref.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 // The conversation lives in the parent (so it survives the passcode screen); this component only drives it.
 export default function AskPanel({
   estate,
@@ -73,17 +101,23 @@ export default function AskPanel({
   onChange,
   onUnauthorized,
   onBusy,
+  onOpenContact,
+  focusOnOpen,
+  onFocused,
 }: {
   estate: EstateInfo;
   state: AskState;
   onChange: (next: AskState | ((prev: AskState) => AskState)) => void;
   onUnauthorized: () => void;
   onBusy?: (busy: boolean) => void;
+  onOpenContact?: (target: ContactTarget) => void;
+  /** Focus the question box when this panel opens, then report it through onFocused. */
+  focusOnOpen?: boolean;
+  onFocused?: () => void;
 }) {
   const [asking, setAsking] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const askRef = useRef(false);
-  const cardRefs = useRef(new Set<string>());
   // Bumped when the estate changes or the conversation is cleared; a late result stamped with an older value is dropped.
   const genRef = useRef(0);
   const endRef = useRef<HTMLDivElement>(null);
@@ -103,6 +137,15 @@ export default function AskPanel({
     onBusy?.(busy);
     return () => onBusy?.(false);
   }, [busy, onBusy]);
+
+  useEffect(() => {
+    if (!focusOnOpen) return;
+    const el = inputRef.current;
+    el?.focus();
+    el?.setSelectionRange?.(el.value.length, el.value.length);
+    onFocused?.();
+    // Only on opening: the request is consumed by onFocused.
+  }, []);
 
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ block: "end" });
@@ -196,41 +239,17 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
     return undefined;
   }
 
-  async function confirm(c: AskCard) {
-    if (currentState(c.id) !== "open" || cardRefs.current.has(c.id)) return;
-    cardRefs.current.add(c.id);
-    const gen = genRef.current;
-    patchCard(c.id, { state: "working", message: undefined });
-    const { proposal, signature } = c.signed;
-    try {
-      const res = await actOnCrm({
-        estate: estate.key,
-        proposal,
-        signature,
-        ...(proposal.kind === "add_note" ? { text: c.text } : {}),
-      });
-      if (gen !== genRef.current) return;
-      if (res.status === 200 && res.body && "message" in res.body) {
-        patchCard(c.id, { state: "done", message: res.body.message });
-        addNote(`Change confirmed: ${res.body.message}`);
-      } else if (res.status === 401) {
-        patchCard(c.id, { state: "open" });
-        onUnauthorized();
-      } else if (res.status === 403) {
-        patchCard(c.id, { state: "failed", message: "This change has expired. Ask again." });
-      } else {
-        patchCard(c.id, { state: "open", message: SAVE_FAILURE });
-      }
-    } catch {
-      if (gen !== genRef.current) return;
-      patchCard(c.id, { state: "open", message: SAVE_FAILURE });
-    } finally {
-      cardRefs.current.delete(c.id);
-    }
-  }
+  const { confirm, isConfirming } = useCardConfirm({
+    estateKey: estate.key,
+    stateOf: currentState,
+    patch: patchCard,
+    generation: () => genRef.current,
+    onUnauthorized,
+    onDone: (_card, message) => addNote(`Change confirmed: ${message}`),
+  });
 
   function cancel(c: AskCard) {
-    if (currentState(c.id) !== "open" || cardRefs.current.has(c.id)) return;
+    if (currentState(c.id) !== "open" || isConfirming(c.id)) return;
     patchCard(c.id, { state: "cancelled", message: undefined });
     addNote(`Change cancelled: ${describeChange(c)}`);
   }
@@ -288,6 +307,9 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
             >
               {t.content}
             </div>
+            {t.role === "assistant" && t.refs && t.refs.length > 0 && onOpenContact ? (
+              <RefChips refs={t.refs} disabled={busy} onOpen={onOpenContact} />
+            ) : null}
             {t.cards?.map((c) => (
               <ChangeCard
                 key={c.id}

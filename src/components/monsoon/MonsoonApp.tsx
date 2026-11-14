@@ -8,7 +8,7 @@ import type { RefineOutput } from "@/lib/monsoon/refine";
 import { loadEstates, readCards, saveCard, signIn, type EstateInfo, type SaveBody } from "./api";
 import { downsizeImage } from "./image";
 import AskPanel, { EMPTY_ASK, type AskState } from "./AskPanel";
-import ContactsPanel, { EMPTY_CONTACTS, type ContactsState } from "./ContactsPanel";
+import ContactsPanel, { EMPTY_CONTACTS, type ContactsState, type ContactTarget } from "./ContactsPanel";
 import BatchReview, { makeBatch, type Batch } from "./BatchReview";
 import { describeResult, type SavePrompt } from "./outcomes";
 import ContactFormFields, { type FormKey } from "./ContactFormFields";
@@ -116,6 +116,10 @@ export default function MonsoonApp() {
   const [contacts, setContacts] = useState<ContactsState>(EMPTY_CONTACTS);
   const [ask, setAsk] = useState<AskState>(EMPTY_ASK);
   const [askBusy, setAskBusy] = useState(false);
+  // True while a profile action (proposing or confirming a change) is in flight; reported by ProfileActions.
+  const [profileBusy, setProfileBusy] = useState(false);
+  // "Ask about this contact" asks the Ask panel to focus its question box once it opens.
+  const [focusAsk, setFocusAsk] = useState(false);
   // The Ask conversation belongs to one estate: any path that changes the estate clears it.
   const askEstateRef = useRef(estateKey);
   useEffect(() => {
@@ -214,7 +218,7 @@ export default function MonsoonApp() {
   }
 
   function chooseEstate(e: EstateInfo) {
-    if (!e.available || batchStarted || askBusy) return;
+    if (!e.available || batchStarted || askBusy || profileBusy) return;
     setEstateKey(e.key);
     setRole(startRole(e));
     // Cards not yet saved follow the new estate: its start role, and no per-card role left over.
@@ -231,6 +235,21 @@ export default function MonsoonApp() {
     if (batchEstateRef.current) batchEstateRef.current = e.key;
     dropPrompt();
     setSamePerson(undefined);
+  }
+
+  // A chip in an answer: Contacts with that profile open; the Ask conversation stays as it is.
+  function openContact(target: ContactTarget) {
+    if (askBusy || profileBusy) return;
+    setContacts((c) => ({ ...c, open: target }));
+    setMode("contacts");
+  }
+
+  // Ask about the open profile: the draft is prefilled, never sent, and never overwrites typed text.
+  function askAbout(text: string) {
+    if (profileBusy) return;
+    setAsk((a) => ({ ...a, draft: (a.draft.trim() === "" ? text : a.draft + "\n" + text).slice(0, 2000) }));
+    setFocusAsk(true);
+    setMode("ask");
   }
 
   async function onPhoto(event: React.ChangeEvent<HTMLInputElement>) {
@@ -521,7 +540,7 @@ export default function MonsoonApp() {
                 key={e.key}
                 type="button"
                 aria-pressed={selected}
-                disabled={!e.available || batchStarted || tidying || reading || batchRunning || askBusy}
+                disabled={!e.available || batchStarted || tidying || reading || batchRunning || askBusy || profileBusy}
                 onClick={() => chooseEstate(e)}
                 className={`min-h-[44px] rounded-lg px-2 text-[16px] font-semibold disabled:opacity-40 ${
                   selected
@@ -547,8 +566,8 @@ export default function MonsoonApp() {
               aria-pressed={mode === m}
               disabled={
                 m === "capture"
-                  ? askBusy
-                  : reading || saving || tidying || batchRunning || (m === "contacts" && askBusy)
+                  ? askBusy || profileBusy
+                  : reading || saving || tidying || batchRunning || profileBusy || (m === "contacts" && askBusy)
               }
               onClick={() => setMode(m)}
               className={`min-h-[44px] rounded-lg px-2 text-[16px] font-semibold disabled:opacity-40 ${
@@ -568,6 +587,8 @@ export default function MonsoonApp() {
             state={contacts}
             onChange={setContacts}
             onUnauthorized={() => setPhase("locked")}
+            onBusy={setProfileBusy}
+            onAsk={askAbout}
           />
         ) : mode === "ask" && estate ? (
           <AskPanel
@@ -576,6 +597,9 @@ export default function MonsoonApp() {
             onChange={setAsk}
             onUnauthorized={() => setPhase("locked")}
             onBusy={setAskBusy}
+            onOpenContact={openContact}
+            focusOnOpen={focusAsk}
+            onFocused={() => setFocusAsk(false)}
           />
         ) : batch && estate ? (
           <BatchReview

@@ -18,6 +18,7 @@ vi.mock("./api", () => ({
   actOnCrm: vi.fn(),
   searchContacts: vi.fn(),
   loadProfile: vi.fn(),
+  proposeChange: vi.fn(),
 }));
 vi.mock("./image", () => ({
   downsizeImage: vi.fn(),
@@ -1231,6 +1232,97 @@ describe("Contacts mode", () => {
     await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Who?");
     await user.click(screen.getByRole("button", { name: "Send question" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Contacts" })).toBeDisabled());
+  });
+});
+
+describe("Profile actions and links", () => {
+  const JANE = {
+    kind: "person", personId: "p1", orgId: "o1", name: "Jane Tan", title: "Partner", company: "Acme Capital",
+    email: null, member: null, memberOf: null,
+  };
+  const PROFILE = {
+    kind: "person", personId: "p1", orgId: "o1", name: "Jane Tan", title: "Partner", company: "Acme Capital",
+    email: null, phone: null, linkedin: null, country: null, website: null, notes: null,
+    member: {
+      memberId: "m1", memberKind: "person", role: "lp_prospect", stage: "lead", owner: null, priority: null,
+      nextAction: null, nextActionDate: null, due: "later", notes: null,
+    },
+    memberOf: "self", timelineOf: null, timeline: [], timelineTotal: 0, people: [],
+    stages: [{ key: "lead", label: "Lead", terminal: false }, { key: "won", label: "Won", terminal: true }],
+  };
+
+  async function openJane(user: User) {
+    signedIn();
+    m.searchContacts.mockResolvedValue({ status: 200, body: { contacts: [JANE] } } as never);
+    m.loadProfile.mockResolvedValue({ status: 200, body: { profile: PROFILE } } as never);
+    render(<MonsoonApp />);
+    await ready();
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await user.click(await screen.findByRole("button", { name: /Jane Tan/ }));
+    await screen.findByRole("button", { name: "Ask about this contact" });
+  }
+
+  it("a chip under an answer opens that profile in Contacts and keeps the conversation", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.loadProfile.mockResolvedValue({ status: 200, body: { profile: PROFILE } } as never);
+    m.askCrm.mockResolvedValue({
+      status: 200,
+      body: {
+        answer: "Jane is warm.",
+        refs: [{ memberId: "m1", name: "Jane Tan", company: "Acme Capital", kind: "person", personId: "p1" }],
+        proposals: [],
+      },
+    } as never);
+    render(<MonsoonApp />);
+    await ready();
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Who is warm?");
+    await user.click(screen.getByRole("button", { name: "Send question" }));
+    await user.click(await screen.findByRole("button", { name: "Jane Tan" }));
+    expect(await screen.findByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
+    expect(m.loadProfile).toHaveBeenCalledWith("traxo", { memberId: undefined, personId: "p1", orgId: undefined }, expect.any(String));
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    expect(await screen.findByText("Jane is warm.")).toBeInTheDocument();
+    expect(screen.getByText("Who is warm?")).toBeInTheDocument();
+  });
+
+  it("Ask about this contact switches to Ask with the draft and focuses the box, without sending", async () => {
+    const user = userEvent.setup();
+    await openJane(user);
+    await user.click(screen.getByRole("button", { name: "Ask about this contact" }));
+    const box = await screen.findByRole("textbox", { name: "Your question" });
+    expect(box).toHaveValue("About Jane Tan: ");
+    expect(box).toHaveFocus();
+    expect(m.askCrm).not.toHaveBeenCalled();
+  });
+
+  it("Ask about this contact keeps a draft that is already typed, adding the line below it", async () => {
+    const user = userEvent.setup();
+    await openJane(user);
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Who is warm?");
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await user.click(await screen.findByRole("button", { name: "Ask about this contact" }));
+    expect(await screen.findByRole("textbox", { name: "Your question" })).toHaveValue("Who is warm?\nAbout Jane Tan: ");
+  });
+
+  it("locks the mode switch and estate buttons while a profile action is pending, then releases them", async () => {
+    const user = userEvent.setup();
+    await openJane(user);
+    let resolve!: (v: never) => void;
+    m.proposeChange.mockImplementationOnce(() => new Promise((r) => (resolve = r as never)));
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.type(screen.getByLabelText("Title"), "x");
+    await user.click(screen.getByRole("button", { name: "Review changes" }));
+    for (const name of ["Capture", "Contacts", "Ask", "Traxo", "Zero One"]) {
+      await waitFor(() => expect(screen.getByRole("button", { name })).toBeDisabled());
+    }
+    resolve({ status: 200, body: { ok: false, reason: "Nope." } } as never);
+    await screen.findByText("Nope.");
+    for (const name of ["Capture", "Contacts", "Ask", "Zero One"]) {
+      await waitFor(() => expect(screen.getByRole("button", { name })).toBeEnabled());
+    }
   });
 });
 

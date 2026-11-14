@@ -45,6 +45,7 @@ export type Profile = {
   timeline: TimelineEntry[]; // newest first, up to 50, summaries clipped to 600
   timelineTotal: number;
   people: { personId: string; name: string; title: string | null; email: string | null; phone: string | null }[]; // company profile, up to 50
+  stages: { key: string; label: string; terminal: boolean }[]; // every stage of the estate, in pipeline order
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -275,6 +276,7 @@ async function personProfile(db: ClientBase, personId: string, today: string): P
     timeline: loaded?.timeline ?? [],
     timelineTotal: loaded?.total ?? 0,
     people: [],
+    stages: [],
   };
 }
 
@@ -311,6 +313,7 @@ async function companyProfile(db: ClientBase, orgId: string, today: string): Pro
     timeline: loaded?.timeline ?? [],
     timelineTotal: loaded?.total ?? 0,
     people: people.rows.map((p) => ({ personId: p.id, name: p.name, title: p.title, email: p.email, phone: p.phone })),
+    stages: [],
   };
 }
 
@@ -326,11 +329,18 @@ export function getProfile(db: ClientBase, target: Target, today: string, opts?:
   return readOnly(
     db,
     async () => {
-      if (key === "personId") return personProfile(db, id, today);
-      if (key === "orgId") return companyProfile(db, id, today);
-      const m = (await db.query("SELECT person_id, org_id FROM members WHERE id = $1", [id])).rows[0];
-      if (!m) return null;
-      return m.person_id ? personProfile(db, m.person_id, today) : companyProfile(db, m.org_id, today);
+      let found: Profile | null;
+      if (key === "personId") found = await personProfile(db, id, today);
+      else if (key === "orgId") found = await companyProfile(db, id, today);
+      else {
+        const m = (await db.query("SELECT person_id, org_id FROM members WHERE id = $1", [id])).rows[0];
+        if (!m) return null;
+        found = m.person_id ? await personProfile(db, m.person_id, today) : await companyProfile(db, m.org_id, today);
+      }
+      if (!found) return null;
+      const stages = await db.query("SELECT key, label, terminal FROM stages ORDER BY ord, key");
+      found.stages = stages.rows.map((r) => ({ key: r.key, label: r.label, terminal: r.terminal }));
+      return found;
     },
     opts,
   );

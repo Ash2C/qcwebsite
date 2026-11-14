@@ -40,7 +40,7 @@ export type ApiResult<T> = { status: number; body: T };
 // own limit, so the server answers first when it can.
 const TIMEOUT_MS = {
   quick: 15_000, // signIn, loadEstates
-  standard: 35_000, // saveCard, refineCard, actOnCrm
+  standard: 35_000, // saveCard, refineCard, actOnCrm, proposeChange
   upload: 90_000, // readCards: the photo upload on a weak connection counts against the limit
   ask: 70_000, // askCrm
 } as const;
@@ -147,6 +147,28 @@ export async function actOnCrm(body: {
   return parse(
     await request(
       "/api/monsoon/act",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+      TIMEOUT_MS.standard,
+    ),
+  );
+}
+
+export type ProposeBody = {
+  estate: string;
+  kind: "add_note" | "move_stage" | "update_details";
+  target: { memberId?: string; personId?: string; orgId?: string };
+  text?: string;
+  stage?: string;
+  changes?: Record<string, string>; // field -> new value; an empty string clears the field
+  newCompany?: boolean;
+};
+
+export async function proposeChange(
+  body: ProposeBody,
+): Promise<ApiResult<{ ok: true; signed: SignedProposal } | { ok: false; reason: string } | { error: string }>> {
+  return parse(
+    await request(
+      "/api/monsoon/propose",
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
       TIMEOUT_MS.standard,
     ),

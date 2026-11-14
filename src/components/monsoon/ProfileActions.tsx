@@ -1,0 +1,326 @@
+"use client";
+
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import type { Profile } from "@/lib/monsoon/contacts";
+import { proposeChange, type EstateInfo, type ProposeBody } from "./api";
+import ChangeCard, { DETAIL_LABELS, MAX_NOTE } from "./ChangeCard";
+import { card as cardClass, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
+import { useCardConfirm, type AskCard } from "./useCardConfirm";
+
+const FAILURE = "Could not reach the server. Check signal and try again.";
+const MAX_VALUE = 300;
+const LOOKALIKE = "say it is a different company";
+
+type Panel = "note" | "stage" | "edit" | null;
+type Target = ProposeBody["target"];
+type PersonField = "name" | "title" | "company" | "email" | "phone" | "linkedin" | "country";
+type CompanyField = "website" | "country";
+
+const PERSON_FIELDS: PersonField[] = ["name", "title", "company", "email", "phone", "linkedin", "country"];
+const COMPANY_FIELDS: CompanyField[] = ["website", "country"];
+
+// The profile's stored value for an editable field, "" when empty.
+function stored(p: Profile, field: string): string {
+  const value = (
+    {
+      name: p.name,
+      title: p.title,
+      company: p.company,
+      email: p.email,
+      phone: p.phone,
+      linkedin: p.linkedin,
+      country: p.country,
+      website: p.kind === "company" ? p.website : null,
+    } as Record<string, string | null>
+  )[field];
+  return value ?? "";
+}
+
+const panelBox = `${cardClass} flex min-w-0 flex-col gap-3 p-4`;
+const alertClass = "break-words text-[15px] font-medium text-red-600 dark:text-red-400";
+
+export default function ProfileActions({
+  estate,
+  profile,
+  reload,
+  onUnauthorized,
+  onBusy,
+  onAsk,
+}: {
+  estate: EstateInfo;
+  profile: Profile;
+  reload: () => void;
+  onUnauthorized: () => void;
+  onBusy?: (busy: boolean) => void;
+  /** Switches to Ask with this text as the draft (the Ask about this contact button). */
+  onAsk?: (text: string) => void;
+}) {
+  const ids = useId();
+  const p = profile;
+  const [panel, setPanel] = useState<Panel>(null);
+  const [note, setNote] = useState("");
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [proposing, setProposing] = useState(false);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const [cardState, setCardState] = useState<AskCard | null>(null);
+  const cardRef = useRef<AskCard | null>(null);
+  const proposingRef = useRef(false);
+  const lastEdit = useRef<Record<string, string> | null>(null);
+  // Bumped when this view closes; a result that arrives later is dropped.
+  const genRef = useRef(0);
+  useEffect(() => {
+    const gen = genRef;
+    return () => {
+      gen.current += 1;
+    };
+  }, []);
+
+  const setCard = useCallback((next: AskCard | null) => {
+    cardRef.current = next;
+    setCardState(next);
+  }, []);
+  const patchCard = useCallback(
+    (id: string, patch: Partial<AskCard>) => {
+      if (cardRef.current?.id === id) setCard({ ...cardRef.current, ...patch });
+    },
+    [setCard],
+  );
+
+  const { confirm } = useCardConfirm({
+    estateKey: estate.key,
+    stateOf: (id) => (cardRef.current?.id === id ? cardRef.current.state : undefined),
+    patch: patchCard,
+    generation: () => genRef.current,
+    onUnauthorized,
+    onDone: () => reload(),
+  });
+
+  const working = cardState?.state === "working";
+  const busy = proposing || working;
+  useEffect(() => {
+    onBusy?.(busy);
+    return () => onBusy?.(false);
+  }, [busy, onBusy]);
+
+  const isCompany = p.kind === "company";
+  // Edits address the person or company itself. Notes and stage moves address the timeline's member;
+  // a person filed under a company is resolved by the server to the company's member.
+  const editTarget: Target = isCompany ? { orgId: p.orgId ?? undefined } : { personId: p.personId ?? undefined };
+  const timelineTarget: Target =
+    p.member && (isCompany || p.memberOf === "self")
+      ? { memberId: p.member.memberId }
+      : isCompany
+        ? {}
+        : { personId: p.personId ?? undefined };
+  const canNote = !isCompany || p.member !== null;
+  const canMove = p.memberOf !== null && p.member !== null;
+
+  async function propose(body: Omit<ProposeBody, "estate">) {
+    if (proposingRef.current || busy) return;
+    proposingRef.current = true;
+    setProposing(true);
+    setRefusal(null);
+    const gen = genRef.current;
+    try {
+      const res = await proposeChange({ estate: estate.key, ...body });
+      if (gen !== genRef.current) return;
+      if (res.status === 401) {
+        onUnauthorized();
+      } else if (res.status === 200 && res.body && "ok" in res.body) {
+        if (res.body.ok) {
+          const signed = res.body.signed;
+          setCard({ id: crypto.randomUUID(), signed, text: signed.text ?? body.text ?? "", state: "open" });
+          if (body.kind === "add_note") setNote("");
+          setPanel(null);
+        } else {
+          setRefusal(res.body.reason);
+        }
+      } else {
+        setRefusal(FAILURE);
+      }
+    } catch {
+      if (gen === genRef.current) setRefusal(FAILURE);
+    } finally {
+      proposingRef.current = false;
+      if (gen === genRef.current) setProposing(false);
+    }
+  }
+
+  function toggle(next: Exclude<Panel, null>) {
+    if (busy) return;
+    setRefusal(null);
+    if (panel === next) return setPanel(null);
+    if (next === "edit") {
+      setValues(Object.fromEntries((isCompany ? COMPANY_FIELDS : PERSON_FIELDS).map((f) => [f, stored(p, f)])));
+    }
+    setPanel(next);
+  }
+
+  function review(newCompany: boolean) {
+    let changes = lastEdit.current;
+    if (!newCompany || !changes) {
+      changes = {};
+      for (const field of isCompany ? COMPANY_FIELDS : PERSON_FIELDS) {
+        const next = (values[field] ?? "").trim();
+        if (next !== stored(p, field).trim()) changes[field] = next;
+      }
+    }
+    if (Object.keys(changes).length === 0) return setRefusal("Nothing to change.");
+    lastEdit.current = changes;
+    void propose({ kind: "update_details", target: editTarget, changes, ...(newCompany ? { newCompany: true } : {}) });
+  }
+
+  const noteBlank = note.trim() === "";
+  const noteTooLong = note.length > MAX_NOTE;
+  const buttons: { key: Exclude<Panel, null>; label: string }[] = [
+    ...(canNote ? [{ key: "note" as const, label: "Add note" }] : []),
+    ...(canMove ? [{ key: "stage" as const, label: "Move stage" }] : []),
+    { key: "edit", label: "Edit" },
+  ];
+  const refusalBlock = refusal ? (
+    <div className="flex flex-col gap-2">
+      <p role="alert" className={alertClass}>
+        {refusal}
+      </p>
+      {refusal.includes(LOOKALIKE) && (
+        <button type="button" className={secondaryButton} disabled={busy} onClick={() => review(true)}>
+          It&apos;s a different company
+        </button>
+      )}
+    </div>
+  ) : null;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className={`grid gap-2 ${buttons.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
+        {buttons.map((b) => (
+          <button
+            key={b.key}
+            type="button"
+            aria-pressed={panel === b.key}
+            disabled={busy}
+            onClick={() => toggle(b.key)}
+            className={`${secondaryButton} !px-2 ${panel === b.key ? "ring-2 ring-[#0E7FA6] dark:ring-[#6AE6FF]" : ""}`}
+          >
+            {b.label}
+          </button>
+        ))}
+      </div>
+
+      {panel === "note" && (
+        <div className={panelBox}>
+          <label htmlFor={`${ids}-note`} className="sr-only">
+            Note text
+          </label>
+          <textarea
+            id={`${ids}-note`}
+            rows={4}
+            value={note}
+            disabled={busy}
+            placeholder="Type or dictate a note"
+            onChange={(e) => setNote(e.target.value)}
+            className="block w-full break-words rounded-xl bg-neutral-100 px-4 py-2.5 text-[17px] text-neutral-900 placeholder:text-neutral-400 focus:outline-none dark:bg-white/10 dark:text-white dark:placeholder:text-neutral-500"
+          />
+          {noteTooLong && <p role="alert" className={alertClass}>{`Notes can be up to ${MAX_NOTE} characters.`}</p>}
+          {refusalBlock}
+          <button
+            type="button"
+            className={primaryButton}
+            disabled={busy || noteBlank || noteTooLong}
+            onClick={() => void propose({ kind: "add_note", target: timelineTarget, text: note.trim() })}
+          >
+            Continue
+          </button>
+        </div>
+      )}
+
+      {panel === "stage" && (
+        <div className={panelBox}>
+          <p className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Move to</p>
+          <div className="flex flex-col gap-2">
+            {p.stages.map((s) => {
+              const current = s.key === p.member?.stage;
+              return (
+                <button
+                  key={s.key}
+                  type="button"
+                  disabled={busy || current}
+                  onClick={() => void propose({ kind: "move_stage", target: timelineTarget, stage: s.key })}
+                  className={`${secondaryButton} flex items-center justify-between gap-2 text-left`}
+                >
+                  <span className="break-words">{s.label}</span>
+                  {current && <span className="shrink-0 text-[14px] text-neutral-500 dark:text-neutral-400">Current</span>}
+                </button>
+              );
+            })}
+          </div>
+          {refusalBlock}
+        </div>
+      )}
+
+      {panel === "edit" && (
+        <div className={panelBox}>
+          <div className="-mx-4 flex flex-col divide-y divide-black/5 dark:divide-white/10">
+            {(isCompany ? COMPANY_FIELDS : PERSON_FIELDS).map((field) => {
+              const id = `${ids}-${field}`;
+              const common = {
+                id,
+                value: values[field] ?? "",
+                maxLength: MAX_VALUE,
+                disabled: busy,
+                autoComplete: "off",
+                className: fieldInput,
+              };
+              return (
+                <div key={field}>
+                  <label htmlFor={id} className={fieldLabel}>
+                    {DETAIL_LABELS[field]}
+                  </label>
+                  {field === "phone" ? (
+                    <textarea rows={2} {...common} onChange={(e) => setValues((v) => ({ ...v, [field]: e.target.value }))} />
+                  ) : (
+                    <input
+                      type="text"
+                      inputMode={field === "email" ? "email" : field === "linkedin" || field === "website" ? "url" : undefined}
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      {...common}
+                      onChange={(e) => setValues((v) => ({ ...v, [field]: e.target.value }))}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {refusalBlock}
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" className={secondaryButton} disabled={busy} onClick={() => toggle("edit")}>
+              Cancel
+            </button>
+            <button type="button" className={secondaryButton} disabled={busy} onClick={() => review(false)}>
+              Review changes
+            </button>
+          </div>
+        </div>
+      )}
+
+      {cardState && (
+        <ChangeCard
+          card={cardState}
+          onText={(text) => patchCard(cardState.id, { text })}
+          onConfirm={() => void confirm(cardState)}
+          onCancel={() => {
+            if (cardRef.current?.state === "open") patchCard(cardState.id, { state: "cancelled", message: undefined });
+          }}
+        />
+      )}
+
+      {onAsk && (
+        <button type="button" className={secondaryButton} disabled={busy} onClick={() => onAsk(`About ${p.name}: `)}>
+          Ask about this contact
+        </button>
+      )}
+    </div>
+  );
+}

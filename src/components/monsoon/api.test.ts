@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { actOnCrm, askCrm, loadEstates, loadProfile, searchContacts, readCards, refineCard, saveCard, signIn } from "./api";
+import { actOnCrm, askCrm, loadEstates, loadProfile, proposeChange, searchContacts, readCards, refineCard, saveCard, signIn } from "./api";
 
 // `fetch` is stubbed: nothing here touches the network.
 const fetchMock = vi.fn();
@@ -28,6 +28,7 @@ const CALLS: [string, string, number, () => Promise<unknown>][] = [
   ["actOnCrm", "/api/monsoon/act", 35_000, () => actOnCrm(act)],
   ["searchContacts", "/api/monsoon/contacts?estate=traxo&q=jane+tan", 15_000, () => searchContacts("traxo", "jane tan")],
   ["loadProfile", "/api/monsoon/contact?estate=traxo&today=2026-11-13&personId=p1", 15_000, () => loadProfile("traxo", { personId: "p1" }, "2026-11-13")],
+  ["proposeChange", "/api/monsoon/propose", 35_000, () => proposeChange({ estate: "traxo", kind: "add_note", target: { memberId: "m1" }, text: "hi" })],
   ["askCrm", "/api/monsoon/ask", 70_000, () => askCrm({ estate: "traxo", today: "2026-11-13", messages: [] })],
 ];
 

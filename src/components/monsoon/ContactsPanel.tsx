@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ContactHit } from "@/lib/monsoon/contacts";
 import { searchContacts, type EstateInfo } from "./api";
+import ProfileActions from "./ProfileActions";
 import ProfileView, { roleLabel, stageLabel } from "./ProfileView";
 import { card, secondaryButton } from "./styles";
 
@@ -38,11 +39,16 @@ export default function ContactsPanel({
   state,
   onChange,
   onUnauthorized,
+  onBusy,
+  onAsk,
 }: {
   estate: EstateInfo;
   state: ContactsState;
   onChange: (next: ContactsState | ((prev: ContactsState) => ContactsState)) => void;
   onUnauthorized: () => void;
+  /** True while a profile action is proposing or confirming a change. */
+  onBusy?: (busy: boolean) => void;
+  /** Switches to Ask with the given draft. */
   onAsk?: (text: string) => void;
 }) {
   const [hits, setHits] = useState<ContactHit[]>([]);
@@ -104,6 +110,16 @@ export default function ContactsPanel({
         onBack={() => onChange((s) => ({ ...s, open: null }))}
         onOpen={(target) => onChange((s) => ({ ...s, open: target }))}
         onUnauthorized={onUnauthorized}
+        actions={(profile, reload) => (
+          <ProfileActions
+            estate={estate}
+            profile={profile}
+            reload={reload}
+            onUnauthorized={onUnauthorized}
+            onBusy={onBusy}
+            onAsk={onAsk}
+          />
+        )}
       />
     );
   }

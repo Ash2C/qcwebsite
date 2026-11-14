@@ -315,6 +315,23 @@ describe.skipIf(!testDb.available)("Contact lookups (real Postgres)", () => {
       expect(p).toMatchObject({ orgId: null, company: null, memberOf: "self", timelineTotal: 1, member: { memberId: id.mRaj } });
     });
 
+    it("carries every stage of the estate in pipeline order, for every kind of target", async () => {
+      const expected = [
+        { key: "uncontacted", label: "Uncontacted", terminal: false },
+        { key: "contacted", label: "Contacted", terminal: false },
+        { key: "engaged", label: "Engaged", terminal: false },
+        { key: "client", label: "Client", terminal: true },
+        { key: "passed", label: "Passed", terminal: true },
+      ];
+      for (const target of [{ memberId: id.mRaf }, { personId: id.sam }, { orgId: id.ev }]) {
+        expect((await getProfile(db, target, TODAY))!.stages).toEqual(expected);
+      }
+      await db.query("UPDATE stages SET ord = 9 WHERE key = 'uncontacted'");
+      expect((await getProfile(db, { orgId: id.raf }, TODAY))!.stages.map((s) => s.key)).toEqual([
+        "contacted", "engaged", "client", "passed", "uncontacted",
+      ]);
+    });
+
     it("loads a company by orgId, with or without a membership", async () => {
       const ev = await getProfile(db, { orgId: id.ev }, TODAY);
       expect(ev).toMatchObject({ kind: "company", name: "Everberg Capital", member: null, memberOf: null, timeline: [], timelineTotal: 0 });
