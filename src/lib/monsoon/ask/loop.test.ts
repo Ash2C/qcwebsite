@@ -432,6 +432,18 @@ Jane and Li are due.
     );
   });
 
+  it("tells the model a person on the pipeline by person id and member, without a company id", async () => {
+    const s = setup([text("Yes.")]);
+    await s.run([
+      { role: "user", content: "find Li Wei" },
+      { role: "assistant", content: "Li Wei.", refs: [{ memberId: "m-li", name: "Li Wei", company: "Acme", kind: "person", personId: "p-li" }] },
+      { role: "user", content: "change his title" },
+    ]);
+    expect((s.calls[0].messages as { content: string }[])[1].content).toBe(
+      "Li Wei.\n[contacts referred to: Li Wei (Acme) = person p-li, member m-li]",
+    );
+  });
+
   it("tells the model a ref's company id in the history line", async () => {
     const s = setup([text("Yes.")]);
     await s.run([

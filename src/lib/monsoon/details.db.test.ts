@@ -102,6 +102,26 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
       expect(c.logMemberId).toBe(id.mNw);
     });
 
+    it("resolves the most specific id first: person, then company, then member", async () => {
+      // The member is Northwind's, the person is Jane at Northwind: the person is meant.
+      const p = await proposed({ memberId: id.mNw, personId: id.jane }, { title: "Director" });
+      expect(p.target).toEqual({ type: "person", id: id.jane });
+      const c = await proposed({ memberId: id.mLi, orgId: id.nw }, { country: "UK" });
+      expect(c.target).toEqual({ type: "company", id: id.nw });
+      const both = await proposed({ memberId: id.mLi, personId: id.jane, orgId: id.nw }, { title: "Director" });
+      expect(both.target).toEqual({ type: "person", id: id.jane });
+    });
+
+    it("refuses when a stored value it would carry as the old value is over 2,000 characters", async () => {
+      await db.query("UPDATE people SET title = $2 WHERE id = $1", [id.liwei, "x".repeat(2001)]);
+      expect(await propose({ personId: id.liwei }, { title: "Director" })).toEqual({
+        ok: false,
+        reason: "Title is too long to edit here.",
+      });
+      // a field that is not being changed does not matter
+      expect((await propose({ personId: id.liwei }, { phone: "+65 9999 0000" })).ok).toBe(true);
+    });
+
     it("says Nothing to change. when every field matches, treating empty and null alike", async () => {
       const r = await propose({ personId: id.liwei }, { title: "  ", name: "Li Wei" });
       expect(r).toEqual({ ok: false, reason: "Nothing to change." });
@@ -311,6 +331,66 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
       expect((await db.query("SELECT member_id, kind, summary FROM touches")).rows).toEqual([
         { member_id: m[0].id, kind: "system", summary: "Details updated: Title: (empty) → Associate" },
       ]);
+    });
+
+    it("retries once in a fresh transaction when a concurrent capture added the person to the pipeline", async () => {
+      const p = await proposed({ personId: id.sam }, { title: "Associate" });
+      let failed = 0;
+      let inserted = false;
+      const racing = new Proxy(db, {
+        get(target, prop) {
+          if (prop !== "query") return Reflect.get(target, prop);
+          const run = target.query.bind(target) as (...a: unknown[]) => Promise<unknown>;
+          return async (text: unknown, ...rest: unknown[]) => {
+            if (typeof text === "string" && text.startsWith("INSERT INTO members") && failed === 0) {
+              failed++;
+              throw Object.assign(new Error("duplicate"), { code: "23505", constraint: "members_org_id_person_id_key" });
+            }
+            // The concurrent capture commits its member before the retry begins.
+            if (failed === 1 && !inserted && text === "BEGIN ISOLATION LEVEL READ COMMITTED") {
+              inserted = true;
+              await run(
+                "INSERT INTO members (person_id, role, stage, owner, source) VALUES ($1, 'investor', 'contacted', 'VF', 'test')",
+                [id.sam],
+              );
+            }
+            return run(text, ...rest);
+          };
+        },
+      });
+      expect((await applyDetails(racing, p)).status).toBe("updated");
+      const m = (await db.query("SELECT id, source FROM members WHERE person_id = $1", [id.sam])).rows;
+      expect(m).toHaveLength(1);
+      expect(m[0].source).toBe("test");
+      expect((await db.query("SELECT member_id, summary FROM touches")).rows).toEqual([
+        { member_id: m[0].id, summary: "Details updated: Title: (empty) → Associate" },
+      ]);
+      expect((await db.query("SELECT title FROM people WHERE id = $1", [id.sam])).rows[0].title).toBe("Associate");
+    });
+
+    it("names the members unique key the retry looks for", async () => {
+      const err = await db
+        .query("INSERT INTO members (person_id, role, stage, owner, source) VALUES ($1, 'investor', 'contacted', 'VF', 'test')", [id.liwei])
+        .catch((e) => e);
+      expect(err).toMatchObject({ code: "23505", constraint: "members_org_id_person_id_key" });
+    });
+
+    it("rethrows when the member insert violates the unique key twice, writing nothing", async () => {
+      const p = await proposed({ personId: id.sam }, { title: "Associate" });
+      const before = await snapshot();
+      const failing = new Proxy(db, {
+        get(target, prop) {
+          if (prop !== "query") return Reflect.get(target, prop);
+          return (text: unknown, ...rest: unknown[]) => {
+            if (typeof text === "string" && text.startsWith("INSERT INTO members")) {
+              return Promise.reject(Object.assign(new Error("duplicate"), { code: "23505", constraint: "members_org_id_person_id_key" }));
+            }
+            return (target.query as (...a: unknown[]) => Promise<unknown>)(text, ...rest);
+          };
+        },
+      });
+      await expect(applyDetails(failing, p)).rejects.toThrow("duplicate");
+      expect(await snapshot()).toEqual(before);
     });
 
     it("adds no member when nothing is written", async () => {

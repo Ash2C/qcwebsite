@@ -175,6 +175,20 @@ describe.skipIf(!testDb.available)("Contact lookups (real Postgres)", () => {
       expect(hits.every((h) => h.kind === "person")).toBe(true); // "Zed 29" sorts before "Zed Co 0"
     });
 
+    it("keeps the best 30 of both when companies and people each exceed 30", async () => {
+      for (let i = 0; i < 35; i++) {
+        const n = String(i).padStart(2, "0");
+        await addPerson(randomUUID(), `Qux ${n}a`, null);
+        await db.query("INSERT INTO orgs (name, name_key, source) VALUES ($1, $2, 'test')", [`Qux ${n}b`, `qux ${n}b`]);
+      }
+      const hits = await searchContacts(db, "qux");
+      expect(hits).toHaveLength(30);
+      expect(hits.map((h) => h.name)).toEqual(
+        Array.from({ length: 15 }, (_, i) => [`Qux ${String(i).padStart(2, "0")}a`, `Qux ${String(i).padStart(2, "0")}b`]).flat(),
+      );
+      expect(hits.filter((h) => h.kind === "company")).toHaveLength(15);
+    });
+
     it("writes nothing and leaves the connection outside a transaction, even when it throws", async () => {
       await unchanged(() => searchContacts(db, "mia"));
       const failing = {

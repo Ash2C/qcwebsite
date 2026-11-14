@@ -20,8 +20,9 @@ import {
 
 /**
  * A contact the conversation has named. A person filed under their company carries the company's
- * member id, the person's own name and, in `personId`, which person it is. `orgId` is the company's
- * id (for a company, itself) where the result carried one.
+ * member id, the person's own name and, in `personId`, which person it is. A person always carries
+ * their own `personId` where the result has it. `orgId` is a company's id: it is set on a company
+ * and on a person filed under their company, never on a person with their own pipeline entry.
  */
 export type Ref = { memberId: string; name: string; company: string | null; kind: MemberKind; personId?: string; orgId?: string };
 export type ToolContext = {
@@ -173,6 +174,8 @@ const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object
 
 const orgIdOf = (node: Record<string, unknown>): { orgId?: string } =>
   typeof node.orgId === "string" ? { orgId: node.orgId } : {};
+const personIdOf = (node: Record<string, unknown>): { personId?: string } =>
+  typeof node.personId === "string" ? { personId: node.personId } : {};
 
 /** Refs are unique by the person when there is one, else by the member. */
 export const refKey = (r: Ref): string => r.personId ?? r.memberId;
@@ -188,7 +191,7 @@ export function extractRefs(result: unknown): Ref[] {
       // Activity rows carry no memberKind; a person always has a company on file there, a company member never does.
       const kind: MemberKind =
         node.memberKind === "company" || node.memberKind === "person" ? node.memberKind : company !== null ? "person" : "company";
-      out.push({ memberId: node.memberId, name: node.name, company, kind, ...orgIdOf(node) });
+      out.push({ memberId: node.memberId, name: node.name, company, kind, ...personIdOf(node), ...(kind === "company" ? orgIdOf(node) : {}) });
     } else if (isObj(node.member) && typeof node.member.memberId === "string" && typeof node.name === "string") {
       const k = node.member.memberKind;
       const personId = typeof node.personId === "string" ? node.personId : null;
@@ -196,12 +199,15 @@ export function extractRefs(result: unknown): Ref[] {
         // A person filed under their company: the company's member, labelled with the person.
         out.push({ memberId: node.member.memberId, name: node.name, company, kind: "company", personId, ...orgIdOf(node) });
       } else {
+        const kind: MemberKind = k === "company" || k === "person" ? k : (node.kind as MemberKind) === "company" ? "company" : "person";
         out.push({
           memberId: node.member.memberId,
           name: node.name,
           company,
-          kind: k === "company" || k === "person" ? k : (node.kind as MemberKind) === "company" ? "company" : "person",
-          ...orgIdOf(node),
+          kind,
+          ...(personId !== null ? { personId } : {}),
+          // Only a company row (no person on it) names a company id; a person's own entry does not.
+          ...(kind === "company" && personId === null ? orgIdOf(node) : {}),
         });
       }
     }
@@ -333,16 +339,22 @@ async function dispatch(ctx: ToolContext, name: string, a: Record<string, string
     case "propose_update": {
       const input: DetailInput = {};
       for (const f of DETAIL_FIELDS) if (typeof a[f] === "string") input[f] = a[f] as string;
-      const r = await proposeDetails(
-        db,
-        ctx.estate,
-        {
-          ...target,
-          ...(typeof a.org_id === "string" ? { orgId: a.org_id } : {}),
-        },
-        input,
-        { nowMs: ctx.nowMs, defaultRole: estateByKey(ctx.estate)?.defaultRole ?? "", newCompany: a.new_company === "yes" },
-      );
+      const defaults = estateByKey(ctx.estate);
+      if (!defaults) return fail(FAILED);
+      // One id only, the most specific: the person, then the company, then the member.
+      const only: Target & { orgId?: string } =
+        typeof a.person_id === "string"
+          ? { personId: a.person_id }
+          : typeof a.org_id === "string"
+            ? { orgId: a.org_id }
+            : typeof a.member_id === "string"
+              ? { memberId: a.member_id }
+              : {};
+      const r = await proposeDetails(db, ctx.estate, only, input, {
+        nowMs: ctx.nowMs,
+        defaultRole: defaults.defaultRole,
+        newCompany: a.new_company === "yes",
+      });
       if (!r.ok) return fail(r.reason);
       return {
         result: { status: "shown to the user for confirmation; not done yet", change: describeChange(r.signed) },

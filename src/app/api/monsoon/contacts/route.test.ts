@@ -51,6 +51,12 @@ describe("GET /api/monsoon/contacts", () => {
     expect(withEstateDb).not.toHaveBeenCalled();
   });
 
+  it("cuts a q longer than 100 characters to 100", async () => {
+    const res = await GET(get(`?estate=traxo&q=${"a".repeat(150)}`));
+    expect(res.status).toBe(200);
+    expect(searchContacts.mock.calls[0][1]).toBe("a".repeat(100));
+  });
+
   it("searches when q has two or more characters after trimming", async () => {
     const res = await GET(get("?estate=traxo&q=%20%20mia%20"));
     expect(res.status).toBe(200);

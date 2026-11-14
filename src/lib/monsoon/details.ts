@@ -46,10 +46,14 @@ type DetailsProposal = Extract<Proposal, { kind: "update_details" }>;
 const SOURCE = "monsoon-app";
 const OWNER = "VF";
 const MAX_VALUE = 300;
+// The most a signed proposal carries as a stored `from` value (see proposal.ts).
+const MAX_FROM = 2000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NO_CONTACT = "No such contact.";
 // Postgres's default name for UNIQUE NULLS NOT DISTINCT (org_id, name_key) on people (unnamed in the schema).
 const PEOPLE_NAME_KEY = "people_org_id_name_key_key";
+// Postgres's default name for UNIQUE NULLS NOT DISTINCT (org_id, person_id) on members.
+const MEMBERS_TARGET_KEY = "members_org_id_person_id_key";
 const FIELD_ORDER: readonly DetailField[] = ["name", "title", "email", "phone", "linkedin", "country", "company", "website"];
 const PERSON_FIELDS: readonly DetailField[] = ["name", "title", "email", "phone", "linkedin", "country", "company"];
 const ORG_FIELDS: readonly DetailField[] = ["website", "country"];
@@ -71,8 +75,8 @@ function assignments(columns: readonly string[]): string {
     .map((c, i) => `${c} = CASE WHEN $${2 + 2 * i}::boolean THEN $${3 + 2 * i}::${COLUMN_TYPE[c] ?? "text"} ELSE ${c} END`)
     .join(", ");
 }
-const UPDATE_PEOPLE = `UPDATE people SET ${assignments(PERSON_DETAIL_COLUMNS)} WHERE id = $1`;
-const UPDATE_ORGS = `UPDATE orgs SET ${assignments(ORG_DETAIL_COLUMNS)} WHERE id = $1`;
+export const UPDATE_PEOPLE = `UPDATE people SET ${assignments(PERSON_DETAIL_COLUMNS)} WHERE id = $1`;
+export const UPDATE_ORGS = `UPDATE orgs SET ${assignments(ORG_DETAIL_COLUMNS)} WHERE id = $1`;
 
 /** Trimmed text; empty becomes null. */
 function norm(value: string | null | undefined): string | null {
@@ -129,15 +133,18 @@ async function loadOrg(db: ClientBase, id: string, lock: boolean): Promise<Row |
   return { type: "company", id: o.id, name: o.name, company: null, orgId: o.id, values: { website: o.website, country: o.country } };
 }
 
-/** The target row, from a member id (its person or company), a person id or an org id. Reads only. */
+/**
+ * The target row. When more than one id is given the most specific wins: the person, then the
+ * company, then the member (a member id may stand for the company a person is filed under).
+ */
 async function resolve(db: ClientBase, target: Target): Promise<Row | undefined> {
+  if (isUuid(target.personId)) return loadPerson(db, target.personId, false);
+  if (isUuid(target.orgId)) return loadOrg(db, target.orgId, false);
   if (isUuid(target.memberId)) {
     const m = (await db.query("SELECT person_id, org_id FROM members WHERE id = $1", [target.memberId])).rows[0];
     if (!m) return undefined;
     return m.person_id ? loadPerson(db, m.person_id, false) : loadOrg(db, m.org_id, false);
   }
-  if (isUuid(target.personId)) return loadPerson(db, target.personId, false);
-  if (isUuid(target.orgId)) return loadOrg(db, target.orgId, false);
   return undefined;
 }
 
@@ -183,7 +190,10 @@ export async function proposeDetails(
     const changes: DetailChange[] = [];
     for (const { field, to } of wanted) {
       const from = norm(row.values[field]);
-      if (!same(field, from, to)) changes.push({ field, from, to });
+      if (same(field, from, to)) continue;
+      // The signed proposal bounds `from`; a stored value past that cannot be carried, so refuse up front.
+      if (from !== null && from.length > MAX_FROM) return { ok: false, reason: `${DETAIL_LABELS[field]} is too long to edit here.` };
+      changes.push({ field, from, to });
     }
     if (changes.length === 0) return { ok: false, reason: "Nothing to change." };
 
@@ -256,7 +266,24 @@ async function transaction<T>(db: ClientBase, fn: () => Promise<{ value: T; comm
 
 const display = (v: string | null) => v ?? "(empty)";
 
-export function applyDetails(db: ClientBase, proposal: DetailsProposal): Promise<ApplyResult> {
+/**
+ * Applies a proposal in one transaction. When the edit adds the person to the pipeline and a
+ * concurrent capture added them first (a unique violation on members), it runs once more in a fresh
+ * transaction, which finds the member and does not insert; a second violation is rethrown.
+ */
+export async function applyDetails(db: ClientBase, proposal: DetailsProposal): Promise<ApplyResult> {
+  try {
+    return await applyOnce(db, proposal);
+  } catch (err) {
+    const e = err as { code?: unknown; constraint?: unknown };
+    if (e?.code === "23505" && e.constraint === MEMBERS_TARGET_KEY && proposal.addsToPipeline !== null) {
+      return applyOnce(db, proposal);
+    }
+    throw err;
+  }
+}
+
+function applyOnce(db: ClientBase, proposal: DetailsProposal): Promise<ApplyResult> {
   return transaction<ApplyResult>(db, async () => {
     const { target, changes } = proposal;
     const result = (status: ApplyResult["status"], written: DetailField[], skipped: DetailField[], name: string, commit = false) => ({

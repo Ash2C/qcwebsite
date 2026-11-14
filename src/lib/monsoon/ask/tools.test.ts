@@ -167,10 +167,10 @@ describe("refs for a person filed under a company (I1)", () => {
     expect(out.refs).toEqual([
       { memberId: "m-nw", name: "Jane Tan", company: "Northwind", kind: "company", personId: JANE },
       { memberId: "m-nw", name: "Omar Reyes", company: "Northwind", kind: "company", personId: OMAR },
-      { memberId: "m-li", name: "Li Wei", company: "Acme", kind: "person" },
+      { memberId: "m-li", name: "Li Wei", company: "Acme", kind: "person", personId: "p3" },
       { memberId: "m-nw", name: "Northwind", company: null, kind: "company" },
     ]);
-    expect(out.refs.map(refKey)).toEqual([JANE, OMAR, "m-li", "m-nw"]);
+    expect(out.refs.map(refKey)).toEqual([JANE, OMAR, "p3", "m-nw"]);
     expect(new Set(out.refs.map(refKey)).size).toBe(4);
   });
 
@@ -209,6 +209,30 @@ describe("refs that carry the company's id", () => {
       { memberId: "m-nw", name: "Northwind", company: null, kind: "company", orgId: ORG },
     ]);
     expect(JSON.stringify(out.result)).toContain(ORG);
+  });
+
+  it("gives a person on the pipeline their personId and no orgId", async () => {
+    const own = { memberId: "m-li", memberKind: "person", role: "investor", stage: "engaged" };
+    q.findContacts.mockResolvedValue([
+      { kind: "person", personId: "p-li", orgId: ORG, name: "Li Wei", company: "Acme", member: own },
+    ]);
+    const out = await runTool(ctx, "find_contacts", { query: "li" });
+    expect(out.refs).toEqual([{ memberId: "m-li", name: "Li Wei", company: "Acme", kind: "person", personId: "p-li" }]);
+  });
+
+  it("keeps a personId on a member row and attaches orgId only to a company row", async () => {
+    q.listPipeline.mockResolvedValue({
+      rows: [
+        { memberId: "m-li", memberKind: "person", name: "Li Wei", company: "Acme", personId: "p-li", orgId: ORG },
+        { memberId: "m-x", memberKind: "person", name: "Xu", company: "Acme", orgId: ORG },
+      ],
+      total: 2,
+    });
+    const out = await runTool(ctx, "list_pipeline", {});
+    expect(out.refs).toEqual([
+      { memberId: "m-li", name: "Li Wei", company: "Acme", kind: "person", personId: "p-li" },
+      { memberId: "m-x", name: "Xu", company: "Acme", kind: "person" },
+    ]);
   });
 
   it("takes orgId from a row that names a member directly, and ignores one that is not text", async () => {
@@ -492,8 +516,30 @@ describe("propose_update", () => {
 
   it("drops unknown keys and leaves absent fields out of the input", async () => {
     d.proposeDetails.mockResolvedValue({ ok: true, signed });
-    await runTool(ctx, "propose_update", { member_id: ID, linkedin: "li.com/jane", notes: "x", stage: "passed", email: null });
+    const input = JSON.parse(
+      `{"member_id":"${ID}","linkedin":"li.com/jane","notes":"x","stage":"passed","email":null,"__proto__":{"title":"Evil"},"constructor":"x"}`,
+    );
+    await runTool(ctx, "propose_update", input);
     expect(d.proposeDetails.mock.calls[0][3]).toEqual({ linkedin: "li.com/jane" });
+    expect(Object.keys(d.proposeDetails.mock.calls[0][3])).toEqual(["linkedin"]);
+  });
+
+  it("passes only one id, the most specific: person, then company, then member", async () => {
+    d.proposeDetails.mockResolvedValue({ ok: true, signed });
+    await runTool(ctx, "propose_update", { member_id: "m-9", person_id: ID, org_id: ORG, title: "CFO" });
+    expect(d.proposeDetails.mock.calls[0][2]).toEqual({ personId: ID });
+    await runTool(ctx, "propose_update", { member_id: "m-9", org_id: ORG, website: "a.com" });
+    expect(d.proposeDetails.mock.calls[1][2]).toEqual({ orgId: ORG });
+    await runTool(ctx, "propose_update", { member_id: ID, title: "CFO" });
+    expect(d.proposeDetails.mock.calls[2][2]).toEqual({ memberId: ID });
+  });
+
+  it("refuses for an unknown estate instead of passing an empty role", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const out = await runTool({ ...ctx, estate: "nowhere" as never }, "propose_update", { member_id: ID, title: "CFO" });
+    expect(out).toEqual({ result: { error: "That lookup failed." }, refs: [] });
+    expect(d.proposeDetails).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 
   it("feeds a refusal back as the error and returns no proposal", async () => {

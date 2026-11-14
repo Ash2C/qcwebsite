@@ -95,9 +95,11 @@ function toModelMessages(messages: AskMessage[]): ModelMessage[] {
         r.kind === "company" ? `${r.name} (company)` : r.company ? `${r.name} (${r.company})` : r.name;
       const org = (r: Ref) => (r.orgId ? `, company id ${r.orgId}` : "");
       const line = (r: Ref) =>
-        r.personId
+        r.personId && r.kind === "company"
           ? `${r.name} (filed under ${r.company ?? "their company"}) = person ${r.personId}, company member ${r.memberId}${org(r)}`
-          : `${label(r)} = member ${r.memberId}${org(r)}`;
+          : r.personId
+            ? `${label(r)} = person ${r.personId}, member ${r.memberId}`
+            : `${label(r)} = member ${r.memberId}${org(r)}`;
       const list = m.refs.map(line).join("; ");
       text += `\n[contacts referred to: ${list}]`;
     }

@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { describe, expect, it } from "vitest";
+import { ORG_DETAIL_COLUMNS, PERSON_DETAIL_COLUMNS, UPDATE_ORGS, UPDATE_PEOPLE } from "./details";
 
 const ROOT = join(__dirname, "..", "..");
 const SCAN = [join(ROOT, "lib", "monsoon"), join(ROOT, "app", "api", "monsoon")];
@@ -261,6 +262,27 @@ describe("never delete", () => {
       expect(columns).not.toContain("notes");
       expect(columns).not.toContain("summary");
     }
+  });
+
+  it("the UPDATE statements generated in details.ts assign exactly the listed columns and nothing else", () => {
+    // Statement shape: UPDATE <table> SET <col> = CASE WHEN $n::boolean THEN $m::<type> ELSE <col> END, ... WHERE id = $1
+    const assigned = (sql: string, table: string): string[] => {
+      const m = new RegExp(`^UPDATE ${table} SET (.+) WHERE id = [$]1$`).exec(sql);
+      expect(m, `${table} statement has an unexpected shape`).not.toBeNull();
+      const list = m![1];
+      const items = [...list.matchAll(/(\w+) = CASE WHEN \$\d+::boolean THEN \$\d+::\w+ ELSE (\w+) END/g)];
+      for (const i of items) expect(i[2]).toBe(i[1]); // each column falls back to its own value
+      // Nothing between or around the matched assignments: the list is made of them alone.
+      expect(items.map((i) => i[0]).join(", ")).toBe(list);
+      return items.map((i) => i[1]);
+    };
+    expect(assigned(UPDATE_PEOPLE, "people")).toEqual([...PERSON_DETAIL_COLUMNS]);
+    expect(assigned(UPDATE_ORGS, "orgs")).toEqual([...ORG_DETAIL_COLUMNS]);
+    // The lists themselves: the editable columns, plus name_key and org_id for people.
+    expect([...PERSON_DETAIL_COLUMNS].sort()).toEqual(
+      ["country", "email", "linkedin_url", "name", "name_key", "org_id", "phone", "title"],
+    );
+    expect([...ORG_DETAIL_COLUMNS].sort()).toEqual(["country", "website"]);
   });
 
   it("no Monsoon server code deletes, truncates, drops or rewrites notes", () => {

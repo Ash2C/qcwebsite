@@ -9,6 +9,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 const MIN_QUERY = 2;
+const MAX_QUERY = 100;
 
 export async function GET(request: Request) {
   const denied = requireSession(request);
@@ -17,7 +18,7 @@ export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
   const estate = estateByKey(params.get("estate"));
   if (!estate) return NextResponse.json({ error: "Unknown estate" }, { status: 400 });
-  const q = (params.get("q") ?? "").trim();
+  const q = (params.get("q") ?? "").trim().slice(0, MAX_QUERY);
 
   try {
     const contacts = await withEstateDb(estate, (db) => (q.length >= MIN_QUERY ? searchContacts(db, q) : recentContacts(db)));

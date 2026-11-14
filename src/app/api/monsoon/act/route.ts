@@ -68,7 +68,7 @@ export async function POST(request: Request) {
         const labels = (fields: string[]) => fields.map((f) => DETAIL_LABELS[f as keyof typeof DETAIL_LABELS]).join(", ");
         const messages = {
           updated: `Done. ${done.name} updated.`,
-          partly: `Updated ${labels(done.written)}. ${labels(done.skipped)} changed in the meantime and was left alone.`,
+          partly: `Updated ${labels(done.written)}. ${labels(done.skipped)} changed in the meantime and ${done.skipped.length === 1 ? "was" : "were"} left alone.`,
           unchanged: `Nothing changed. ${done.name} was already up to date.`,
           missing: `${proposal.targetName} is no longer on file; nothing changed.`,
           unlogged: `${proposal.targetName} is no longer on the pipeline, so the change could not be logged; nothing changed.`,

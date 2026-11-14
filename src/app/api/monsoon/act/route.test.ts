@@ -315,7 +315,7 @@ describe("POST /api/monsoon/act", () => {
       applyDetails.mockResolvedValue({ status: "partly", written: ["title", "linkedin"], skipped: ["company", "country"], name: "X" });
       const res = await POST(post(signed(detailsProposal())));
       expect((await res.json()).message).toBe(
-        "Updated Title, LinkedIn. Company, Country changed in the meantime and was left alone.",
+        "Updated Title, LinkedIn. Company, Country changed in the meantime and were left alone.",
       );
     });
 
