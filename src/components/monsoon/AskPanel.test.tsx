@@ -750,6 +750,18 @@ describe("research offer", () => {
     expect(onResearch).toHaveBeenCalledWith("p1");
   });
 
+  it("disables the offer's button once it has been used", async () => {
+    m.askCrm.mockResolvedValue(withResearch("I can look into her."));
+    const onResearch = vi.fn();
+    const user = userEvent.setup();
+    render(<Harness onResearch={onResearch} />);
+    await ask(user, "research Jane");
+    await user.click(await screen.findByRole("button", { name: "Run research" }));
+    expect(screen.getByRole("button", { name: "Run research" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Run research" }));
+    expect(onResearch).toHaveBeenCalledTimes(1);
+  });
+
   it("shows no card when there is no offer", async () => {
     m.askCrm.mockResolvedValue(answer("Nothing."));
     const user = userEvent.setup();

@@ -111,10 +111,14 @@ export async function POST(request: Request) {
   try {
     signed = { proposal, signature: signProposal(proposal) };
   } catch {
+    console.error("monsoon: research unusable");
     return NextResponse.json({ error: "Could not run research. Check signal and try again." }, { status: 502 });
   }
   // Never return what the confirm route would refuse.
-  if (!verifyProposal(signed.proposal, signed.signature, nowMs)) return none("unusable", MSG.nothing);
+  if (!verifyProposal(signed.proposal, signed.signature, nowMs)) {
+    console.error("monsoon: research unusable");
+    return none("unusable", MSG.nothing);
+  }
 
   console.log("monsoon: research findings");
   return NextResponse.json({ status: "findings", signed, summary: v.summary });

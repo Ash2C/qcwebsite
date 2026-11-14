@@ -1330,6 +1330,99 @@ describe("Profile actions and links", () => {
     expect(screen.getByText("Who is warm?")).toBeInTheDocument();
   });
 
+  async function tapRunResearch(user: User) {
+    m.askCrm.mockResolvedValue({
+      status: 200,
+      body: { answer: "I can look into her.", refs: [], proposals: [], research: { personId: "p1", name: "Jane Tan", company: "Acme Capital" } },
+    } as never);
+    render(<MonsoonApp />);
+    await ready();
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Research Jane");
+    await user.click(screen.getByRole("button", { name: "Send question" }));
+    await user.click(await screen.findByRole("button", { name: "Run research" }));
+  }
+  const settle = () => new Promise((r) => setTimeout(r, 30));
+
+  it("a Run research tap does not start research when the user leaves before the profile loads and returns", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    let release: (v: never) => void = () => {};
+    m.loadProfile.mockReturnValueOnce(new Promise((r) => (release = r as never)) as never);
+    m.researchContact.mockResolvedValue({ status: 200, body: { status: "none", message: "x" } } as never);
+    await tapRunResearch(user);
+    await waitFor(() => expect(m.loadProfile).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    release({ status: 200, body: { profile: PROFILE } } as never);
+    await settle();
+    m.loadProfile.mockResolvedValue({ status: 200, body: { profile: PROFILE } } as never);
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await screen.findByRole("heading", { name: "Jane Tan" });
+    await settle();
+    expect(m.researchContact).not.toHaveBeenCalled();
+  });
+
+  it("a Run research tap does not start research after a failed profile load and a retry", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.loadProfile.mockResolvedValueOnce({ status: 500, body: { error: "x" } } as never);
+    m.researchContact.mockResolvedValue({ status: 200, body: { status: "none", message: "x" } } as never);
+    await tapRunResearch(user);
+    await screen.findByRole("alert");
+    m.loadProfile.mockResolvedValue({ status: 200, body: { profile: PROFILE } } as never);
+    await user.click(screen.getByRole("button", { name: /Retry|Try again/ }));
+    await screen.findByRole("heading", { name: "Jane Tan" });
+    await settle();
+    expect(m.researchContact).not.toHaveBeenCalled();
+  });
+
+  it("a Run research tap does not start research after a not-found profile", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.loadProfile.mockResolvedValueOnce({ status: 404, body: { error: "Not found" } } as never);
+    m.researchContact.mockResolvedValue({ status: 200, body: { status: "none", message: "x" } } as never);
+    await tapRunResearch(user);
+    await screen.findByText("That contact is no longer on file.");
+    m.loadProfile.mockResolvedValue({ status: 200, body: { profile: PROFILE } } as never);
+    await user.click(screen.getByRole("button", { name: "Capture" }));
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await screen.findByRole("heading", { name: "Jane Tan" });
+    await settle();
+    expect(m.researchContact).not.toHaveBeenCalled();
+  });
+
+  it("a Run research tap interrupted by sign-in does not start research after unlocking", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.loadProfile.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never);
+    m.researchContact.mockResolvedValue({ status: 200, body: { status: "none", message: "x" } } as never);
+    m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+    await tapRunResearch(user);
+    await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
+    m.loadProfile.mockResolvedValue({ status: 200, body: { profile: PROFILE } } as never);
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    await screen.findByRole("heading", { name: "Jane Tan" });
+    await settle();
+    expect(m.researchContact).not.toHaveBeenCalled();
+  });
+
+  it("a Run research tap does not follow the user to another estate", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.searchContacts.mockResolvedValue({ status: 200, body: { contacts: [JANE] } } as never);
+    let release: (v: never) => void = () => {};
+    m.loadProfile.mockReturnValueOnce(new Promise((r) => (release = r as never)) as never);
+    m.researchContact.mockResolvedValue({ status: 200, body: { status: "none", message: "x" } } as never);
+    await tapRunResearch(user);
+    await user.click(screen.getByRole("button", { name: "Zero One" }));
+    release({ status: 200, body: { profile: PROFILE } } as never);
+    m.loadProfile.mockResolvedValue({ status: 200, body: { profile: PROFILE } } as never);
+    await user.click(await screen.findByRole("button", { name: /Jane Tan/ }));
+    await screen.findByRole("heading", { name: "Jane Tan" });
+    await settle();
+    expect(m.researchContact).not.toHaveBeenCalled();
+  });
+
   it("Run research on an offer opens the profile and starts research there once", async () => {
     const user = userEvent.setup();
     signedIn();

@@ -44,11 +44,12 @@ export function useCardConfirm(options: Options) {
     const { proposal, signature } = c.signed;
     try {
       const res = await actOnCrm({
+        // Extras first: they can add fields but never replace the estate, proposal or signature.
+        ...(latest.current.extras?.(c) ?? {}),
         estate: latest.current.estateKey,
         proposal,
         signature,
         ...(proposal.kind === "add_note" ? { text: c.text } : {}),
-        ...(latest.current.extras?.(c) ?? {}),
       });
       const o = latest.current;
       if (gen !== o.generation()) return;

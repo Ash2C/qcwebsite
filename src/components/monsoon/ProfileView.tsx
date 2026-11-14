@@ -188,6 +188,7 @@ export default function ProfileView({
   onBack,
   onOpen,
   onUnauthorized,
+  onLoadFailed,
   actions,
 }: {
   estate: EstateInfo;
@@ -195,6 +196,8 @@ export default function ProfileView({
   onBack: () => void;
   onOpen: (target: ContactTarget) => void;
   onUnauthorized: () => void;
+  /** Called when the profile load ends in sign-in (401), not found or a failure. */
+  onLoadFailed?: () => void;
   /** Renders the profile's actions; `setBusy(true)` locks this view's own navigation until it is released. */
   actions?: (profile: Profile, reload: () => void, setBusy: (busy: boolean) => void) => ReactNode;
 }) {
@@ -205,6 +208,8 @@ export default function ProfileView({
   const reload = useCallback(() => setTick((n) => n + 1), []);
   const unauthorizedRef = useRef(onUnauthorized);
   unauthorizedRef.current = onUnauthorized;
+  const loadFailedRef = useRef(onLoadFailed);
+  loadFailedRef.current = onLoadFailed;
   const { memberId, personId, orgId } = target;
 
   useEffect(() => {
@@ -212,8 +217,12 @@ export default function ProfileView({
     loadProfile(estate.key, { memberId, personId, orgId }, localDate()).then(
       (res) => {
         if (!live) return;
-        if (res.status === 401) return unauthorizedRef.current();
+        if (res.status === 401) {
+          loadFailedRef.current?.();
+          return unauthorizedRef.current();
+        }
         if (res.status === 404) {
+          loadFailedRef.current?.();
           setProfile(null);
           return setPhase("missing");
         }
@@ -221,10 +230,13 @@ export default function ProfileView({
           setProfile(res.body.profile);
           return setPhase("ready");
         }
+        loadFailedRef.current?.();
         setPhase("failed");
       },
       () => {
-        if (live) setPhase("failed");
+        if (!live) return;
+        loadFailedRef.current?.();
+        setPhase("failed");
       },
     );
     return () => {

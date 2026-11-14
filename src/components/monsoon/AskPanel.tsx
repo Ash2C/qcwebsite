@@ -17,6 +17,8 @@ export type AskTurn = {
   refs?: Ref[];
   cards?: AskCard[];
   research?: ResearchOffer;
+  /** The offer's button has been tapped; it stays disabled after that. */
+  researchUsed?: boolean;
 };
 export type AskState = { turns: AskTurn[]; draft: string };
 export const EMPTY_ASK: AskState = { turns: [], draft: "" };
@@ -179,6 +181,11 @@ export default function AskPanel({
     }));
   }
 
+  function tapOffer(turnId: string, personId: string) {
+    onChange((prev) => ({ ...prev, turns: prev.turns.map((t) => (t.id === turnId ? { ...t, researchUsed: true } : t)) }));
+    onResearch?.(personId);
+  }
+
   function addNote(content: string) {
     onChange((prev) => ({
       ...prev,
@@ -325,9 +332,9 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
                 ) : null}
                 <button
                   type="button"
-                  disabled={busy}
+                  disabled={busy || t.researchUsed === true}
                   className={primaryButton}
-                  onClick={() => onResearch(t.research!.personId)}
+                  onClick={() => tapOffer(t.id, t.research!.personId)}
                 >
                   Run research
                 </button>

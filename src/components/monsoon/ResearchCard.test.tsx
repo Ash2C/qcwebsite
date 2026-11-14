@@ -61,7 +61,41 @@ describe("ResearchCard", () => {
     await user.clear(screen.getByLabelText("Summary (added to the timeline)"));
     await user.type(screen.getByLabelText("Summary (added to the timeline)"), "New");
     await user.click(screen.getByRole("button", { name: "Save selected" }));
-    expect(onSave).toHaveBeenCalledWith(["f3", "f2"], "New");
+    // Finding order, not tap order.
+    expect(onSave).toHaveBeenCalledWith(["f2", "f3"], "New");
+  });
+
+  it("never ticks a work email or phone by default, even when it fills an empty field", async () => {
+    const user = userEvent.setup();
+    const { onSave } = show({
+      findings: [
+        { id: "f1", target: "person", field: "email", from: null, to: "jane@acme.example", source: "https://acme.example/team" },
+        { id: "f2", target: "person", field: "phone", from: null, to: "+65 6123 4567", source: "https://acme.example/team" },
+        { id: "f3", target: "person", field: "title", from: null, to: "Founder", source: "https://acme.example/team" },
+      ],
+    });
+    expect(screen.getAllByRole("checkbox").map((b) => (b as HTMLInputElement).checked)).toEqual([false, false, true]);
+    await user.click(screen.getAllByRole("checkbox")[0]);
+    await user.click(screen.getByRole("button", { name: "Save selected" }));
+    expect(onSave).toHaveBeenCalledWith(["f1", "f3"], "She founded Acme.");
+  });
+
+  it("counts the summary length after trimming", () => {
+    show({}, { summary: "x".repeat(2000) + "   " });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Save selected" })).toBeEnabled();
+    cleanup();
+    show({}, { summary: "x".repeat(2001) });
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save selected" })).toBeDisabled();
+  });
+
+  it("shows a save failure as an alert and a finished save as a status", () => {
+    show({}, { message: "Could not save. Check signal and try again." });
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not save. Check signal and try again.");
+    cleanup();
+    show({}, { state: "done", message: "Done. Research saved for Jane Tan." });
+    expect(screen.getByRole("status")).toHaveTextContent("Done. Research saved for Jane Tan.");
   });
 
   it("disables Save when nothing is ticked and the summary is empty", async () => {

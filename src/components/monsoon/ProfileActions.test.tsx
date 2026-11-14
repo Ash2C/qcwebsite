@@ -670,6 +670,35 @@ describe("Research", () => {
     await waitFor(() => expect(onUnauthorized).toHaveBeenCalledTimes(1));
   });
 
+  it("drops a late result when the view shows another contact, with the tree kept mounted", async () => {
+    const user = userEvent.setup();
+    let release!: (v: never) => void;
+    m.researchContact.mockReturnValue(new Promise((res) => (release = res)) as never);
+    const h = view();
+    await click(user, "Research");
+    h.rerender(
+      <ProfileActions estate={ESTATE} profile={{ ...PERSON, personId: "p2", name: "Bo Lim" } as never} reload={h.reload} onUnauthorized={h.onUnauthorized} />,
+    );
+    release(found);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText("Research: Jane Tan")).toBeNull();
+    expect(screen.queryByText("Nothing I'd trust. No changes suggested.")).toBeNull();
+  });
+
+  it("drops a late result when the estate changes, with the tree kept mounted", async () => {
+    const user = userEvent.setup();
+    let release!: (v: never) => void;
+    m.researchContact.mockReturnValue(new Promise((res) => (release = res)) as never);
+    const h = view();
+    await click(user, "Research");
+    h.rerender(
+      <ProfileActions estate={{ ...ESTATE, key: "zeroone", label: "Zero One" }} profile={PERSON as never} reload={h.reload} onUnauthorized={h.onUnauthorized} />,
+    );
+    release(found);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText("Research: Jane Tan")).toBeNull();
+  });
+
   it("drops a late result after the profile is left", async () => {
     const user = userEvent.setup();
     let release!: (v: never) => void;
@@ -680,6 +709,93 @@ describe("Research", () => {
     release(found);
     await Promise.resolve();
     expect(screen.queryByText("Research: Jane Tan")).toBeNull();
+  });
+
+  it("shows a none result as a neutral status and a failure as an alert", async () => {
+    const user = userEvent.setup();
+    m.researchContact.mockResolvedValueOnce({ status: 200, body: { status: "none", message: "Nothing I'd trust. No changes suggested." } } as never);
+    view();
+    await click(user, "Research");
+    expect(await screen.findByRole("status")).toHaveTextContent("Nothing I'd trust. No changes suggested.");
+    expect(screen.queryByRole("alert")).toBeNull();
+    m.researchContact.mockRejectedValueOnce(new Error("net"));
+    await click(user, "Research");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not run research. Check signal and try again.");
+  });
+
+  it("disables Research while a research card is open, and enables it after Discard", async () => {
+    const user = userEvent.setup();
+    m.researchContact.mockResolvedValue(found);
+    view();
+    await click(user, "Research");
+    await screen.findByText("Research: Jane Tan");
+    expect(screen.getByRole("button", { name: "Research" })).toBeDisabled();
+    await click(user, "Discard");
+    expect(screen.getByRole("button", { name: "Research" })).toBeEnabled();
+  });
+
+  it.each([
+    ["note", "Add note"],
+    ["edit", "Edit"],
+    ["stage", "Move stage"],
+  ])("disables Research while the %s panel is open and keeps what was typed", async (_p, button) => {
+    const user = userEvent.setup();
+    view();
+    await click(user, button);
+    expect(screen.getByRole("button", { name: "Research" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Research" }));
+    expect(m.researchContact).not.toHaveBeenCalled();
+  });
+
+  it("disables Research while a note card is open", async () => {
+    const user = userEvent.setup();
+    m.proposeChange.mockResolvedValue(proposed(NOTE_SIGNED));
+    view();
+    await click(user, "Add note");
+    await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Called her");
+    await click(user, "Continue");
+    await screen.findByRole("button", { name: "Confirm" });
+    expect(screen.getByRole("button", { name: "Research" })).toBeDisabled();
+  });
+
+  it("drops an auto-start while a panel is open, and does not keep the request", async () => {
+    const onAutoResearchDone = vi.fn();
+    const h = view(PERSON, { initialDraft: { for: "k", panel: "note", note: "Typing", values: {} }, draftKey: "k" });
+    h.rerender(
+      <ProfileActions estate={ESTATE} profile={PERSON as never} reload={h.reload} onUnauthorized={h.onUnauthorized} draftKey="k" initialDraft={{ for: "k", panel: "note", note: "Typing", values: {} }} autoResearch onAutoResearchDone={onAutoResearchDone} />,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onAutoResearchDone).toHaveBeenCalledTimes(1);
+    expect(m.researchContact).not.toHaveBeenCalled();
+    expect(screen.getByDisplayValue("Typing")).toBeInTheDocument();
+  });
+
+  it("drops an auto-start when the profile has no person id, and reports the request consumed", async () => {
+    const onAutoResearchDone = vi.fn();
+    view({ ...PERSON, personId: null }, { autoResearch: true, onAutoResearchDone });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onAutoResearchDone).toHaveBeenCalledTimes(1);
+    expect(m.researchContact).not.toHaveBeenCalled();
+  });
+
+  it("after a failed save, re-ticking and editing the summary sends the new values on retry", async () => {
+    const user = userEvent.setup();
+    m.researchContact.mockResolvedValue(found);
+    m.actOnCrm.mockRejectedValueOnce(new Error("net")).mockResolvedValueOnce(acted("Done. Research saved for Jane Tan."));
+    view();
+    await click(user, "Research");
+    await screen.findByText("Research: Jane Tan");
+    await click(user, "Save selected");
+    await screen.findByText("Could not save. Check signal and try again.");
+    expect(m.actOnCrm).toHaveBeenLastCalledWith(expect.objectContaining({ ticked: ["f1"], text: "She founded Acme." }));
+    await user.click(screen.getAllByRole("checkbox")[1]);
+    await user.click(screen.getAllByRole("checkbox")[0]);
+    await user.clear(screen.getByLabelText("Summary (added to the timeline)"));
+    await user.type(screen.getByLabelText("Summary (added to the timeline)"), "Second try.");
+    await click(user, "Save selected");
+    expect(await screen.findByText("Done. Research saved for Jane Tan.")).toBeInTheDocument();
+    expect(m.actOnCrm).toHaveBeenCalledTimes(2);
+    expect(m.actOnCrm).toHaveBeenLastCalledWith(expect.objectContaining({ ticked: ["f2"], text: "Second try." }));
   });
 
   it("saves the ticked ids and the edited summary, then shows the message and reloads", async () => {

@@ -96,7 +96,7 @@ export default function ProfileActions({
   const cardRef = useRef<AskCard | null>(null);
   const proposingRef = useRef(false);
   const [researching, setResearching] = useState(false);
-  const [researchNote, setResearchNote] = useState<string | null>(null);
+  const [researchNote, setResearchNote] = useState<{ text: string; error: boolean } | null>(null);
   const researchingRef = useRef(false);
   const tickedRef = useRef<string[]>([]);
   // The estate and person on screen now, so a result for another one is dropped.
@@ -140,6 +140,8 @@ export default function ProfileActions({
 
   const working = cardState?.state === "working";
   const busy = proposing || working || researching;
+  // Research must not replace open work: an open card or an open note, stage or edit panel.
+  const openWork = cardState?.state === "open" || panel !== null;
   useEffect(() => {
     onBusy?.(busy);
     setViewBusy?.(busy);
@@ -209,7 +211,7 @@ export default function ProfileActions({
   }
 
   async function research() {
-    if (researchingRef.current || busy || !p.personId) return;
+    if (researchingRef.current || busy || openWork || !p.personId) return;
     researchingRef.current = true;
     setResearching(true);
     setResearchNote(null);
@@ -228,13 +230,13 @@ export default function ProfileActions({
           setPanel(null);
           setCard({ id: crypto.randomUUID(), signed, text: res.body.summary, state: "open" });
         } else {
-          setResearchNote(res.body.message);
+          setResearchNote({ text: res.body.message, error: false });
         }
       } else {
-        setResearchNote(RESEARCH_FAILURE);
+        setResearchNote({ text: RESEARCH_FAILURE, error: true });
       }
     } catch {
-      if (!stale()) setResearchNote(RESEARCH_FAILURE);
+      if (!stale()) setResearchNote({ text: RESEARCH_FAILURE, error: true });
     } finally {
       researchingRef.current = false;
       if (gen === genRef.current) setResearching(false);
@@ -326,7 +328,7 @@ export default function ProfileActions({
             </button>
           ))}
           {!isCompany && (
-            <button type="button" disabled={busy} onClick={() => void research()} className={`${secondaryButton} !px-2`}>
+            <button type="button" disabled={busy || openWork} onClick={() => void research()} className={`${secondaryButton} !px-2`}>
               Research
             </button>
           )}
@@ -338,8 +340,11 @@ export default function ProfileActions({
         </p>
       )}
       {researchNote && (
-        <p role="alert" className={alertClass}>
-          {researchNote}
+        <p
+          role={researchNote.error ? "alert" : "status"}
+          className={researchNote.error ? alertClass : "break-words px-1 text-[15px] text-neutral-600 dark:text-neutral-300"}
+        >
+          {researchNote.text}
         </p>
       )}
 

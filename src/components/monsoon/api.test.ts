@@ -82,6 +82,14 @@ describe("client timeouts", () => {
     await expect(saveCard(save)).rejects.toThrow();
   });
 
+  it("actOnCrm sends the ticked ids and the summary text in the body", async () => {
+    await actOnCrm({ ...act, ticked: ["f1", "f3"], text: "Summary." });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      estate: "traxo", proposal: { kind: "add_note" }, signature: "s", ticked: ["f1", "f3"], text: "Summary.",
+    });
+  });
+
   it("still returns a non-2xx status as data, not an exception", async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: "nope" }), { status: 502 }));
     await expect(actOnCrm(act)).resolves.toEqual({ status: 502, body: { error: "nope" } });

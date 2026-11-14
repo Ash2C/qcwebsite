@@ -125,6 +125,10 @@ export default function MonsoonApp() {
   const [contacts, setContacts] = useState<ContactsState>(EMPTY_CONTACTS);
   const [ask, setAsk] = useState<AskState>(EMPTY_ASK);
   const [askBusy, setAskBusy] = useState(false);
+  // A "Run research" tap is only good while Contacts is showing; leaving it withdraws the request.
+  useEffect(() => {
+    if (mode !== "contacts") setContacts((c) => (c.autoResearch ? { ...c, autoResearch: false } : c));
+  }, [mode]);
   // True while a profile action (proposing or confirming a change) is in flight; reported by ProfileActions.
   const [profileBusy, setProfileBusy] = useState(false);
   // "Ask about this contact" asks the Ask panel to focus its question box once it opens.

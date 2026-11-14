@@ -53,15 +53,20 @@ export default function ResearchCard({
   const ids = useId();
   const p = signed.proposal as Research;
   // Rows that fill an empty field start ticked; rows that change an existing value do not.
-  const [ticked, setTicked] = useState<string[]>(() => p.findings.filter((f) => f.from === null).map((f) => f.id));
+  // Work email and phone never start ticked: they are contact details, so they need a deliberate tap.
+  const [ticked, setTicked] = useState<string[]>(() =>
+    p.findings.filter((f) => f.from === null && f.field !== "email" && f.field !== "phone").map((f) => f.id),
+  );
   const [text, setText] = useState(summary);
   const hasSummary = p.summarySources.length > 0;
   const summaryText = hasSummary ? text : "";
   const working = state === "working";
   const open = state === "open" || working;
-  const tooLong = summaryText.length > MAX_NOTE;
+  const tooLong = summaryText.trim().length > MAX_NOTE;
   const empty = ticked.length === 0 && summaryText.trim() === "";
-  const tone = state === "failed" ? "text-red-600 dark:text-red-400" : "text-neutral-600 dark:text-neutral-300";
+  // A message on an open card is a failed save; on a failed card it is the expiry. Both are errors.
+  const isError = state === "failed" || state === "open";
+  const tone = isError ? "text-red-600 dark:text-red-400" : "text-neutral-600 dark:text-neutral-300";
 
   function toggle(id: string) {
     setTicked((t) => (t.includes(id) ? t.filter((x) => x !== id) : [...t, id]));
@@ -137,7 +142,7 @@ export default function ResearchCard({
         </p>
       )}
       {message && (
-        <p role={state === "failed" ? "alert" : "status"} className={`break-words text-[15px] font-medium ${tone}`}>
+        <p role={isError ? "alert" : "status"} className={`break-words text-[15px] font-medium ${tone}`}>
           {message}
         </p>
       )}
@@ -150,7 +155,12 @@ export default function ResearchCard({
             type="button"
             className={primaryButton + " !min-h-[44px] !rounded-xl !text-[16px]"}
             disabled={working || empty || tooLong}
-            onClick={() => onSave(ticked, summaryText)}
+            onClick={() =>
+              onSave(
+                p.findings.map((f) => f.id).filter((id) => ticked.includes(id)),
+                summaryText,
+              )
+            }
           >
             Save selected
           </button>

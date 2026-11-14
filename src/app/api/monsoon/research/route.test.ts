@@ -12,6 +12,18 @@ vi.mock("@/lib/monsoon/research", async (importOriginal) => ({
   runResearch: (...a: unknown[]) => runResearch(...a),
 }));
 
+const signFail = vi.hoisted(() => ({ on: false }));
+vi.mock("@/lib/monsoon/ask/proposal", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/monsoon/ask/proposal")>();
+  return {
+    ...real,
+    signProposal: (...a: Parameters<typeof real.signProposal>) => {
+      if (signFail.on) throw new Error("no secret for Jane Tan");
+      return real.signProposal(...a);
+    },
+  };
+});
+
 import { POST } from "./route";
 
 const MEMBER = "11111111-1111-4111-8111-111111111111";
@@ -87,6 +99,7 @@ beforeEach(() => {
   vi.spyOn(console, "log").mockImplementation(() => undefined);
 });
 afterEach(() => {
+  signFail.on = false;
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
@@ -193,6 +206,21 @@ describe("POST /api/monsoon/research", () => {
   it("answers nothing when the built proposal would not verify", async () => {
     runResearch.mockResolvedValue(vetted({ identity: "" }));
     await none(await POST(post({ estate: "traxo", memberId: MEMBER })), "Nothing I'd trust. No changes suggested.");
+  });
+
+  it("logs research unusable, with no contact data, when the proposal does not verify", async () => {
+    runResearch.mockResolvedValue(vetted({ identity: "" }));
+    await POST(post({ estate: "traxo", memberId: MEMBER }));
+    expect(calls(console.error)).toContain("monsoon: research unusable");
+    expect(calls(console.error)).not.toContain("Jane");
+  });
+
+  it("logs research unusable and answers 502 when signing throws", async () => {
+    signFail.on = true;
+    const res = await POST(post({ estate: "traxo", memberId: MEMBER }));
+    expect(res.status).toBe(502);
+    expect(calls(console.error)).toContain("monsoon: research unusable");
+    expect(calls(console.error)).not.toContain("Jane");
   });
 
   it("maps research outcomes to the exact messages", async () => {
