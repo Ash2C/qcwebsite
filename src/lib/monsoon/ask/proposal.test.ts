@@ -130,3 +130,87 @@ describe("proposal signing", () => {
     expect(verifyProposal(note, sig, NOW)).toBe(false);
   });
 });
+
+// Computed with the code before update_details existed (note fixture, secret "s" x 32).
+const OLD_NOTE_SIGNATURE = "7767d47b8f67253396e481193753bda1d68dbf95f4afed1c380c20cda292b160";
+const PERSON = "33333333-3333-4333-8333-333333333333";
+const details = {
+  kind: "update_details",
+  estate: "zeroone",
+  target: { type: "person", id: PERSON },
+  targetName: "Li Wei",
+  company: "Acme Capital",
+  changes: [
+    { field: "title", from: "Analyst", to: "Director" },
+    { field: "phone", from: null, to: "+65 5555 0100" },
+  ],
+  logMemberId: MEMBER,
+  addsToPipeline: null,
+  expires: NOW + PROPOSAL_TTL_MS,
+} as Proposal;
+const companyDetails = {
+  ...details,
+  target: { type: "company", id: PERSON },
+  company: null,
+  changes: [{ field: "website", from: null, to: "https://acme.example" }],
+} as Proposal;
+
+describe("update_details proposals", () => {
+  const ok = (p: unknown) => verifyProposal(p, signProposal(p as Proposal), NOW);
+
+  it("signs and verifies", () => {
+    for (const p of [details, companyDetails]) {
+      expect(verifyProposal(p, signProposal(p), NOW)).toBe(true);
+    }
+    const adds = { ...details, logMemberId: null, addsToPipeline: "investor" } as Proposal;
+    expect(ok(adds)).toBe(true);
+  });
+
+  it("rejects a changed to, an added change, a changed target id, another estate, an extra key and expiry", () => {
+    const sig = signProposal(details);
+    const d = details as Extract<Proposal, { kind: "update_details" }>;
+    const variants: unknown[] = [
+      { ...d, changes: [{ ...d.changes[0], to: "CEO" }, d.changes[1]] },
+      { ...d, changes: [...d.changes, { field: "country", from: null, to: "SG" }] },
+      { ...d, target: { type: "person", id: "44444444-4444-4444-8444-444444444444" } },
+      { ...d, estate: "traxo" },
+      { ...d, sneaky: 1 },
+    ];
+    for (const v of variants) expect(verifyProposal(v, sig, NOW)).toBe(false);
+    expect(verifyProposal(details, sig, d.expires)).toBe(false);
+  });
+
+  it("refuses a validly signed proposal of the wrong shape", () => {
+    const d = details as Extract<Proposal, { kind: "update_details" }>;
+    const change = (field: string, from: string | number | null, to: string | null) => ({ field, from, to });
+    const bad: unknown[] = [
+      { ...d, changes: [change("website", null, "x")] }, // website on a person
+      { ...(companyDetails as object), changes: [change("title", null, "x")] }, // title on a company
+      { ...d, changes: [change("title", "a", "b"), change("title", "c", "d")] }, // duplicate field
+      { ...d, changes: [] },
+      { ...d, changes: [change("title", "a", "a")] }, // from equals to
+      { ...d, changes: [change("title", 1, "a")] },
+      { ...d, changes: [change("name", "Li Wei", null)] }, // name cannot be cleared
+      { ...d, changes: [change("title", null, "x".repeat(301))] },
+      { ...d, changes: Array.from({ length: 9 }, () => change("title", null, "x")) },
+      { ...d, target: { type: "robot", id: PERSON } },
+      { ...d, target: { type: "person", id: "not-a-uuid" } },
+      { ...d, logMemberId: "nope" },
+      { ...d, addsToPipeline: 5 },
+      { ...d, targetName: 5 },
+      { ...d, company: 5 },
+      { ...d, memberId: MEMBER },
+    ];
+    for (const p of bad) expect(ok(p), JSON.stringify(p)).toBe(false);
+  });
+
+  it("keeps the old key sets for the other two kinds", () => {
+    expect(ok({ ...note, target: 1 })).toBe(false);
+    expect(ok(note)).toBe(true);
+    expect(ok(stage)).toBe(true);
+  });
+
+  it("verifies a note proposal signed before update_details existed", () => {
+    expect(verifyProposal(note, OLD_NOTE_SIGNATURE, NOW)).toBe(true);
+  });
+});

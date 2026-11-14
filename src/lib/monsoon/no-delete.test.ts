@@ -251,6 +251,18 @@ describe("never delete", () => {
     expect(columns).not.toContain("summary");
   });
 
+  it("details.ts never updates notes: its lists of updatable columns have no notes or summary", () => {
+    const source = readFileSync(join(ROOT, "lib", "monsoon", "details.ts"), "utf8");
+    for (const name of ["PERSON_DETAIL_COLUMNS", "ORG_DETAIL_COLUMNS"]) {
+      const list = new RegExp(`\\b${name}\\b[^=]*=\\s*\\[([^\\]]*)\\]`).exec(source);
+      expect(list, `${name} not found in details.ts`).not.toBeNull();
+      const columns = [...list![1].matchAll(/["'`]([^"'`]+)["'`]/g)].map((m) => m[1]);
+      expect(columns.length).toBeGreaterThan(0);
+      expect(columns).not.toContain("notes");
+      expect(columns).not.toContain("summary");
+    }
+  });
+
   it("no Monsoon server code deletes, truncates, drops or rewrites notes", () => {
     const bad: string[] = [];
     for (const file of SCAN.flatMap(files)) {

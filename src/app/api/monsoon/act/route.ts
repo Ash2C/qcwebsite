@@ -5,13 +5,14 @@ import { vocabulary } from "@/lib/monsoon/ask/queries";
 import { requireSession } from "@/lib/monsoon/auth";
 import { readJson } from "@/lib/monsoon/body";
 import { withEstateDb } from "@/lib/monsoon/db";
+import { applyDetails, DETAIL_LABELS } from "@/lib/monsoon/details";
 import { estateByKey } from "@/lib/monsoon/estates";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
-const MAX_BODY = 16_384;
+const MAX_BODY = 65_536;
 const MAX_NOTE = 2000;
 // The member foreign key on touches (unnamed in the schema, so Postgres names it this). A 23503 on
 // any other constraint, such as the by_whom owner reference, is not a missing contact.
@@ -61,6 +62,18 @@ export async function POST(request: Request) {
           }
           throw err;
         }
+      }
+      if (proposal.kind === "update_details") {
+        const done = await applyDetails(db, proposal);
+        const labels = (fields: string[]) => fields.map((f) => DETAIL_LABELS[f as keyof typeof DETAIL_LABELS]).join(", ");
+        const messages = {
+          updated: `Done. ${done.name} updated.`,
+          partly: `Updated ${labels(done.written)}. ${labels(done.skipped)} changed in the meantime and was left alone.`,
+          unchanged: `Nothing changed. ${done.name} was already up to date.`,
+          missing: `${proposal.targetName} is no longer on file; nothing changed.`,
+          collision: `Another ${done.name} is already on file there; nothing changed.`,
+        };
+        return { status: done.status, message: messages[done.status] };
       }
       const { stages } = await vocabulary(db);
       const label = (key: string | null) => stages.find((s) => s.key === key)?.label ?? key ?? "";

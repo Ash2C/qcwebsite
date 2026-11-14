@@ -121,8 +121,9 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
 
     it("uses the person's own member when there is one", async () => {
       const r = await proposeNote(db, "zeroone", { personId: id.liwei }, "hello", NOW);
-      expect(r.ok && r.signed.proposal.memberId).toBe(id.mLi);
-      expect(r.ok && r.signed.proposal.about).toBeNull();
+      const proposal = r.ok ? r.signed.proposal : undefined;
+      expect(proposal?.kind === "add_note" && proposal.memberId).toBe(id.mLi);
+      expect(proposal?.kind === "add_note" && proposal.about).toBeNull();
     });
 
     it("explains a person who is on file but not on the pipeline", async () => {

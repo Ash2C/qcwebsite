@@ -26,7 +26,26 @@ export type Proposal =
       fromStage: string;
       toStage: string;
       expires: number;
+    }
+  | {
+      kind: "update_details";
+      estate: EstateKey;
+      target: { type: "person" | "company"; id: string };
+      targetName: string; // name as read when proposed
+      company: string | null; // person targets: company name when proposed
+      changes: DetailChange[]; // at least one, at most 8, no duplicate fields
+      logMemberId: string | null; // the member whose timeline gets the log entry, when one exists
+      addsToPipeline: string | null; // a role key when confirming also adds the person to the pipeline
+      expires: number;
     };
+
+export type DetailField = "name" | "title" | "email" | "phone" | "linkedin" | "country" | "company" | "website";
+export type DetailChange = { field: DetailField; from: string | null; to: string | null };
+
+const PERSON_FIELDS: readonly string[] = ["name", "title", "email", "phone", "linkedin", "country", "company"];
+const COMPANY_FIELDS: readonly string[] = ["website", "country"];
+const MAX_DETAIL = 300;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** `text` is the suggested note text; it is not signed because the user may edit it on the card. */
 export type SignedProposal = { proposal: Proposal; signature: string; text?: string };
@@ -39,6 +58,7 @@ const COMMON = ["kind", "estate", "memberId", "memberKind", "memberName", "compa
 const KEYS: Record<string, readonly string[]> = {
   add_note: COMMON,
   move_stage: [...COMMON, "fromStage", "toStage"],
+  update_details: ["kind", "estate", "target", "targetName", "company", "changes", "logMemberId", "addsToPipeline", "expires"],
 };
 
 function secret(): string {
@@ -71,6 +91,31 @@ export function signProposal(proposal: Proposal): string {
 const isString = (v: unknown): v is string => typeof v === "string";
 const isStringOrNull = (v: unknown): v is string | null => v === null || typeof v === "string";
 
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+function wellFormedDetails(o: Record<string, unknown>): boolean {
+  const target = o.target;
+  if (!isObject(target) || Object.keys(target).length !== 2) return false;
+  if (target.type !== "person" && target.type !== "company") return false;
+  if (!isString(target.id) || !UUID_RE.test(target.id)) return false;
+  if (!isString(o.targetName) || !isStringOrNull(o.company)) return false;
+  if (o.logMemberId !== null && !(isString(o.logMemberId) && UUID_RE.test(o.logMemberId))) return false;
+  if (!isStringOrNull(o.addsToPipeline)) return false;
+  const allowed = target.type === "person" ? PERSON_FIELDS : COMPANY_FIELDS;
+  const changes = o.changes;
+  if (!Array.isArray(changes) || changes.length < 1 || changes.length > 8) return false;
+  const seen = new Set<string>();
+  for (const c of changes) {
+    if (!isObject(c) || Object.keys(c).length !== 3) return false;
+    if (!isString(c.field) || !allowed.includes(c.field) || seen.has(c.field)) return false;
+    seen.add(c.field);
+    if (!isStringOrNull(c.from) || !isStringOrNull(c.to) || c.from === c.to) return false;
+    if (c.field === "name" && c.to === null) return false;
+    if ((c.from?.length ?? 0) > MAX_DETAIL || (c.to?.length ?? 0) > MAX_DETAIL) return false;
+  }
+  return true;
+}
+
 function wellFormed(p: unknown): p is Proposal {
   if (typeof p !== "object" || p === null || Array.isArray(p)) return false;
   const o = p as Record<string, unknown>;
@@ -79,6 +124,8 @@ function wellFormed(p: unknown): p is Proposal {
   const own = Object.keys(o);
   if (own.length !== keys.length || !keys.every((k) => Object.hasOwn(o, k))) return false;
   if (!estateByKey(o.estate)) return false;
+  if (typeof o.expires !== "number" || !Number.isFinite(o.expires)) return false;
+  if (o.kind === "update_details") return wellFormedDetails(o);
   if (!isString(o.memberId) || !isString(o.memberName)) return false;
   if (o.memberKind !== "person" && o.memberKind !== "company") return false;
   if (!isStringOrNull(o.company) || !isStringOrNull(o.about)) return false;

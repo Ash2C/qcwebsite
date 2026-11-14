@@ -6,6 +6,11 @@ const withEstateDb = vi.fn();
 const addNote = vi.fn();
 const moveStage = vi.fn();
 const vocabulary = vi.fn();
+const applyDetails = vi.fn();
+vi.mock("@/lib/monsoon/details", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/monsoon/details")>()),
+  applyDetails: (...args: unknown[]) => applyDetails(...args),
+}));
 vi.mock("@/lib/monsoon/db", () => ({
   withEstateDb: (...args: unknown[]) => withEstateDb(...args),
 }));
@@ -51,6 +56,24 @@ function stageProposal(over: Record<string, unknown> = {}): Proposal {
   } as Proposal;
 }
 
+function detailsProposal(over: Record<string, unknown> = {}): Proposal {
+  return {
+    kind: "update_details",
+    estate: "traxo",
+    target: { type: "person", id: MEMBER },
+    targetName: "Li Wei",
+    company: "Acme Capital",
+    changes: [
+      { field: "title", from: null, to: "Director" },
+      { field: "phone", from: "1", to: "2" },
+    ],
+    logMemberId: MEMBER,
+    addsToPipeline: null,
+    expires: Date.now() + 10 * 60 * 1000,
+    ...over,
+  } as Proposal;
+}
+
 function post(body: unknown, authenticated = true): Request {
   return new Request("http://localhost/api/monsoon/act", {
     method: "POST",
@@ -70,6 +93,7 @@ beforeEach(() => {
   addNote.mockReset();
   moveStage.mockReset();
   vocabulary.mockReset();
+  applyDetails.mockReset();
   withEstateDb.mockImplementation(async (_estate, fn) => fn(fakeClient));
   vocabulary.mockResolvedValue({
     stages: [
@@ -92,6 +116,7 @@ function nothingCalled() {
   expect(withEstateDb).not.toHaveBeenCalled();
   expect(addNote).not.toHaveBeenCalled();
   expect(moveStage).not.toHaveBeenCalled();
+  expect(applyDetails).not.toHaveBeenCalled();
 }
 
 describe("POST /api/monsoon/act", () => {
@@ -108,7 +133,7 @@ describe("POST /api/monsoon/act", () => {
   });
 
   it("answers 413 to an over-cap body after a valid session", async () => {
-    const res = await POST(post("x".repeat(16385)));
+    const res = await POST(post("x".repeat(65537)));
     expect(res.status).toBe(413);
     nothingCalled();
   });
@@ -265,5 +290,55 @@ describe("POST /api/monsoon/act", () => {
     expect(log).toHaveBeenCalledTimes(1);
     const logged = JSON.stringify(log.mock.calls);
     for (const leak of ["hunter2", "boom", "secret note", "Northwind"]) expect(logged).not.toContain(leak);
+  });
+
+  describe("update_details", () => {
+    it.each([
+      ["updated", ["title", "phone"], [], "Done. Li Wei Chen updated."],
+      ["partly", ["phone"], ["title"], "Updated Phone. Title changed in the meantime and was left alone."],
+      ["unchanged", [], ["title", "phone"], "Nothing changed. Li Wei Chen was already up to date."],
+      ["missing", [], [], "Li Wei is no longer on file; nothing changed."],
+      ["collision", [], [], "Another Li Wei Chen is already on file there; nothing changed."],
+    ])("maps %s to its message", async (status, written, skipped, message) => {
+      applyDetails.mockResolvedValue({ status, written, skipped, name: "Li Wei Chen" });
+      const proposal = detailsProposal();
+      const res = await POST(post(signed(proposal)));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status, message });
+      expect(applyDetails).toHaveBeenCalledWith(fakeClient, proposal);
+      expect(addNote).not.toHaveBeenCalled();
+      expect(moveStage).not.toHaveBeenCalled();
+    });
+
+    it("lists several labels with commas", async () => {
+      applyDetails.mockResolvedValue({ status: "partly", written: ["title", "linkedin"], skipped: ["company", "country"], name: "X" });
+      const res = await POST(post(signed(detailsProposal())));
+      expect((await res.json()).message).toBe(
+        "Updated Title, LinkedIn. Company, Country changed in the meantime and was left alone.",
+      );
+    });
+
+    it("refuses a tampered changes list", async () => {
+      const body = signed(detailsProposal());
+      (body.proposal as unknown as { changes: { to: string }[] }).changes[0].to = "CEO";
+      expect((await POST(post(body))).status).toBe(403);
+      body.proposal = detailsProposal({ changes: [...(body.proposal as never as { changes: unknown[] }).changes, { field: "country", from: null, to: "SG" }] });
+      expect((await POST(post(body))).status).toBe(403);
+      nothingCalled();
+    });
+
+    it("needs no note text", async () => {
+      applyDetails.mockResolvedValue({ status: "updated", written: ["title"], skipped: [], name: "Li Wei" });
+      expect((await POST(post(signed(detailsProposal())))).status).toBe(200);
+    });
+
+    it("answers 502 without leaking details when applyDetails throws", async () => {
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      applyDetails.mockRejectedValue(Object.assign(new Error("boom secret"), { code: "57014" }));
+      const res = await POST(post(signed(detailsProposal())));
+      expect(res.status).toBe(502);
+      expect(await res.json()).toEqual({ error: "Could not reach the Traxo CRM" });
+      expect(JSON.stringify(log.mock.calls)).not.toContain("secret");
+    });
   });
 });

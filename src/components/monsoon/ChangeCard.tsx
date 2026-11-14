@@ -12,6 +12,7 @@ function stageLabel(key: string): string {
 // One line for the model's history, e.g. after Cancel.
 export function describeChange(c: AskCard): string {
   const p = c.signed.proposal;
+  if (p.kind === "update_details") return `change the details of ${p.targetName}`;
   return p.kind === "add_note"
     ? `add a note to ${p.memberName}`
     : `move ${p.memberName} from ${stageLabel(p.fromStage)} to ${stageLabel(p.toStage)}`;
@@ -30,6 +31,8 @@ export default function ChangeCard({
   onCancel: () => void;
 }) {
   const p = card.signed.proposal;
+  // Details changes are shown by the Contacts screens, not by this card.
+  if (p.kind === "update_details") return null;
   const open = card.state === "open" || card.state === "working";
   const working = card.state === "working";
   const isNote = p.kind === "add_note";

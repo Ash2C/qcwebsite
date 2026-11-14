@@ -1,0 +1,374 @@
+import { randomUUID } from "node:crypto";
+import type { Client } from "pg";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { verifyProposal, type Proposal } from "./ask/proposal";
+import { applyDetails, proposeDetails, type DetailInput } from "./details";
+import { testDb } from "./testing/db";
+
+const NOW = 1_800_000_000_000;
+type Details = Extract<Proposal, { kind: "update_details" }>;
+
+describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
+  let db: Client;
+  const id = {
+    nw: randomUUID(),
+    acme: randomUUID(),
+    orphan: randomUUID(),
+    jane: randomUUID(), // at Northwind, no own member (Northwind has one)
+    liwei: randomUUID(), // at Acme, own member
+    sam: randomUUID(), // at Orphan Co, no timeline at all
+    pat: randomUUID(), // no company
+    patty: randomUUID(), // no company
+    janeAcme: randomUUID(), // another Jane Tan, at Acme
+    mNw: randomUUID(),
+    mLi: randomUUID(),
+  };
+
+  async function count(table: string, where = "TRUE"): Promise<number> {
+    return (await db.query(`SELECT count(*)::int AS n FROM ${table} WHERE ${where}`)).rows[0].n;
+  }
+  async function snapshot() {
+    const out: Record<string, unknown> = {};
+    for (const t of ["orgs", "people", "members", "touches"]) out[t] = (await db.query(`SELECT * FROM ${t} ORDER BY id`)).rows;
+    return out;
+  }
+  async function propose(target: Parameters<typeof proposeDetails>[2], input: DetailInput, opts: { newCompany?: boolean } = {}) {
+    return proposeDetails(db, "zeroone", target, input, { nowMs: NOW, defaultRole: "investor", ...opts });
+  }
+  async function proposed(target: Parameters<typeof proposeDetails>[2], input: DetailInput, opts: { newCompany?: boolean } = {}): Promise<Details> {
+    const r = await propose(target, input, opts);
+    if (!r.ok) throw new Error(`expected a proposal, got: ${r.reason}`);
+    return r.signed.proposal as Details;
+  }
+
+  beforeEach(async () => {
+    vi.stubEnv("MONSOON_SESSION_SECRET", "s".repeat(32));
+    await testDb.reset();
+    db = await testDb.connect();
+    await db.query(
+      `INSERT INTO orgs (id, name, name_key, source) VALUES
+         ($1, 'Northwind Capital', 'northwind capital', 'test'),
+         ($2, 'Acme Capital', 'acme capital', 'test'),
+         ($3, 'Orphan Co', 'orphan co', 'test')`,
+      [id.nw, id.acme, id.orphan],
+    );
+    await db.query(
+      `INSERT INTO people (id, org_id, name, name_key, title, phone, source) VALUES
+         ($1, $5, 'Jane Tan', 'jane tan', 'Analyst', '+65 1111 0000', 'test'),
+         ($2, $6, 'Li Wei', 'li wei', NULL, '+65 2222 0000', 'test'),
+         ($3, $7, 'Sam Ortiz', 'sam ortiz', NULL, NULL, 'test'),
+         ($4, NULL, 'Pat Lee', 'pat lee', NULL, NULL, 'test'),
+         ($8, NULL, 'Patty Lee', 'patty lee', NULL, NULL, 'test'),
+         ($9, $6, 'Jane Tan', 'jane tan', NULL, NULL, 'test')`,
+      [id.jane, id.liwei, id.sam, id.pat, id.nw, id.acme, id.orphan, id.patty, id.janeAcme],
+    );
+    await db.query(
+      `INSERT INTO members (id, org_id, person_id, role, stage, owner, source) VALUES
+         ($1, $3, NULL, 'investor', 'engaged', 'VF', 'test'),
+         ($2, NULL, $4, 'investor', 'contacted', 'VF', 'test')`,
+      [id.mNw, id.mLi, id.nw, id.liwei],
+    );
+  });
+  afterEach(async () => {
+    await db.end();
+    vi.unstubAllEnvs();
+  });
+
+  describe("proposeDetails", () => {
+    it("proposes only the fields that differ, signed, with the exact shape", async () => {
+      const r = await propose({ personId: id.liwei }, { name: "Li Wei", title: " Director ", phone: "+65 2222 0000", email: "" });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.signed.proposal).toEqual({
+        kind: "update_details",
+        estate: "zeroone",
+        target: { type: "person", id: id.liwei },
+        targetName: "Li Wei",
+        company: "Acme Capital",
+        changes: [{ field: "title", from: null, to: "Director" }],
+        logMemberId: id.mLi,
+        addsToPipeline: null,
+        expires: NOW + 30 * 60 * 1000,
+      });
+      expect(verifyProposal(r.signed.proposal, r.signed.signature, NOW)).toBe(true);
+    });
+
+    it("resolves a member id to its person or its company", async () => {
+      const p = await proposed({ memberId: id.mLi }, { title: "Director" });
+      expect(p.target).toEqual({ type: "person", id: id.liwei });
+      const c = await proposed({ memberId: id.mNw }, { website: "https://nw.example" });
+      expect(c.target).toEqual({ type: "company", id: id.nw });
+      expect(c.company).toBeNull();
+      expect(c.logMemberId).toBe(id.mNw);
+    });
+
+    it("says Nothing to change. when every field matches, treating empty and null alike", async () => {
+      const r = await propose({ personId: id.liwei }, { title: "  ", name: "Li Wei" });
+      expect(r).toEqual({ ok: false, reason: "Nothing to change." });
+      const same = await propose({ personId: id.jane }, { company: "northwind  capital" });
+      expect(same).toEqual({ ok: false, reason: "Nothing to change." });
+    });
+
+    it("clears a phone with an empty string", async () => {
+      const p = await proposed({ personId: id.liwei }, { phone: "" });
+      expect(p.changes).toEqual([{ field: "phone", from: "+65 2222 0000", to: null }]);
+    });
+
+    it("refuses a blank name and an over-long value", async () => {
+      expect(await propose({ personId: id.liwei }, { name: "  " })).toEqual({ ok: false, reason: "A name cannot be blank." });
+      const r = await propose({ personId: id.liwei }, { title: "x".repeat(301) });
+      expect(r).toEqual({ ok: false, reason: "Title is too long (limit 300 characters)." });
+      expect((await propose({ personId: id.liwei }, { title: "x".repeat(300) })).ok).toBe(true);
+    });
+
+    it("refuses a field that does not belong to the target, and unknown targets", async () => {
+      const w = await propose({ personId: id.liwei }, { website: "x.example" });
+      expect(w.ok).toBe(false);
+      const t = await propose({ orgId: id.nw }, { title: "x" });
+      expect(t.ok).toBe(false);
+      expect(await propose({ personId: randomUUID() }, { title: "x" })).toEqual({ ok: false, reason: "No such contact." });
+      expect(await propose({ personId: "nope" }, { title: "x" })).toEqual({ ok: false, reason: "No such contact." });
+      expect(await propose({}, { title: "x" })).toEqual({ ok: false, reason: "No such contact." });
+    });
+
+    it("refuses a rename that collides at the same company", async () => {
+      const r = await propose({ personId: id.liwei }, { name: "jane  tan" });
+      expect(r).toEqual({ ok: false, reason: "Another jane  tan is already on file there." });
+      expect((await propose({ personId: id.liwei }, { name: "Li Wei Chen" })).ok).toBe(true);
+    });
+
+    it("refuses a rename that collides among company-less people", async () => {
+      const r = await propose({ personId: id.patty }, { name: "Pat Lee" });
+      expect(r).toEqual({ ok: false, reason: "Another Pat Lee is already on file there." });
+    });
+
+    it("refuses a company move onto an existing namesake", async () => {
+      const r = await propose({ personId: id.jane }, { company: "Acme Capital" });
+      expect(r).toEqual({ ok: false, reason: "Another Jane Tan is already on file there." });
+    });
+
+    it("refuses a lookalike company, then accepts it with newCompany", async () => {
+      const r = await propose({ personId: id.liwei }, { company: "Northwind Partners" });
+      expect(r).toEqual({
+        ok: false,
+        reason: "Northwind Partners looks like Northwind Capital, already on file. Use that name, or say it is a different company.",
+      });
+      const p = await proposed({ personId: id.liwei }, { company: "Northwind Partners" }, { newCompany: true });
+      expect(p.changes).toEqual([{ field: "company", from: "Acme Capital", to: "Northwind Partners" }]);
+    });
+
+    it("uses an exact existing company as is", async () => {
+      const p = await proposed({ personId: id.liwei }, { company: "NORTHWIND  capital" });
+      expect(p.changes).toEqual([{ field: "company", from: "Acme Capital", to: "Northwind Capital" }]);
+      const brand = await proposed({ personId: id.pat }, { company: "Totally New Ltd" });
+      expect(brand.changes).toEqual([{ field: "company", from: null, to: "Totally New Ltd" }]);
+    });
+
+    it("picks the log member: own, the company's, or none with addsToPipeline", async () => {
+      expect((await proposed({ personId: id.liwei }, { title: "x" })).logMemberId).toBe(id.mLi);
+      const underCompany = await proposed({ personId: id.jane }, { title: "x" });
+      expect(underCompany.logMemberId).toBe(id.mNw);
+      expect(underCompany.addsToPipeline).toBeNull();
+      const none = await proposed({ personId: id.sam }, { title: "x" });
+      expect(none.logMemberId).toBeNull();
+      expect(none.addsToPipeline).toBe("investor");
+    });
+
+    it("refuses a company that is not on the pipeline", async () => {
+      expect(await propose({ orgId: id.acme }, { website: "https://acme.example" })).toEqual({
+        ok: false,
+        reason: "Acme Capital is not on the pipeline.",
+      });
+    });
+
+    it("writes nothing", async () => {
+      const before = await snapshot();
+      await propose({ personId: id.liwei }, { title: "Director", company: "Brand New Ltd" }, { newCompany: true });
+      await propose({ personId: id.sam }, { name: "Samuel" });
+      await propose({ orgId: id.nw }, { website: "https://x.example" });
+      expect(await snapshot()).toEqual(before);
+    });
+  });
+
+  describe("applyDetails", () => {
+    it("writes the fields and exactly one system touch with the exact summary", async () => {
+      const p = await proposed({ personId: id.liwei }, { title: "Director", phone: "", country: "Singapore" });
+      const r = await applyDetails(db, p);
+      expect(r).toEqual({ status: "updated", written: ["title", "phone", "country"], skipped: [], name: "Li Wei" });
+      const row = (await db.query("SELECT title, phone, country FROM people WHERE id = $1", [id.liwei])).rows[0];
+      expect(row).toEqual({ title: "Director", phone: null, country: "Singapore" });
+      const touches = (await db.query("SELECT member_id, kind, by_whom, summary FROM touches")).rows;
+      expect(touches).toEqual([
+        {
+          member_id: id.mLi,
+          kind: "system",
+          by_whom: "VF",
+          summary: "Details updated: Title: (empty) → Director; Phone: +65 2222 0000 → (empty); Country: (empty) → Singapore",
+        },
+      ]);
+    });
+
+    it("updates name_key with the name", async () => {
+      const r = await applyDetails(db, await proposed({ personId: id.liwei }, { name: "  Li Wei Chen " }));
+      expect(r.status).toBe("updated");
+      const row = (await db.query("SELECT name, name_key FROM people WHERE id = $1", [id.liwei])).rows[0];
+      expect(row).toEqual({ name: "Li Wei Chen", name_key: "li wei chen" });
+      expect(r.name).toBe("Li Wei Chen");
+    });
+
+    it("edits a company's website and logs to its member", async () => {
+      const r = await applyDetails(db, await proposed({ orgId: id.nw }, { website: "https://nw.example", country: "UK" }));
+      expect(r.status).toBe("updated");
+      expect((await db.query("SELECT website, country FROM orgs WHERE id = $1", [id.nw])).rows[0]).toEqual({
+        website: "https://nw.example",
+        country: "UK",
+      });
+      const t = (await db.query("SELECT member_id, summary FROM touches")).rows;
+      expect(t).toEqual([
+        { member_id: id.mNw, summary: "Details updated: Country: (empty) → UK; Website: (empty) → https://nw.example" },
+      ]);
+    });
+
+    it("sets a company, creating the org once and linking it", async () => {
+      const p = await proposed({ personId: id.pat }, { company: "Brand New Ltd" });
+      expect((await applyDetails(db, p)).status).toBe("updated");
+      expect(await count("orgs", "name_key = 'brand new ltd' AND source = 'monsoon-app'")).toBe(1);
+      const orgId = (await db.query("SELECT id FROM orgs WHERE name_key = 'brand new ltd'")).rows[0].id;
+      expect((await db.query("SELECT org_id FROM people WHERE id = $1", [id.pat])).rows[0].org_id).toBe(orgId);
+      // a second person moved to the same company reuses the org
+      const q = await proposed({ personId: id.patty }, { company: "Brand New Ltd" });
+      expect((await applyDetails(db, q)).status).toBe("updated");
+      expect(await count("orgs", "name_key = 'brand new ltd'")).toBe(1);
+    });
+
+    it("clearing the company sets org_id to null", async () => {
+      const p = await proposed({ personId: id.liwei }, { company: "" });
+      expect((await applyDetails(db, p)).status).toBe("updated");
+      expect((await db.query("SELECT org_id FROM people WHERE id = $1", [id.liwei])).rows[0].org_id).toBeNull();
+      // logged on the member found from the state before the change
+      expect((await db.query("SELECT member_id, summary FROM touches")).rows).toEqual([
+        { member_id: id.mLi, summary: "Details updated: Company: Acme Capital → (empty)" },
+      ]);
+    });
+
+    it("logs a company change on the company's member as it was before the change", async () => {
+      // Jane Tan (Northwind) has no member of her own: the log goes to Northwind's member, not Acme's.
+      const p = await proposed({ personId: id.jane }, { company: "Orphan Co" });
+      expect(p.logMemberId).toBe(id.mNw);
+      expect((await applyDetails(db, p)).status).toBe("updated");
+      expect((await db.query("SELECT member_id FROM touches")).rows).toEqual([{ member_id: id.mNw }]);
+    });
+
+    it("a stale field is skipped and reported", async () => {
+      const p = await proposed({ personId: id.jane }, { title: "Director", phone: "+65 9999 0000" });
+      await db.query("UPDATE people SET title = 'Partner' WHERE id = $1", [id.jane]);
+      const r = await applyDetails(db, p);
+      expect(r).toEqual({ status: "partly", written: ["phone"], skipped: ["title"], name: "Jane Tan" });
+      const row = (await db.query("SELECT title, phone FROM people WHERE id = $1", [id.jane])).rows[0];
+      expect(row).toEqual({ title: "Partner", phone: "+65 9999 0000" });
+      expect((await db.query("SELECT summary FROM touches")).rows).toEqual([
+        { summary: "Details updated: Phone: +65 1111 0000 → +65 9999 0000" },
+      ]);
+    });
+
+    it("all stale is unchanged, with no touch", async () => {
+      const p = await proposed({ personId: id.jane }, { title: "Director" });
+      await db.query("UPDATE people SET title = 'Partner' WHERE id = $1", [id.jane]);
+      const before = await snapshot();
+      expect(await applyDetails(db, p)).toEqual({ status: "unchanged", written: [], skipped: ["title"], name: "Jane Tan" });
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("confirming twice writes once", async () => {
+      const p = await proposed({ personId: id.liwei }, { title: "Director" });
+      expect((await applyDetails(db, p)).status).toBe("updated");
+      expect((await applyDetails(db, p)).status).toBe("unchanged");
+      expect(await count("touches")).toBe(1);
+    });
+
+    it("confirming twice at once writes once", async () => {
+      const other = await testDb.connect();
+      try {
+        const p = await proposed({ personId: id.liwei }, { title: "Director" });
+        const [a, b] = await Promise.all([applyDetails(db, p), applyDetails(other, p)]);
+        expect([a.status, b.status].sort()).toEqual(["unchanged", "updated"]);
+        expect(await count("touches")).toBe(1);
+      } finally {
+        await other.end();
+      }
+    });
+
+    it("addsToPipeline creates the member and logs to it", async () => {
+      const p = await proposed({ personId: id.sam }, { title: "Associate" });
+      expect(p.addsToPipeline).toBe("investor");
+      expect((await applyDetails(db, p)).status).toBe("updated");
+      const m = (await db.query("SELECT id, role, stage, owner, source FROM members WHERE person_id = $1", [id.sam])).rows;
+      expect(m).toHaveLength(1);
+      expect(m[0]).toMatchObject({ role: "investor", owner: "VF", source: "monsoon-app" });
+      const first = (await db.query("SELECT key FROM stages WHERE NOT terminal ORDER BY ord LIMIT 1")).rows[0].key;
+      expect(m[0].stage).toBe(first);
+      // the stage trigger does not fire on insert: the only touch is the log entry
+      expect((await db.query("SELECT member_id, kind, summary FROM touches")).rows).toEqual([
+        { member_id: m[0].id, kind: "system", summary: "Details updated: Title: (empty) → Associate" },
+      ]);
+    });
+
+    it("adds no member when nothing is written", async () => {
+      const p = await proposed({ personId: id.sam }, { title: "Associate" });
+      await db.query("UPDATE people SET title = 'Other' WHERE id = $1", [id.sam]);
+      expect((await applyDetails(db, p)).status).toBe("unchanged");
+      expect(await count("members", "person_id IS NOT NULL")).toBe(1);
+    });
+
+    it("a collision created between propose and apply writes nothing", async () => {
+      const p = await proposed({ personId: id.liwei }, { title: "Director", name: "Li Wei Chen" });
+      await db.query(
+        "INSERT INTO people (org_id, name, name_key, source) VALUES ($1, 'Li Wei Chen', 'li wei chen', 'test')",
+        [id.acme],
+      );
+      const before = await snapshot();
+      const r = await applyDetails(db, p);
+      expect(r).toEqual({ status: "collision", written: [], skipped: [], name: "Li Wei Chen" });
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("a company created in the same transaction is rolled back on collision", async () => {
+      const p = await proposed({ personId: id.pat }, { company: "Fresh Ltd" });
+      // Another Pat Lee appears at the company-to-be: the org does not exist yet, so create it too.
+      const org = (await db.query("INSERT INTO orgs (name, name_key, source) VALUES ('Fresh Ltd', 'fresh ltd', 'test') RETURNING id")).rows[0].id;
+      await db.query("INSERT INTO people (org_id, name, name_key, source) VALUES ($1, 'Pat Lee', 'pat lee', 'test')", [org]);
+      const before = await snapshot();
+      expect((await applyDetails(db, p)).status).toBe("collision");
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("reports a missing person or company", async () => {
+      const p = await proposed({ personId: id.sam }, { title: "Associate" });
+      await db.query("DELETE FROM people WHERE id = $1", [id.sam]); // test setup only
+      expect(await applyDetails(db, p)).toEqual({ status: "missing", written: [], skipped: [], name: "Sam Ortiz" });
+      const c = await proposed({ orgId: id.nw }, { country: "UK" });
+      await db.query("DELETE FROM orgs WHERE id = $1", [id.nw]);
+      expect((await applyDetails(db, c)).status).toBe("missing");
+    });
+
+    it("deletes no row and changes no notes column", async () => {
+      await db.query("UPDATE people SET notes = 'keep me' WHERE id = $1", [id.liwei]);
+      await db.query("UPDATE orgs SET notes = 'keep me too' WHERE id = $1", [id.nw]);
+      await db.query("UPDATE members SET notes = 'and me' WHERE id = $1", [id.mLi]);
+      await db.query("INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'note', 'VF', 'old note')", [id.mLi]);
+      const before = (await snapshot()) as Record<string, { id: string; notes?: unknown; summary?: unknown }[]>;
+      await applyDetails(db, await proposed({ personId: id.liwei }, { title: "Director", company: "Brand New Ltd" }, { newCompany: true }));
+      await applyDetails(db, await proposed({ orgId: id.nw }, { website: "https://x.example" }));
+      await applyDetails(db, await proposed({ personId: id.sam }, { name: "Samuel Ortiz" }));
+      const after = (await snapshot()) as typeof before;
+      for (const t of ["orgs", "people", "members", "touches"]) {
+        for (const row of before[t]) {
+          const now = after[t].find((r) => r.id === row.id);
+          expect(now, `${t} row kept`).toBeDefined();
+          expect(now!.notes, `${t}.notes`).toEqual(row.notes);
+          expect(now!.summary, `${t}.summary`).toEqual(row.summary);
+        }
+      }
+    });
+  });
+});

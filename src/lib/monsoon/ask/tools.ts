@@ -179,6 +179,7 @@ export function extractRefs(result: unknown): Ref[] {
 
 function describeChange(p: SignedProposal): string {
   const x = p.proposal;
+  if (x.kind === "update_details") return `Update the details of ${x.targetName}`;
   const who = x.company ? `${x.memberName} (${x.company})` : x.memberKind === "company" ? `${x.memberName} (company)` : x.memberName;
   const via = x.about ? ` for ${x.about}` : "";
   return x.kind === "add_note"
