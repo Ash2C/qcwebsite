@@ -2,13 +2,15 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Profile } from "@/lib/monsoon/contacts";
-import { proposeChange, type EstateInfo, type ProposeBody } from "./api";
+import { proposeChange, researchContact, type EstateInfo, type ProposeBody } from "./api";
 import ChangeCard, { DETAIL_LABELS, MAX_NOTE } from "./ChangeCard";
+import ResearchCard from "./ResearchCard";
 import { card as cardClass, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
 import { useCardConfirm, type AskCard } from "./useCardConfirm";
 
 const FAILURE = "Could not reach the server. Check signal and try again.";
 const MAX_VALUE = 300;
+const RESEARCH_FAILURE = "Could not run research. Check signal and try again.";
 const LOOKALIKE = "say it is a different company";
 
 type Panel = "note" | "stage" | "edit" | null;
@@ -43,6 +45,10 @@ function stored(p: Profile, field: string): string {
 
 const panelBox = `${cardClass} flex min-w-0 flex-col gap-3 p-4`;
 const alertClass = "break-words text-[15px] font-medium text-red-600 dark:text-red-400";
+
+function researchRoleLabel(estate: EstateInfo, key: string | null): string | undefined {
+  return key ? estate.roles.find((r) => r.key === key)?.label : undefined;
+}
 
 export default function ProfileActions({
   estate,
@@ -83,6 +89,12 @@ export default function ProfileActions({
   const [cardState, setCardState] = useState<AskCard | null>(null);
   const cardRef = useRef<AskCard | null>(null);
   const proposingRef = useRef(false);
+  const [researching, setResearching] = useState(false);
+  const [researchNote, setResearchNote] = useState<string | null>(null);
+  const researchingRef = useRef(false);
+  const tickedRef = useRef<string[]>([]);
+  // The estate and person on screen now, so a result for another one is dropped.
+  const scopeRef = useRef("");
   // Bumped when this view closes; a result that arrives later is dropped.
   const genRef = useRef(0);
   useEffect(() => {
@@ -91,6 +103,8 @@ export default function ProfileActions({
       gen.current += 1;
     };
   }, []);
+
+  scopeRef.current = `${estate.key}:${profile.personId ?? ""}`;
 
   const setCard = useCallback((next: AskCard | null) => {
     cardRef.current = next;
@@ -109,6 +123,8 @@ export default function ProfileActions({
     patch: patchCard,
     generation: () => genRef.current,
     onUnauthorized,
+    extras: (c) =>
+      c.signed.proposal.kind === "apply_research" ? { ticked: tickedRef.current, text: c.text } : {},
     onDone: (card) => {
       // The note box is emptied only once the note is saved.
       if (card.signed.proposal.kind === "add_note") setNote("");
@@ -117,7 +133,7 @@ export default function ProfileActions({
   });
 
   const working = cardState?.state === "working";
-  const busy = proposing || working;
+  const busy = proposing || working || researching;
   useEffect(() => {
     onBusy?.(busy);
     setViewBusy?.(busy);
@@ -186,6 +202,39 @@ export default function ProfileActions({
     }
   }
 
+  async function research() {
+    if (researchingRef.current || busy || !p.personId) return;
+    researchingRef.current = true;
+    setResearching(true);
+    setResearchNote(null);
+    const gen = genRef.current;
+    const scope = scopeRef.current;
+    const stale = () => gen !== genRef.current || scope !== scopeRef.current;
+    try {
+      const res = await researchContact({ estate: estate.key, personId: p.personId });
+      if (stale()) return;
+      if (res.status === 401) {
+        onUnauthorized();
+      } else if (res.status === 200 && res.body && "status" in res.body) {
+        if (res.body.status === "findings") {
+          const signed = res.body.signed;
+          tickedRef.current = [];
+          setPanel(null);
+          setCard({ id: crypto.randomUUID(), signed, text: res.body.summary, state: "open" });
+        } else {
+          setResearchNote(res.body.message);
+        }
+      } else {
+        setResearchNote(RESEARCH_FAILURE);
+      }
+    } catch {
+      if (!stale()) setResearchNote(RESEARCH_FAILURE);
+    } finally {
+      researchingRef.current = false;
+      if (gen === genRef.current) setResearching(false);
+    }
+  }
+
   function toggle(next: Exclude<Panel, null>) {
     if (busy) return;
     setRefusal(null);
@@ -240,7 +289,7 @@ export default function ProfileActions({
           Not on the pipeline. Capture or add a person here to start a timeline.
         </p>
       ) : (
-        <div className={`grid gap-2 ${buttons.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
+        <div className={`grid gap-2 ${buttons.length + (isCompany ? 0 : 1) === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
           {buttons.map((b) => (
             <button
               key={b.key}
@@ -253,7 +302,22 @@ export default function ProfileActions({
               {b.label}
             </button>
           ))}
+          {!isCompany && (
+            <button type="button" disabled={busy} onClick={() => void research()} className={`${secondaryButton} !px-2`}>
+              Research
+            </button>
+          )}
         </div>
+      )}
+      {researching && (
+        <p role="status" className="break-words px-1 text-[15px] text-neutral-600 dark:text-neutral-300">
+          {`Researching ${p.name}${p.company ? ` at ${p.company}` : ""}...`}
+        </p>
+      )}
+      {researchNote && (
+        <p role="alert" className={alertClass}>
+          {researchNote}
+        </p>
       )}
 
       {panel === "note" && (
@@ -354,7 +418,27 @@ export default function ProfileActions({
         </div>
       )}
 
-      {cardState && (
+      {cardState && cardState.signed.proposal.kind === "apply_research" && (
+        <ResearchCard
+          key={cardState.id}
+          signed={cardState.signed}
+          summary={cardState.text}
+          roleLabel={researchRoleLabel(estate, cardState.signed.proposal.addsToPipeline)}
+          state={cardState.state}
+          message={cardState.message}
+          onSave={(ticked, summary) => {
+            if (cardRef.current?.state !== "open") return;
+            tickedRef.current = ticked;
+            const next = { ...cardRef.current, text: summary };
+            setCard(next);
+            void confirm(next);
+          }}
+          onDiscard={() => {
+            if (cardRef.current?.state === "open") setCard(null);
+          }}
+        />
+      )}
+      {cardState && cardState.signed.proposal.kind !== "apply_research" && (
         <ChangeCard
           card={cardState}
           onText={(text) => patchCard(cardState.id, { text })}

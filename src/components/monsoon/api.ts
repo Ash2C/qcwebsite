@@ -45,6 +45,7 @@ const TIMEOUT_MS = {
   standard: 35_000, // saveCard, refineCard, actOnCrm, proposeChange
   upload: 90_000, // readCards: the photo upload on a weak connection counts against the limit
   ask: 70_000, // askCrm
+  research: 70_000, // researchContact: one bounded web search
 } as const;
 
 // The one place a request is made: every call gets a timeout signal. Older iOS Safari has no
@@ -147,6 +148,7 @@ export async function actOnCrm(body: {
   proposal: SignedProposal["proposal"];
   signature: string;
   text?: string;
+  ticked?: string[];
 }): Promise<ApiResult<{ status: string; message: string } | { error: string }>> {
   return parse(
     await request(
@@ -197,4 +199,22 @@ export async function loadProfile(
   if (target.personId) params.set("personId", target.personId);
   if (target.orgId) params.set("orgId", target.orgId);
   return parse(await request(`/api/monsoon/contact?${params}`, { cache: "no-store" }, TIMEOUT_MS.quick));
+}
+
+export type ResearchResponse =
+  | { status: "findings"; signed: SignedProposal; summary: string }
+  | { status: "none"; message: string };
+
+export async function researchContact(body: {
+  estate: string;
+  memberId?: string;
+  personId?: string;
+}): Promise<ApiResult<ResearchResponse | { error: string } | null>> {
+  return parse(
+    await request(
+      "/api/monsoon/research",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+      TIMEOUT_MS.research,
+    ),
+  );
 }

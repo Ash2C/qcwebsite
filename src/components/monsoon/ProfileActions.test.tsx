@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProfileActions from "./ProfileActions";
 import * as api from "./api";
 
-vi.mock("./api", () => ({ proposeChange: vi.fn(), actOnCrm: vi.fn() }));
+vi.mock("./api", () => ({ proposeChange: vi.fn(), actOnCrm: vi.fn(), researchContact: vi.fn() }));
 const m = vi.mocked(api);
 
 const ESTATE = { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", available: true, roles: [] };
@@ -75,7 +75,7 @@ describe("ProfileActions buttons", () => {
   it("shows Add note, Move stage and Edit, and Ask about this contact", () => {
     view();
     expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual([
-      "Add note", "Move stage", "Edit", "Ask about this contact",
+      "Add note", "Move stage", "Edit", "Research", "Ask about this contact",
     ]);
   });
 
@@ -582,5 +582,127 @@ describe("drafts kept across the passcode screen", () => {
   it("ignores a draft that belongs to another contact", () => {
     view(PERSON, { draftKey: "|p1|", initialDraft: { for: "|p2|", panel: "note", note: "Not yours", values: {} } });
     expect(screen.queryByPlaceholderText("Type or dictate a note")).toBeNull();
+  });
+});
+
+const RESEARCH_SIGNED = {
+  proposal: {
+    kind: "apply_research", estate: "traxo", person: { id: "p1", name: "Jane Tan" },
+    company: { id: "o1", name: "Acme Capital" }, identity: "Matches her firm and city.",
+    findings: [
+      { id: "f1", target: "person", field: "linkedin", from: null, to: "https://linkedin.com/in/janetan", source: "https://linkedin.com/in/janetan" },
+      { id: "f2", target: "person", field: "title", from: "Partner", to: "Founder", source: "https://acme.com/team" },
+    ],
+    summarySources: ["https://acme.com/team"], logMemberId: "m1", addsToPipeline: null, expires: 1,
+  },
+  signature: "sig-research",
+};
+const found = { status: 200, body: { status: "findings", signed: RESEARCH_SIGNED, summary: "She founded Acme." } } as never;
+
+describe("Research", () => {
+  it("is absent on a company profile", () => {
+    view(COMPANY);
+    expect(screen.queryByRole("button", { name: "Research" })).toBeNull();
+  });
+
+  it("shows the busy text with the company, disables the other actions, and a second press sends one request", async () => {
+    const user = userEvent.setup();
+    let release!: (v: never) => void;
+    m.researchContact.mockReturnValue(new Promise((res) => (release = res)) as never);
+    view();
+    await click(user, "Research");
+    expect(screen.getByText("Researching Jane Tan at Acme Capital...")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add note" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Research" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Research" }));
+    expect(m.researchContact).toHaveBeenCalledTimes(1);
+    expect(m.researchContact).toHaveBeenCalledWith({ estate: "traxo", personId: "p1" });
+    release(found);
+    expect(await screen.findByText("Research: Jane Tan")).toBeInTheDocument();
+  });
+
+  it("leaves out the company when there is none", async () => {
+    const user = userEvent.setup();
+    m.researchContact.mockReturnValue(new Promise(() => {}) as never);
+    view({ ...PERSON, company: null });
+    await click(user, "Research");
+    expect(screen.getByText("Researching Jane Tan...")).toBeInTheDocument();
+  });
+
+  it("shows a none message", async () => {
+    const user = userEvent.setup();
+    m.researchContact.mockResolvedValue({ status: 200, body: { status: "none", message: "Nothing I'd trust. No changes suggested." } } as never);
+    view();
+    await click(user, "Research");
+    expect(await screen.findByText("Nothing I'd trust. No changes suggested.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Research" })).toBeEnabled();
+  });
+
+  it("shows the failure copy, and goes to sign-in on a 401", async () => {
+    const user = userEvent.setup();
+    m.researchContact.mockRejectedValueOnce(new Error("net"));
+    const { onUnauthorized } = view();
+    await click(user, "Research");
+    expect(await screen.findByText("Could not run research. Check signal and try again.")).toBeInTheDocument();
+    m.researchContact.mockResolvedValueOnce({ status: 401, body: { error: "x" } } as never);
+    await click(user, "Research");
+    await waitFor(() => expect(onUnauthorized).toHaveBeenCalledTimes(1));
+  });
+
+  it("drops a late result after the profile is left", async () => {
+    const user = userEvent.setup();
+    let release!: (v: never) => void;
+    m.researchContact.mockReturnValue(new Promise((res) => (release = res)) as never);
+    const { unmount } = view();
+    await click(user, "Research");
+    unmount();
+    release(found);
+    await Promise.resolve();
+    expect(screen.queryByText("Research: Jane Tan")).toBeNull();
+  });
+
+  it("saves the ticked ids and the edited summary, then shows the message and reloads", async () => {
+    const user = userEvent.setup();
+    m.researchContact.mockResolvedValue(found);
+    m.actOnCrm.mockResolvedValue(acted("Done. Research saved for Jane Tan."));
+    const { reload } = view();
+    await click(user, "Research");
+    await screen.findByText("Research: Jane Tan");
+    await user.clear(screen.getByLabelText("Summary (added to the timeline)"));
+    await user.type(screen.getByLabelText("Summary (added to the timeline)"), "Edited.");
+    await click(user, "Save selected");
+    expect(await screen.findByText("Done. Research saved for Jane Tan.")).toBeInTheDocument();
+    expect(m.actOnCrm).toHaveBeenCalledWith({
+      estate: "traxo", proposal: RESEARCH_SIGNED.proposal, signature: "sig-research", ticked: ["f1"], text: "Edited.",
+    });
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("Discard closes the card and sends nothing; a 403 shows the expired message", async () => {
+    const user = userEvent.setup();
+    m.researchContact.mockResolvedValue(found);
+    view();
+    await click(user, "Research");
+    await screen.findByText("Research: Jane Tan");
+    await click(user, "Discard");
+    expect(screen.queryByText("Research: Jane Tan")).toBeNull();
+    expect(m.actOnCrm).not.toHaveBeenCalled();
+    await click(user, "Research");
+    await screen.findByText("Research: Jane Tan");
+    m.actOnCrm.mockResolvedValue({ status: 403, body: { error: "x" } } as never);
+    await click(user, "Save selected");
+    expect(await screen.findByText("This change has expired. Ask again.")).toBeInTheDocument();
+  });
+
+  it("keeps the card open with the save-failure message when saving fails", async () => {
+    const user = userEvent.setup();
+    m.researchContact.mockResolvedValue(found);
+    m.actOnCrm.mockRejectedValue(new Error("net"));
+    view();
+    await click(user, "Research");
+    await screen.findByText("Research: Jane Tan");
+    await click(user, "Save selected");
+    expect(await screen.findByText("Could not save. Check signal and try again.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save selected" })).toBeEnabled();
   });
 });

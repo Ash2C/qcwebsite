@@ -23,6 +23,8 @@ type Options = {
   /** A result for an older generation (estate changed, conversation cleared, view closed) is dropped. */
   generation: () => number;
   onUnauthorized: () => void;
+  /** Extra fields merged into the act body (research sends the ticked ids and the edited summary). */
+  extras?: (card: AskCard) => Record<string, unknown>;
   onDone?: (card: AskCard, message: string) => void;
 };
 
@@ -46,6 +48,7 @@ export function useCardConfirm(options: Options) {
         proposal,
         signature,
         ...(proposal.kind === "add_note" ? { text: c.text } : {}),
+        ...(latest.current.extras?.(c) ?? {}),
       });
       const o = latest.current;
       if (gen !== o.generation()) return;
