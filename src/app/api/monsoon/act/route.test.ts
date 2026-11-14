@@ -11,6 +11,10 @@ vi.mock("@/lib/monsoon/details", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/monsoon/details")>()),
   applyDetails: (...args: unknown[]) => applyDetails(...args),
 }));
+const applyResearch = vi.fn();
+vi.mock("@/lib/monsoon/research-apply", () => ({
+  applyResearch: (...args: unknown[]) => applyResearch(...args),
+}));
 vi.mock("@/lib/monsoon/db", () => ({
   withEstateDb: (...args: unknown[]) => withEstateDb(...args),
 }));
@@ -94,6 +98,7 @@ beforeEach(() => {
   moveStage.mockReset();
   vocabulary.mockReset();
   applyDetails.mockReset();
+  applyResearch.mockReset();
   withEstateDb.mockImplementation(async (_estate, fn) => fn(fakeClient));
   vocabulary.mockResolvedValue({
     stages: [
@@ -117,6 +122,7 @@ function nothingCalled() {
   expect(addNote).not.toHaveBeenCalled();
   expect(moveStage).not.toHaveBeenCalled();
   expect(applyDetails).not.toHaveBeenCalled();
+  expect(applyResearch).not.toHaveBeenCalled();
 }
 
 describe("POST /api/monsoon/act", () => {
@@ -349,5 +355,85 @@ describe("POST /api/monsoon/act", () => {
       expect(await res.json()).toEqual({ error: "Could not reach the Traxo CRM" });
       expect(JSON.stringify(log.mock.calls)).not.toContain("secret");
     });
+  });
+});
+
+function researchProposal(over: Record<string, unknown> = {}): Proposal {
+  return {
+    kind: "apply_research",
+    estate: "traxo",
+    person: { id: MEMBER, name: "Li Wei" },
+    company: { id: "33333333-3333-4333-8333-333333333333", name: "Acme Capital" },
+    identity: "Same person.",
+    findings: [
+      { id: "f1", target: "person", field: "title", from: null, to: "Director", source: "https://example.com/a" },
+      { id: "f2", target: "person", field: "linkedin", from: null, to: "https://linkedin.com/in/x", source: "https://example.com/b" },
+    ],
+    summarySources: ["https://example.com/s"],
+    logMemberId: MEMBER,
+    addsToPipeline: null,
+    expires: Date.now() + 10 * 60 * 1000,
+    ...over,
+  } as Proposal;
+}
+
+describe("apply_research", () => {
+  it("passes the ticked ids and the trimmed summary to applyResearch", async () => {
+    applyResearch.mockResolvedValue({ status: "saved", written: ["Title"], skipped: [], name: "Li Wei" });
+    const proposal = researchProposal();
+    const res = await POST(post(signed(proposal, { ticked: ["f1"], text: "  Summary.  " })));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "saved", message: "Done. Research saved for Li Wei." });
+    expect(applyResearch).toHaveBeenCalledWith(fakeClient, proposal, ["f1"], "Summary.");
+  });
+
+  it.each([
+    ["partly", ["Title"], ["LinkedIn"], "Saved Title. LinkedIn changed in the meantime and was left alone."],
+    ["partly", ["Title"], ["LinkedIn", "Country"], "Saved Title. LinkedIn, Country changed in the meantime and were left alone."],
+    ["unchanged", [], [], "Nothing changed. Li Wei was already up to date."],
+    ["missing", [], [], "Li Wei is no longer on file; nothing changed."],
+    ["unlogged", [], [], "Li Wei is no longer on the pipeline, so the research could not be logged; nothing changed."],
+  ])("maps %s to its message", async (status, written, skipped, message) => {
+    applyResearch.mockResolvedValue({ status, written, skipped, name: "Li Wei" });
+    const res = await POST(post(signed(researchProposal(), { ticked: ["f1"] })));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status, message });
+  });
+
+  it.each([
+    ["no ticked", {}, 400, "Invalid selection"],
+    ["ticked not an array", { ticked: "f1" }, 400, "Invalid selection"],
+    ["ticked with a non-string", { ticked: ["f1", 2] }, 400, "Invalid selection"],
+    ["ticked duplicate", { ticked: ["f1", "f1"] }, 400, "Invalid selection"],
+    ["ticked id not in the proposal", { ticked: ["f9"] }, 400, "Invalid selection"],
+    ["text not a string", { ticked: ["f1"], text: 5 }, 400, "Summary is too long"],
+    ["text too long", { ticked: ["f1"], text: "x".repeat(2001) }, 400, "Summary is too long"],
+    ["empty ticked and empty text", { ticked: [], text: "  " }, 400, "Nothing selected"],
+    ["empty ticked and no text", { ticked: [] }, 400, "Nothing selected"],
+  ])("refuses %s", async (_name, extra, status, error) => {
+    const res = await POST(post(signed(researchProposal(), extra)));
+    expect(res.status).toBe(status);
+    expect(await res.json()).toEqual({ error });
+    nothingCalled();
+  });
+
+  it("refuses a summary when the proposal has no summary sources", async () => {
+    const res = await POST(post(signed(researchProposal({ summarySources: [] }), { ticked: ["f1"], text: "Summary." })));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Nothing selected" });
+    nothingCalled();
+  });
+
+  it("accepts a summary of exactly 2000 characters", async () => {
+    applyResearch.mockResolvedValue({ status: "saved", written: [], skipped: [], name: "Li Wei" });
+    const res = await POST(post(signed(researchProposal(), { ticked: [], text: "x".repeat(2000) })));
+    expect(res.status).toBe(200);
+  });
+
+  it("refuses a tampered finding", async () => {
+    const body = signed(researchProposal(), { ticked: ["f1"] });
+    (body.proposal as unknown as { findings: { to: string }[] }).findings[0].to = "CEO";
+    expect((await POST(post(body))).status).toBe(403);
+    nothingCalled();
   });
 });

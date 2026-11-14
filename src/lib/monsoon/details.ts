@@ -54,7 +54,7 @@ const NO_CONTACT = "No such contact.";
 // the schema, and a database whose columns were renamed (Traxo: firm_id) carries other names. Only the
 // primary key is excluded; the id is never written, so any other unique violation on the table is the
 // name or membership clash.
-const isUniqueOn = (err: unknown, table: string, pkey: string): boolean => {
+export const isUniqueOn = (err: unknown, table: string, pkey: string): boolean => {
   const e = err as { code?: unknown; table?: unknown; constraint?: unknown } | null;
   return e?.code === "23505" && e.table === table && e.constraint !== pkey;
 };
@@ -153,7 +153,7 @@ async function resolve(db: ClientBase, target: Target): Promise<Row | undefined>
 }
 
 /** The member whose timeline logs a change: the person's own, else their company's. */
-async function logMemberFor(db: ClientBase, row: { type: string; id: string; orgId: string | null }): Promise<string | null> {
+export async function logMemberFor(db: ClientBase, row: { type: string; id: string; orgId: string | null }): Promise<string | null> {
   if (row.type === "company") {
     return (await db.query("SELECT id FROM members WHERE org_id = $1", [row.id])).rows[0]?.id ?? null;
   }
@@ -255,7 +255,7 @@ export async function proposeDetails(
 }
 
 /** Run `fn` in one read-committed transaction; commit when it asks to, otherwise roll back. */
-async function transaction<T>(db: ClientBase, fn: () => Promise<{ value: T; commit: boolean }>): Promise<T> {
+export async function transaction<T>(db: ClientBase, fn: () => Promise<{ value: T; commit: boolean }>): Promise<T> {
   await db.query("BEGIN ISOLATION LEVEL READ COMMITTED");
   try {
     await db.query("SET LOCAL statement_timeout = '10s'");
@@ -286,6 +286,69 @@ export async function applyDetails(db: ClientBase, proposal: DetailsProposal): P
   }
 }
 
+/**
+ * Locks the row, keeps the changes whose `from` still matches the row, and writes them. No transaction
+ * and no log entry: the caller runs it inside its own transaction. A unique violation is thrown.
+ * `name` is the name after the change; `orgId` is the person's company as it was before it.
+ */
+export async function applyRowChanges(
+  db: ClientBase,
+  target: { type: "person" | "company"; id: string },
+  changes: DetailChange[],
+): Promise<{ found: boolean; name: string; orgId: string | null; written: DetailChange[]; skipped: DetailField[] }> {
+  const row = target.type === "person" ? await loadPerson(db, target.id, true) : await loadOrg(db, target.id, true);
+  if (!row) return { found: false, name: "", orgId: null, written: [], skipped: [] };
+
+  const fresh: DetailChange[] = [];
+  const skipped: DetailField[] = [];
+  for (const c of changes) {
+    if (same(c.field, c.from, row.values[c.field])) fresh.push(c);
+    else skipped.push(c.field);
+  }
+  const name = fresh.find((c) => c.field === "name")?.to ?? row.name;
+  const out = { found: true, name, orgId: row.orgId, written: fresh, skipped };
+  if (fresh.length === 0) return out;
+
+  if (target.type === "person") {
+    const set = new Map<string, string | null>();
+    let orgId: string | null | undefined;
+    for (const c of fresh) {
+      const column = PERSON_COLUMN_OF[c.field];
+      if (column) set.set(column, c.to);
+      if (c.field === "name") set.set("name_key", nameKey(c.to as string));
+      if (c.field === "company") orgId = c.to === null ? null : await findOrCreateOrg(db, c.to);
+    }
+    const params: unknown[] = [target.id];
+    for (const column of PERSON_DETAIL_COLUMNS) {
+      const on = column === "org_id" ? orgId !== undefined : set.has(column);
+      params.push(on, column === "org_id" ? (orgId ?? null) : (set.get(column) ?? null));
+    }
+    await db.query(UPDATE_PEOPLE, params);
+  } else {
+    const set = new Map<string, string | null>();
+    for (const c of fresh) {
+      const column = ORG_COLUMN_OF[c.field];
+      if (column) set.set(column, c.to);
+    }
+    const params: unknown[] = [target.id];
+    for (const column of ORG_DETAIL_COLUMNS) params.push(set.has(column), set.get(column) ?? null);
+    await db.query(UPDATE_ORGS, params);
+  }
+  return out;
+}
+
+/** Adds a person to the pipeline at the first open stage; returns the new member id. */
+export async function addToPipeline(db: ClientBase, personId: string, role: string): Promise<string> {
+  const stage = (await db.query("SELECT key FROM stages WHERE NOT terminal ORDER BY ord LIMIT 1")).rows[0]?.key;
+  return (
+    await db.query(
+      `INSERT INTO members (person_id, role, stage, owner, source)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [personId, role, stage, OWNER, SOURCE],
+    )
+  ).rows[0].id;
+}
+
 function applyOnce(db: ClientBase, proposal: DetailsProposal): Promise<ApplyResult> {
   return transaction<ApplyResult>(db, async () => {
     const { target, changes } = proposal;
@@ -294,63 +357,23 @@ function applyOnce(db: ClientBase, proposal: DetailsProposal): Promise<ApplyResu
       commit,
     });
 
-    const row = target.type === "person" ? await loadPerson(db, target.id, true) : await loadOrg(db, target.id, true);
-    if (!row) return result("missing", [], [], proposal.targetName);
-
-    const fresh: DetailChange[] = [];
-    const skipped: DetailField[] = [];
-    for (const c of changes) {
-      if (same(c.field, c.from, row.values[c.field])) fresh.push(c);
-      else skipped.push(c.field);
-    }
-    if (fresh.length === 0) return result("unchanged", [], skipped, row.name);
-
-    const resultingName = fresh.find((c) => c.field === "name")?.to ?? row.name;
     // A unique violation (a namesake appeared since the proposal) is reported; the caller rolls back.
+    let resultingName = changes.find((c) => c.field === "name")?.to ?? proposal.targetName;
     try {
-      // The log member comes from the state before the change.
-      let logMember = await logMemberFor(db, row);
+      const done = await applyRowChanges(db, target, changes);
+      if (!done.found) return result("missing", [], [], proposal.targetName);
+      resultingName = done.name;
+      const skipped = done.skipped;
+      if (done.written.length === 0) return result("unchanged", [], skipped, done.name);
+
+      // The log member comes from the state before the change (orgId is the earlier company).
+      let logMember = await logMemberFor(db, { type: target.type, id: target.id, orgId: done.orgId });
       if (target.type === "company" && logMember === null) return result("unlogged", [], [], proposal.targetName);
-
-      if (target.type === "person") {
-        const set = new Map<string, string | null>();
-        let orgId: string | null | undefined;
-        for (const c of fresh) {
-          const column = PERSON_COLUMN_OF[c.field];
-          if (column) set.set(column, c.to);
-          if (c.field === "name") set.set("name_key", nameKey(c.to as string));
-          if (c.field === "company") orgId = c.to === null ? null : await findOrCreateOrg(db, c.to);
-        }
-        const params: unknown[] = [target.id];
-        for (const column of PERSON_DETAIL_COLUMNS) {
-          const on = column === "org_id" ? orgId !== undefined : set.has(column);
-          params.push(on, column === "org_id" ? (orgId ?? null) : (set.get(column) ?? null));
-        }
-        await db.query(UPDATE_PEOPLE, params);
-
-        if (logMember === null && proposal.addsToPipeline !== null) {
-          const stage = (await db.query("SELECT key FROM stages WHERE NOT terminal ORDER BY ord LIMIT 1")).rows[0]?.key;
-          logMember = (
-            await db.query(
-              `INSERT INTO members (person_id, role, stage, owner, source)
-               VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-              [target.id, proposal.addsToPipeline, stage, OWNER, SOURCE],
-            )
-          ).rows[0].id;
-        }
-      } else {
-        const set = new Map<string, string | null>();
-        for (const c of fresh) {
-          const column = ORG_COLUMN_OF[c.field];
-          if (column) set.set(column, c.to);
-        }
-        const params: unknown[] = [target.id];
-        for (const column of ORG_DETAIL_COLUMNS) params.push(set.has(column), set.get(column) ?? null);
-        await db.query(UPDATE_ORGS, params);
+      if (target.type === "person" && logMember === null && proposal.addsToPipeline !== null) {
+        logMember = await addToPipeline(db, target.id, proposal.addsToPipeline);
       }
-
       if (logMember === null) return result("unlogged", [], [], proposal.targetName);
-      const summary = `Details updated: ${fresh
+      const summary = `Details updated: ${done.written
         .map((c) => `${DETAIL_LABELS[c.field]}: ${display(c.from)} → ${display(c.to)}`)
         .join("; ")}`;
       await db.query("INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'system', $2, $3)", [
@@ -358,11 +381,11 @@ function applyOnce(db: ClientBase, proposal: DetailsProposal): Promise<ApplyResu
         OWNER,
         summary,
       ]);
+      return result(skipped.length > 0 ? "partly" : "updated", done.written.map((c) => c.field), skipped, done.name, true);
     } catch (err) {
       if (isUniqueOn(err, "people", "people_pkey")) return result("collision", [], [], resultingName);
       throw err;
     }
-    return result(skipped.length > 0 ? "partly" : "updated", fresh.map((c) => c.field), skipped, resultingName, true);
   });
 }
 

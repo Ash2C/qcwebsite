@@ -7,6 +7,7 @@ import { readJson } from "@/lib/monsoon/body";
 import { withEstateDb } from "@/lib/monsoon/db";
 import { applyDetails, DETAIL_LABELS } from "@/lib/monsoon/details";
 import { estateByKey } from "@/lib/monsoon/estates";
+import { applyResearch } from "@/lib/monsoon/research-apply";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,6 +15,7 @@ export const maxDuration = 30;
 
 const MAX_BODY = 65_536;
 const MAX_NOTE = 2000;
+const MAX_SUMMARY = 2000;
 // The member foreign key on touches (unnamed in the schema, so Postgres names it this). A 23503 on
 // any other constraint, such as the by_whom owner reference, is not a missing contact.
 const MEMBER_FK = "touches_member_id_fkey";
@@ -39,16 +41,26 @@ export async function POST(request: Request) {
   if (!verifyProposal(proposal, b.signature, Date.now()) || proposal.estate !== estate.key) {
     return NextResponse.json({ error: "This change has expired. Ask again." }, { status: 403 });
   }
-  // Applying research arrives with the research task; until then it is answered like an expired change.
-  if (proposal.kind === "apply_research") {
-    return NextResponse.json({ error: "This change has expired. Ask again." }, { status: 403 });
-  }
-
   let text = "";
   if (proposal.kind === "add_note") {
     text = typeof b.text === "string" ? b.text.trim() : "";
     if (!text) return bad("Note text is required");
     if (text.length > MAX_NOTE) return bad("Note is too long");
+  }
+
+  let ticked: string[] = [];
+  if (proposal.kind === "apply_research") {
+    const ids = proposal.findings.map((f) => f.id);
+    const t = b.ticked;
+    if (!Array.isArray(t) || !t.every((x) => typeof x === "string" && ids.includes(x)) || new Set(t).size !== t.length) {
+      return bad("Invalid selection");
+    }
+    ticked = t as string[];
+    if (b.text !== undefined && typeof b.text !== "string") return bad("Summary is too long");
+    text = typeof b.text === "string" ? b.text.trim() : "";
+    if (text.length > MAX_SUMMARY) return bad("Summary is too long");
+    if (ticked.length === 0 && !text) return bad("Nothing selected");
+    if (text && proposal.summarySources.length === 0) return bad("Nothing selected");
   }
 
   try {
@@ -66,6 +78,17 @@ export async function POST(request: Request) {
           }
           throw err;
         }
+      }
+      if (proposal.kind === "apply_research") {
+        const done = await applyResearch(db, proposal, ticked, text);
+        const messages = {
+          saved: `Done. Research saved for ${done.name}.`,
+          partly: `Saved ${done.written.join(", ")}. ${done.skipped.join(", ")} changed in the meantime and ${done.skipped.length === 1 ? "was" : "were"} left alone.`,
+          unchanged: `Nothing changed. ${done.name} was already up to date.`,
+          missing: `${proposal.person.name} is no longer on file; nothing changed.`,
+          unlogged: `${proposal.person.name} is no longer on the pipeline, so the research could not be logged; nothing changed.`,
+        };
+        return { status: done.status, message: messages[done.status] };
       }
       if (proposal.kind === "update_details") {
         const done = await applyDetails(db, proposal);

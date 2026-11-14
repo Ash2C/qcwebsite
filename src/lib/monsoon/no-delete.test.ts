@@ -285,6 +285,14 @@ describe("never delete", () => {
     expect([...ORG_DETAIL_COLUMNS].sort()).toEqual(["country", "website"]);
   });
 
+  it("research-apply.ts writes through applyRowChanges and has no UPDATE of its own", () => {
+    const source = readFileSync(join(ROOT, "lib", "monsoon", "research-apply.ts"), "utf8");
+    const code = withoutComments(source).replace(/^\s*\/\/.*$/gm, "");
+    expect(code).not.toMatch(/\bUPDATE\b/i);
+    expect(source).toContain("applyRowChanges");
+    expect(SCAN.flatMap(files).map((f) => relative(ROOT, f).split(sep).join("/"))).toContain("lib/monsoon/research-apply.ts");
+  });
+
   it("no Monsoon server code deletes, truncates, drops or rewrites notes", () => {
     const bad: string[] = [];
     for (const file of SCAN.flatMap(files)) {
