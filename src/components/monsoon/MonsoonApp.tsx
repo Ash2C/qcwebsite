@@ -299,7 +299,7 @@ export default function MonsoonApp() {
         if (cards.length >= 2) {
           setCaptureId(null);
           batchEstateRef.current = estateKey;
-          setBatch(makeBatch(cards, role, form.notes));
+          setBatch(makeBatch(cards, res.body.matches ?? null, role, form.notes));
           return;
         }
         // One card fills the form. No card found reads as an empty card, so the form
@@ -647,6 +647,7 @@ export default function MonsoonApp() {
             onUnauthorized={() => setPhase("locked")}
             onClose={closeBatch}
             onRunning={setBatchRunning}
+            onOpenProfile={(personId) => openContact({ personId })}
           />
         ) : (
           <>

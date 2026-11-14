@@ -626,6 +626,46 @@ describe("MonsoonApp", () => {
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   });
 
+  it("matches from the read go to the batch rows, and Open profile switches to Contacts with the batch kept", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.loadProfile.mockResolvedValue({ status: 404, body: { error: "Not found" } } as never);
+    const exact = {
+      match: "exact",
+      candidates: [
+        { personId: "p1", name: "Jane Tan", title: null, company: "Acme Capital", email: null, member: null, memberOf: null, by: "name_company" },
+      ],
+    };
+    m.readCards.mockResolvedValue({
+      status: 200,
+      body: { cards: [CARD, BOB], matches: [exact, { match: "none", candidates: [] }] },
+    } as never);
+    render(<MonsoonApp />);
+    await ready();
+    await pickPhoto(user);
+    await screen.findByText("2 cards found");
+    expect(screen.getByText("On file")).toBeInTheDocument();
+    expect(screen.getByText("New")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Jane Tan/ }));
+    await user.click(screen.getByRole("button", { name: "Open profile" }));
+    await waitFor(() => expect(m.loadProfile).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "Contacts" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Capture" }));
+    expect(await screen.findByText("2 cards found")).toBeInTheDocument();
+  });
+
+  it("a read with matches null opens the batch without tags", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.readCards.mockResolvedValue({ status: 200, body: { cards: [CARD, BOB], matches: null } } as never);
+    render(<MonsoonApp />);
+    await ready();
+    await pickPhoto(user);
+    await screen.findByText("2 cards found");
+    expect(screen.queryByText("New")).toBeNull();
+    expect(screen.queryByText("Check")).toBeNull();
+  });
+
   it("one card still fills the single form", async () => {
     const user = userEvent.setup();
     signedIn();

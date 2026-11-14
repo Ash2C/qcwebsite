@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import React, { useState } from "react";
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import BatchReview, { makeBatch, type Batch } from "./BatchReview";
 import * as api from "./api";
 import type { EstateInfo } from "./api";
+import type { CardMatch, MatchCandidate } from "@/lib/monsoon/match";
 
 vi.mock("./api", () => ({ saveCard: vi.fn(), refineCard: vi.fn() }));
 const m = vi.mocked(api);
@@ -22,8 +23,8 @@ const ESTATE: EstateInfo = {
   ],
 };
 
-function cardOf(name: string, org = "", email = "") {
-  return { name, title: "", org, email, phone: "", linkedin: "", raw_text: name, kind: "card" as const };
+function cardOf(name: string, org = "", email = "", kind: "card" | "badge" = "card") {
+  return { name, title: "", org, email, phone: "", linkedin: "", raw_text: name, kind };
 }
 const JANE = cardOf("Jane Tan", "Acme Capital");
 const BOB = cardOf("Bob Lee", "", "bob@x.com");
@@ -33,8 +34,18 @@ type Handlers = { onUnauthorized: () => void; onClose: (s: string | null) => voi
 
 let setBatchOutside: React.Dispatch<React.SetStateAction<Batch>>;
 
-function Harness({ cards, handlers }: { cards: ReturnType<typeof cardOf>[]; handlers: Handlers }) {
-  const [batch, setBatch] = useState<Batch>(() => makeBatch(cards, "lp_prospect", "met at demo day"));
+function Harness({
+  cards,
+  matches = null,
+  handlers,
+  onOpenProfile,
+}: {
+  cards: ReturnType<typeof cardOf>[];
+  matches?: (CardMatch | null)[] | null;
+  handlers: Handlers;
+  onOpenProfile?: (id: string) => void;
+}) {
+  const [batch, setBatch] = useState<Batch>(() => makeBatch(cards, matches, "lp_prospect", "met at demo day"));
   setBatchOutside = setBatch;
   return (
     <BatchReview
@@ -44,13 +55,14 @@ function Harness({ cards, handlers }: { cards: ReturnType<typeof cardOf>[]; hand
       onUnauthorized={handlers.onUnauthorized}
       onClose={handlers.onClose}
       onRunning={handlers.onRunning}
+      onOpenProfile={onOpenProfile}
     />
   );
 }
 
 let handlers: Handlers;
-function show(cards = [JANE, BOB, CY]) {
-  render(<Harness cards={cards} handlers={handlers} />);
+function show(cards = [JANE, BOB, CY], matches: (CardMatch | null)[] | null = null, onOpenProfile?: (id: string) => void) {
+  render(<Harness cards={cards} matches={matches} handlers={handlers} onOpenProfile={onOpenProfile} />);
 }
 
 const added = { status: 200, body: { outcome: "added", person: "p", org: null } } as never;
@@ -683,5 +695,145 @@ describe("BatchReview", () => {
       await waitFor(() => expect(screen.getByLabelText("Company")).toHaveValue("Acme Group"));
       expect(screen.getByLabelText("Title")).toHaveValue("Chief");
     });
+  });
+});
+
+const cand = (personId: string, name: string): MatchCandidate => ({
+  personId,
+  name,
+  title: null,
+  company: "Acme Capital",
+  email: null,
+  member: null,
+  memberOf: null,
+  by: "name_company",
+});
+const NONE: CardMatch = { match: "none", candidates: [] };
+const EXACT: CardMatch = { match: "exact", candidates: [cand("p-jane", "Jane Tan")] };
+const SAME: CardMatch = { match: "same_name", candidates: [cand("p-bob", "Bob Lee")] };
+
+describe("BatchReview match lines", () => {
+  it("tags each row by match kind, and none without match information", () => {
+    show(
+      [JANE, BOB, CY, cardOf("Di Fox")],
+      [EXACT, NONE, { match: "several", candidates: [cand("a", "Cy Wu"), cand("b", "Cy Wu")] }, null],
+    );
+    const tag = (name: string) => within(row(name)).queryByText(/^(New|On file|Check)$/)?.textContent ?? null;
+    expect(tag("Jane Tan")).toBe("On file");
+    expect(tag("Bob Lee")).toBe("New");
+    expect(tag("Cy Wu")).toBe("Check");
+    expect(tag("Di Fox")).toBeNull();
+    expect(screen.getByText("Jane Tan · Acme Capital")).toBeInTheDocument();
+  });
+
+  it("a same_name row is tagged Check", () => {
+    show([JANE, BOB], [NONE, SAME]);
+    expect(within(row("Bob Lee")).getByText("Check")).toBeInTheDocument();
+  });
+
+  it("makeBatch indexes matches by card and tolerates a short or null list", () => {
+    const b = makeBatch([JANE, BOB, CY], [NONE, EXACT], "lp_prospect", "");
+    expect(b.rows.map((r) => r.match)).toEqual([NONE, EXACT, null]);
+    expect(b.rows[1].samePerson).toBe("p-jane");
+    expect(b.rows[0].samePerson).toBeUndefined();
+    expect(makeBatch([JANE], null, "lp_prospect", "").rows[0].match).toBeNull();
+  });
+
+  it("an exact row saves with samePerson preselected and its kind", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(added);
+    show([cardOf("Jane Tan", "Acme Capital", "", "badge"), BOB], [EXACT, NONE]);
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    await screen.findByText("2 saved to Traxo.");
+    expect(m.saveCard.mock.calls[0][0]).toMatchObject({ samePerson: "p-jane", kind: "badge" });
+    expect(m.saveCard.mock.calls[1][0].samePerson).toBeUndefined();
+    expect(m.saveCard.mock.calls[1][0].kind).toBe("card");
+  });
+
+  it("Different person in a row sends samePerson false", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(added);
+    show([JANE, BOB], [EXACT, NONE]);
+    await open(user, "Jane Tan");
+    expect(screen.getByRole("button", { name: "Add what's new" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Different person" }));
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    await screen.findByText("2 saved to Traxo.");
+    expect(m.saveCard.mock.calls[0][0].samePerson).toBe(false);
+  });
+
+  it("a Check row with nothing chosen is sent without samePerson", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(added);
+    show([BOB, CY], [SAME, NONE]);
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    await screen.findByText("2 saved to Traxo.");
+    expect(m.saveCard.mock.calls[0][0].samePerson).toBeUndefined();
+  });
+
+  it("editing a row's Name clears its match and choice", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(added);
+    show([JANE, BOB], [EXACT, SAME]);
+    await open(user, "Jane Tan");
+    await user.type(screen.getByLabelText("Name"), "x");
+    expect(screen.queryByText(/Already on file/)).not.toBeInTheDocument();
+    expect(within(row("Jane Tanx")).queryByText("On file")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    await screen.findByText("2 saved to Traxo.");
+    expect(m.saveCard.mock.calls[0][0].samePerson).toBeUndefined();
+  });
+
+  it("editing a row's Company clears its match too, but Title does not", async () => {
+    const user = userEvent.setup();
+    show([JANE, BOB], [EXACT, NONE]);
+    await open(user, "Jane Tan");
+    await user.type(screen.getByLabelText("Title"), "x");
+    expect(screen.getByText(/Already on file/)).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Company"), "y");
+    expect(screen.queryByText(/Already on file/)).not.toBeInTheDocument();
+  });
+
+  it("a filed result marks the row saved with its text", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue({
+      status: 200,
+      body: { outcome: "filed", person: "p", org: "Acme Capital", created: true, filled: [] },
+    } as never);
+    show([JANE, BOB]);
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    await screen.findByText("2 saved to Traxo.");
+    expect(screen.getAllByText("Jane Tan filed under Acme Capital.").length).toBeGreaterThan(0);
+  });
+
+  it("needs_company shows its message without buttons; editing Company makes the row pending again", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue({ status: 200, body: { outcome: "needs_company" } } as never);
+    show([BOB, CY]);
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    expect((await screen.findAllByText("Add their company so I can tell them apart.")).length).toBe(2);
+    expect(screen.queryByRole("button", { name: "It's a different company" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save all (0)" })).toBeDisabled();
+    await open(user, "Bob Lee");
+    await user.type(screen.getByLabelText("Company"), "Z");
+    expect(screen.getByRole("button", { name: "Save all (1)" })).toBeEnabled();
+    expect(screen.getAllByText("Add their company so I can tell them apart.").length).toBe(1);
+  });
+
+  it("Open profile asks nothing and is hidden while a save runs", async () => {
+    const user = userEvent.setup();
+    const onOpenProfile = vi.fn();
+    const finishers: ((v: never) => void)[] = [];
+    m.saveCard.mockImplementation(() => new Promise((res) => finishers.push(res as never)));
+    show([JANE, BOB], [EXACT, NONE], onOpenProfile);
+    await open(user, "Jane Tan");
+    await user.click(screen.getByRole("button", { name: "Open profile" }));
+    expect(onOpenProfile).toHaveBeenCalledWith("p-jane");
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    expect(screen.queryByRole("button", { name: "Open profile" })).not.toBeInTheDocument();
+    finishers[0](added);
+    await waitFor(() => expect(finishers.length).toBe(2));
+    finishers[1](added);
+    await screen.findByText("2 saved to Traxo.");
   });
 });

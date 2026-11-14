@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { CardFields } from "@/lib/monsoon/extract";
+import type { CardFields, CardKind } from "@/lib/monsoon/extract";
+import type { CardMatch } from "@/lib/monsoon/match";
 import type { RefineOutput } from "@/lib/monsoon/refine";
 import { saveCard, type EstateInfo, type SaveBody } from "./api";
 import { changedClass, notesRows, Was } from "./Highlight";
 import { describeResult, type SavePrompt } from "./outcomes";
+import MatchLine, { type MatchChoice } from "./MatchLine";
 import PromptButtons from "./PromptButtons";
 import { mergeRefine, type Snapshot } from "./merge";
 import SpeakNotes from "./SpeakNotes";
@@ -16,6 +18,8 @@ export type BatchRow = {
   captureId: string; // crypto.randomUUID(), fixed for the row's life
   fields: Record<FieldKey, string>;
   extracted: CardFields;
+  kind: CardKind;
+  match: CardMatch | null; // the "already on file?" result; null = no information
   role?: string; // undefined = use the batch role
   notes?: string; // undefined = use the batch note
   newOrg?: boolean;
@@ -30,11 +34,15 @@ export type BatchRow = {
 };
 export type Batch = { rows: BatchRow[]; role: string; note: string };
 
-export function makeBatch(cards: CardFields[], role: string, note: string): Batch {
+// `matches` lines up with `cards` by index; null (lookup failed) means no match information.
+export function makeBatch(cards: CardFields[], matches: (CardMatch | null)[] | null, role: string, note: string): Batch {
   return {
     role,
     note,
-    rows: cards.map((c) => ({
+    rows: cards.map((c, i) => {
+      const match = matches?.[i] ?? null;
+      const only = match?.match === "exact" ? match.candidates[0] : undefined;
+      return {
       id: crypto.randomUUID(),
       captureId: crypto.randomUUID(),
       fields: {
@@ -46,8 +54,12 @@ export function makeBatch(cards: CardFields[], role: string, note: string): Batc
         linkedin: c.linkedin ?? "",
       },
       extracted: c,
-      status: "pending",
-    })),
+      kind: c.kind,
+      match,
+      samePerson: only?.personId,
+      status: "pending" as const,
+      };
+    }),
   };
 }
 
@@ -63,6 +75,13 @@ function summary(r: BatchRow): string {
   return second ? `${name} · ${second}` : name;
 }
 
+function matchTag(match: CardMatch | null): string | null {
+  if (!match) return null;
+  if (match.match === "none") return "New";
+  if (match.match === "exact") return "On file";
+  return "Check";
+}
+
 function statusColour(status: BatchRow["status"]): string {
   if (status === "saved") return "text-green-700 dark:text-green-400";
   if (status === "failed") return "text-red-600 dark:text-red-400";
@@ -76,6 +95,7 @@ export default function BatchReview({
   onUnauthorized,
   onClose,
   onRunning,
+  onOpenProfile,
 }: {
   estate: EstateInfo;
   batch: Batch;
@@ -84,6 +104,8 @@ export default function BatchReview({
   onClose: (summary: string | null) => void;
   // Reports whether a save run is in flight, so the parent can lock the estate buttons. Released on unmount.
   onRunning?: (running: boolean) => void;
+  // Switches to the Contacts tab on that person; the batch stays open underneath.
+  onOpenProfile?: (personId: string) => void;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -120,6 +142,8 @@ export default function BatchReview({
   function editField(row: BatchRow, key: FieldKey, value: string) {
     const fields = { ...row.fields, [key]: value };
     const before = dropChanged(row, key);
+    // A different name or company may be a different person: the match and the choice no longer apply.
+    const stale = key === "name" || key === "org" ? { match: null, samePerson: undefined } : {};
     // A changed field is a fresh attempt: the old answer and message no longer apply.
     if (row.status === "needs" || row.status === "failed") {
       patchRow(row.id, {
@@ -130,9 +154,10 @@ export default function BatchReview({
         prompt: undefined,
         newOrg: undefined,
         samePerson: undefined,
+        ...stale,
       });
     } else {
-      patchRow(row.id, { fields, before });
+      patchRow(row.id, { fields, before, ...stale });
     }
   }
 
@@ -199,6 +224,7 @@ export default function BatchReview({
       role,
       fields: { ...row.fields, notes: (row.notes ?? b.note) || undefined },
       extracted: row.extracted,
+      kind: row.kind,
       newOrg: row.newOrg || undefined,
       samePerson: row.samePerson,
     };
@@ -318,7 +344,14 @@ export default function BatchReview({
               onClick={() => setOpenId(openId === row.id ? null : row.id)}
               className="flex min-h-[56px] w-full flex-col items-start justify-center gap-0.5 px-4 py-2 text-left"
             >
-              <span className="text-[17px] font-semibold">{summary(row)}</span>
+              <span className="flex items-center gap-2">
+                <span className="text-[17px] font-semibold">{summary(row)}</span>
+                {matchTag(row.match) && (
+                  <span className="rounded-full bg-neutral-200 px-2 py-0.5 text-[12px] font-semibold text-neutral-700 dark:bg-white/15 dark:text-neutral-200">
+                    {matchTag(row.match)}
+                  </span>
+                )}
+              </span>
               {row.fields.name.trim() === "" && (
                 <span className="text-[14px] font-medium text-red-600 dark:text-red-400">Add a name</span>
               )}
@@ -351,9 +384,12 @@ export default function BatchReview({
                 running={running}
                 tidying={(tidyCounts[row.id] ?? 0) > 0}
                 anyTidying={tidying}
+                canOpen={!running && !!onOpenProfile}
+                onOpenProfile={(id) => onOpenProfile?.(id)}
                 batchNote={batch.note}
                 onField={(key, value) => editField(row, key, value)}
                 onRole={(role) => patchRow(row.id, { role })}
+                onChoose={(samePerson) => patchRow(row.id, { samePerson })}
                 onNotes={(notes) => patchRow(row.id, { notes, before: dropChanged(row, "notes") })}
                 onDraft={(spoken) => patchRow(row.id, { spoken })}
                 onApply={(next, sent) => applyRefine(row.id, next, sent)}
@@ -403,9 +439,12 @@ function RowEditor({
   running,
   tidying,
   anyTidying,
+  canOpen,
+  onOpenProfile,
   batchNote,
   onField,
   onRole,
+  onChoose,
   onNotes,
   onDraft,
   onApply,
@@ -419,9 +458,12 @@ function RowEditor({
   running: boolean;
   tidying: boolean; // this card has a tidy request in flight
   anyTidying: boolean; // some card does
+  canOpen: boolean; // no batch save is running
+  onOpenProfile: (personId: string) => void;
   batchNote: string;
   onField: (key: FieldKey, value: string) => void;
   onRole: (role: string | undefined) => void;
+  onChoose: (samePerson: string | false | undefined) => void;
   onNotes: (notes: string | undefined) => void;
   onDraft: (text: string) => void;
   onApply: (next: RefineOutput, sent: Snapshot) => void;
@@ -431,9 +473,23 @@ function RowEditor({
   onRemove: () => void;
 }) {
   const locked = row.status === "saved" || row.status === "saving" || running || tidying;
+  const choice: MatchChoice = row.samePerson === undefined ? null : { samePerson: row.samePerson };
   const marked = (key: FieldKey | "notes") => row.before?.changed.includes(key) ?? false;
   return (
     <div className="divide-y divide-neutral-200 border-t border-neutral-200 dark:divide-white/10 dark:border-white/10">
+      {row.match && row.status !== "saved" && (
+        <div className="p-3">
+          <MatchLine
+            match={row.match}
+            choice={choice}
+            onChoose={(c) => onChoose(c ? c.samePerson : undefined)}
+            onOpen={onOpenProfile}
+            canOpen={canOpen}
+            disabled={locked}
+            roleLabel={(key) => estate.roles.find((r) => r.key === key)?.label ?? key}
+          />
+        </div>
+      )}
       {FIELD_ROWS.map((f) => (
         <div key={f.key} data-changed={marked(f.key) || undefined} className={marked(f.key) ? changedClass : undefined}>
           <label htmlFor={`${row.id}-${f.key}`} className={fieldLabel}>

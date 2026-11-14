@@ -34,6 +34,7 @@ export default function MatchLine({
   onChoose,
   onOpen,
   disabled,
+  canOpen = true,
   roleLabel = (key) => key.replace(/_/g, " "),
 }: {
   match: CardMatch;
@@ -41,6 +42,7 @@ export default function MatchLine({
   onChoose: (choice: MatchChoice) => void;
   onOpen: (personId: string) => void;
   disabled?: boolean;
+  canOpen?: boolean; // false hides the buttons that leave for a profile
   roleLabel?: (key: string) => string;
 }) {
   const first = match.candidates[0];
@@ -70,14 +72,16 @@ export default function MatchLine({
                 >
                   This one
                 </button>
-                <button
-                  type="button"
-                  disabled={disabled}
-                  className={`${choiceBase} ${choiceOff}`}
-                  onClick={() => onOpen(c.personId)}
-                >
-                  Open
-                </button>
+                {canOpen && (
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    className={`${choiceBase} ${choiceOff}`}
+                    onClick={() => onOpen(c.personId)}
+                  >
+                    Open
+                  </button>
+                )}
               </div>
             </div>
           );
@@ -107,14 +111,16 @@ export default function MatchLine({
         {line && <p className={`${quiet} break-words`}>{line}</p>}
       </div>
       <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled={disabled}
-          className={`${choiceBase} ${choiceOff}`}
-          onClick={() => onOpen(first.personId)}
-        >
-          Open profile
-        </button>
+        {canOpen && (
+          <button
+            type="button"
+            disabled={disabled}
+            className={`${choiceBase} ${choiceOff}`}
+            onClick={() => onOpen(first.personId)}
+          >
+            Open profile
+          </button>
+        )}
         <button
           type="button"
           aria-pressed={same}
