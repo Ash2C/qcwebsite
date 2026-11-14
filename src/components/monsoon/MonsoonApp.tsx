@@ -694,7 +694,11 @@ export default function MonsoonApp() {
               <MatchLine
                 match={match}
                 choice={choice}
-                onChoose={setChoice}
+                onChoose={(c) => {
+                  // A tap on the match line replaces any earlier prompt answer.
+                  setChoice(c);
+                  setSamePerson(undefined);
+                }}
                 onOpen={(personId) => openContact({ personId })}
                 disabled={busy}
                 roleLabel={roleLabel}

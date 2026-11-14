@@ -896,6 +896,23 @@ describe("BatchReview match choice", () => {
     expect(sent(1).samePerson).toBe("p-jane");
   });
 
+  it("a tap on the match line replaces an earlier prompt answer that failed to save", async () => {
+    const user = userEvent.setup();
+    m.saveCard
+      .mockResolvedValueOnce(promptResult)
+      .mockResolvedValueOnce({ status: 500, body: {} } as never)
+      .mockResolvedValue(added);
+    show([JANE], [EXACT]);
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await user.click(await screen.findByRole("button", { name: "Different person" }));
+    await screen.findByText("Could not save. Retry.");
+    await open(user, "Jane Tan");
+    await user.click(screen.getByRole("button", { name: "Add what's new" }));
+    await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+    await screen.findByText("1 saved to Traxo.");
+    expect(sent(2).samePerson).toBe("p-jane");
+  });
+
   it("a 401 during Save all keeps the match choice", async () => {
     const user = userEvent.setup();
     m.saveCard.mockResolvedValueOnce({ status: 401, body: {} } as never).mockResolvedValue(added);
@@ -1051,13 +1068,24 @@ describe("BatchReview match choice", () => {
       candidates: [{ ...cand("p-jonathan", "Jonathan Poe"), company: null, email: "jon@x.com", by: "email", nameAgrees }],
     });
 
-    it("is tagged Check, not preselected, and goes out unchosen", async () => {
+    it("is tagged Check, not preselected, and with no company waits for a choice", async () => {
       const user = userEvent.setup();
       m.saveCard.mockResolvedValue(added);
-      show([jon], [byEmail(false)]);
+      show([jon, CY], [byEmail(false), NONE]);
       expect(within(row("Jon Poe")).getByText("Check")).toBeInTheDocument();
+      expect(within(row("Jon Poe")).getByText('Choose a match or "Different person" first.')).toBeInTheDocument();
       await open(user, "Jon Poe");
       expect(screen.getByRole("button", { name: "Add what's new" })).toHaveAttribute("aria-pressed", "false");
+      expect(screen.getByRole("button", { name: "Save all (1)" })).toBeEnabled();
+      await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+      await screen.findByText("Cy Wu added to Traxo.");
+      expect(m.saveCard).toHaveBeenCalledTimes(1);
+    });
+
+    it("with a company it goes out unchosen", async () => {
+      const user = userEvent.setup();
+      m.saveCard.mockResolvedValue(added);
+      show([cardOf("Jon Poe", "Acme", "jon@x.com")], [byEmail(false)]);
       await user.click(screen.getByRole("button", { name: "Save all (1)" }));
       await screen.findByText("1 saved to Traxo.");
       expect(sent(0).samePerson).toBeUndefined();

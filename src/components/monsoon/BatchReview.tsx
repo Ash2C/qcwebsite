@@ -428,7 +428,8 @@ export default function BatchReview({
                   batchNote={batch.note}
                   onField={(key, value) => editField(row, key, value)}
                   onRole={(role) => patchRow(row.id, { role })}
-                  onChoose={(choice) => patchRow(row.id, { choice })}
+                  // A tap on the match line replaces any earlier prompt answer.
+                  onChoose={(choice) => patchRow(row.id, { choice, samePerson: undefined })}
                   onNotes={(notes) => patchRow(row.id, { notes, before: dropChanged(row, "notes") })}
                   onDraft={(spoken) => patchRow(row.id, { spoken })}
                   onApply={(next, sent) => applyRefine(row.id, next, sent)}

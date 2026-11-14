@@ -1748,7 +1748,16 @@ describe("Match choice on the single form", () => {
       expect(body(0).samePerson).toBe("p1");
     });
 
-    it("goes out unchosen without the tap", async () => {
+    it("with no company blocks Save with the hint until a choice is made", async () => {
+      const user = userEvent.setup();
+      await read(user, [{ ...CARD, org: "" }], [byEmail(false)]);
+      expect(screen.getByText(NEEDS_HINT)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+      await user.click(screen.getByRole("button", { name: "Different person" }));
+      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    });
+
+    it("goes out unchosen without the tap when the card has a company", async () => {
       const user = userEvent.setup();
       m.saveCard.mockResolvedValue(ADDED_OK);
       await read(user, [CARD], [byEmail(false)]);
@@ -1774,6 +1783,22 @@ describe("Match choice on the single form", () => {
     await save(user);
     await screen.findByRole("button", { name: "Same person (Beta)" });
     expect(screen.queryByRole("button", { name: "Add what's new" })).toBeNull();
+  });
+
+  it("a tap on the match line replaces an earlier prompt answer that failed to save", async () => {
+    const user = userEvent.setup();
+    m.saveCard
+      .mockResolvedValueOnce({ status: 200, body: { outcome: "same_name", matches: [{ personId: "p1", org: "Beta" }] } } as never)
+      .mockResolvedValueOnce({ status: 500, body: {} } as never)
+      .mockResolvedValue(ADDED_OK);
+    await read(user, [CARD], [exact]);
+    await save(user);
+    await user.click(await screen.findByRole("button", { name: "Different person" }));
+    await screen.findByText(/Could not save/);
+    await user.click(await screen.findByRole("button", { name: "Add what's new" }));
+    await save(user);
+    await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(3));
+    expect(body(2).samePerson).toBe("p1");
   });
 
   it("changing the estate drops the match and the choice", async () => {

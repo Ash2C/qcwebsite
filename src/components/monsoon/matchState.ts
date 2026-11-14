@@ -19,9 +19,14 @@ export function matchTag(match: CardMatch | null): string | null {
   return confidentId(match) ? "On file" : "Check";
 }
 
-/** A name-only match with no company on the card: saving would silently reuse the namesake. */
+/** A match that needs a say before saving, with no company on the card: a name-only match would
+ *  silently reuse the namesake, an email match under another name would be filed on whoever has the
+ *  card's own name. */
 export function needsChoice(match: CardMatch | null, org: string, choice: Choice, answer: Choice): boolean {
-  return match?.match === "same_name" && org.trim() === "" && choice === undefined && answer === undefined;
+  if (org.trim() !== "" || choice !== undefined || answer !== undefined) return false;
+  if (match?.match === "same_name") return true;
+  const only = match?.match === "exact" ? match.candidates[0] : undefined;
+  return only?.by === "email" && !only.nameAgrees;
 }
 
 export const NEEDS_CHOICE_HINT = 'Choose a match or "Different person" first.';

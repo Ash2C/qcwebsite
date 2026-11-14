@@ -51,6 +51,12 @@ describe("needsChoice", () => {
     expect(needsChoice(exact(cand("name_company")), "", undefined, undefined)).toBe(false);
     expect(needsChoice(null, "", undefined, undefined)).toBe(false);
   });
+  it("an email match under another name needs a choice too, but not one whose name agrees", () => {
+    expect(needsChoice(exact(cand("email", false)), "", undefined, undefined)).toBe(true);
+    expect(needsChoice(exact(cand("email", false)), "Acme", undefined, undefined)).toBe(false);
+    expect(needsChoice(exact(cand("email", false)), "", false, undefined)).toBe(false);
+    expect(needsChoice(exact(cand("email", true)), "", undefined, undefined)).toBe(false);
+  });
 });
 
 describe("changeOf and choiceAfter", () => {
