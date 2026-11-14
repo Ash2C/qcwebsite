@@ -6,6 +6,16 @@ vi.mock("@/lib/monsoon/extract", () => ({
   extractCards: (...args: unknown[]) => extractCards(...args),
 }));
 
+const matchCards = vi.fn();
+vi.mock("@/lib/monsoon/match", () => ({
+  matchCards: (...args: unknown[]) => matchCards(...args),
+}));
+const FAKE_DB = { fake: true };
+const withEstateDb = vi.fn();
+vi.mock("@/lib/monsoon/db", () => ({
+  withEstateDb: (...args: unknown[]) => withEstateDb(...args),
+}));
+
 import { POST } from "./route";
 
 const FIELDS = {
@@ -51,6 +61,9 @@ function formWith(file: Blob, name = "card"): FormData {
 
 beforeEach(() => {
   extractCards.mockReset();
+  matchCards.mockReset();
+  withEstateDb.mockReset();
+  withEstateDb.mockImplementation(async (_estate: unknown, fn: (db: unknown) => Promise<unknown>) => fn(FAKE_DB));
   vi.stubEnv("MONSOON_PASSCODE", "correct-horse-battery-staple");
   vi.stubEnv("MONSOON_SESSION_SECRET", "x".repeat(32));
 });
@@ -109,14 +122,14 @@ describe("POST /api/monsoon/read", () => {
     extractCards.mockResolvedValue([]);
     const res = await POST(await post(formWith(new Blob(["ABC"], { type: "image/jpeg" }))));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ cards: [] });
+    expect(await res.json()).toEqual({ cards: [], matches: null });
   });
 
   it("returns the extracted cards for a small jpeg", async () => {
     extractCards.mockResolvedValue([FIELDS]);
     const res = await POST(await post(formWith(new Blob(["ABC"], { type: "image/jpeg" }))));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ cards: [FIELDS] });
+    expect(await res.json()).toEqual({ cards: [FIELDS], matches: null });
     expect(extractCards).toHaveBeenCalledWith({
       base64: Buffer.from("ABC").toString("base64"),
       mediaType: "image/jpeg",
@@ -146,5 +159,77 @@ describe("POST /api/monsoon/read", () => {
     extractCards.mockResolvedValue([FIELDS]);
     const ok = new Blob([new Uint8Array(3_700_000)], { type: "image/jpeg" });
     expect((await POST(await post(formWith(ok)))).status).toBe(200);
+  });
+
+  describe("match before save", () => {
+    const MATCH = { match: "exact", candidates: [] };
+    const photo = (estate?: string) => {
+      const form = formWith(new Blob(["ABC"], { type: "image/jpeg" }));
+      if (estate !== undefined) form.append("estate", estate);
+      return form;
+    };
+
+    it("answers matches: null and opens no database when no estate is sent", async () => {
+      extractCards.mockResolvedValue([FIELDS]);
+      const res = await POST(await post(photo()));
+      expect(await res.json()).toEqual({ cards: [FIELDS], matches: null });
+      expect(withEstateDb).not.toHaveBeenCalled();
+      expect(matchCards).not.toHaveBeenCalled();
+    });
+
+    it("matches each card's name, org and email for a valid estate and returns the result", async () => {
+      const second = { ...FIELDS, name: "Omar Reyes", org: "Northwind", email: "o@n.example" };
+      extractCards.mockResolvedValue([FIELDS, second]);
+      matchCards.mockResolvedValue([MATCH, { match: "none", candidates: [] }]);
+      const res = await POST(await post(photo("traxo")));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ cards: [FIELDS, second], matches: [MATCH, { match: "none", candidates: [] }] });
+      expect(withEstateDb).toHaveBeenCalledTimes(1);
+      expect(matchCards).toHaveBeenCalledWith(
+        FAKE_DB,
+        [
+          { name: "Jane Tan", org: "Acme", email: "" },
+          { name: "Omar Reyes", org: "Northwind", email: "o@n.example" },
+        ],
+        { timeoutMs: 4000 }
+      );
+    });
+
+    it("answers matches: null for an unknown estate", async () => {
+      extractCards.mockResolvedValue([FIELDS]);
+      const res = await POST(await post(photo("nowhere")));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ cards: [FIELDS], matches: null });
+      expect(withEstateDb).not.toHaveBeenCalled();
+    });
+
+    it("answers matches: null and opens no database when no card was read", async () => {
+      extractCards.mockResolvedValue([]);
+      const res = await POST(await post(photo("traxo")));
+      expect(await res.json()).toEqual({ cards: [], matches: null });
+      expect(withEstateDb).not.toHaveBeenCalled();
+    });
+
+    it("keeps the cards when the match fails, logging only the error name and code", async () => {
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+      extractCards.mockResolvedValue([FIELDS]);
+      withEstateDb.mockRejectedValue(Object.assign(new TypeError("password=secret detail"), { code: "28P01" }));
+      const res = await POST(await post(photo("traxo")));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ cards: [FIELDS], matches: null });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0]).toContain("TypeError");
+      expect(spy.mock.calls[0]).toContain("28P01");
+      expect(JSON.stringify(spy.mock.calls)).not.toContain("secret detail");
+    });
+
+    it("keeps the cards when matchCards itself rejects", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      extractCards.mockResolvedValue([FIELDS]);
+      matchCards.mockRejectedValue(new Error("boom"));
+      const res = await POST(await post(photo("zeroone")));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ cards: [FIELDS], matches: null });
+    });
   });
 });

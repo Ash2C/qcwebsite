@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/monsoon/auth";
+import { withEstateDb } from "@/lib/monsoon/db";
+import { estateByKey } from "@/lib/monsoon/estates";
 import { extractCards } from "@/lib/monsoon/extract";
+import { matchCards, type CardMatch } from "@/lib/monsoon/match";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,6 +12,8 @@ export const maxDuration = 30;
 const MAX_BYTES = 3_700_000;
 // Allowance for multipart boundaries and headers around the file.
 const MULTIPART_OVERHEAD = 100_000;
+// The photo is read by now (the model call has its own 25 s limit), so the lookup gets a short budget.
+const MATCH_TIMEOUT_MS = 4000;
 const TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
 type MediaType = (typeof TYPES)[number];
 
@@ -50,7 +55,25 @@ export async function POST(request: Request) {
       base64,
       mediaType: file.type as MediaType,
     });
-    return NextResponse.json({ cards });
+    let matches: CardMatch[] | null = null;
+    const estate = estateByKey(form.get("estate"));
+    if (estate && cards.length > 0) {
+      try {
+        const asked = cards.map((c) => ({ name: c.name, org: c.org, email: c.email }));
+        matches = await withEstateDb(estate, (db) => matchCards(db, asked, { timeoutMs: MATCH_TIMEOUT_MS }));
+      } catch (err) {
+        // A failed match never fails the read. Name and code only: the message can carry
+        // connection details or contact data.
+        const status = (err as { status?: unknown })?.status;
+        const code = (err as { code?: unknown })?.code;
+        console.error(
+          `monsoon: match failed for ${estate.key}`,
+          err instanceof Error ? err.name : "error",
+          typeof code === "string" && code.length === 5 ? code : typeof status === "number" ? status : ""
+        );
+      }
+    }
+    return NextResponse.json({ cards, matches });
   } catch (err) {
     // Error name only: never the photo, the base64 or the card details.
     const status = (err as { status?: unknown })?.status;
