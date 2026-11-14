@@ -47,6 +47,7 @@ const EMPTY_CARD: CardFields = {
   phone: "",
   linkedin: "",
   raw_text: "",
+  kind: "card",
 };
 
 type Phase = "loading" | "locked" | "failed" | "app";

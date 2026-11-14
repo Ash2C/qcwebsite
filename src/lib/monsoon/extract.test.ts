@@ -15,7 +15,8 @@ vi.mock("@anthropic-ai/sdk", () => ({
 
 import { extractCards, resolveModel } from "./extract";
 
-const KEYS = ["name", "title", "org", "email", "phone", "linkedin", "raw_text"];
+const TEXT_KEYS = ["name", "title", "org", "email", "phone", "linkedin", "raw_text"];
+const KEYS = [...TEXT_KEYS, "kind"];
 const EMPTY = {
   name: "",
   title: "",
@@ -24,6 +25,7 @@ const EMPTY = {
   phone: "",
   linkedin: "",
   raw_text: "",
+  kind: "other",
 };
 
 function reply(input: unknown, stop_reason = "end_turn") {
@@ -83,7 +85,7 @@ describe("extractCards", () => {
       type: "image",
       source: { type: "base64", media_type: "image/png", data: "QUJD" },
     });
-    expect(blocks).toContainEqual({ type: "text", text: "Read every card in this photo." });
+    expect(blocks).toContainEqual({ type: "text", text: "Find every person named in this image." });
     expect(args.tools).toBeUndefined();
     expect(args.tool_choice).toBeUndefined();
     expect(args.output_config.format.type).toBe("json_schema");
@@ -97,6 +99,7 @@ describe("extractCards", () => {
     expect(item.type).toBe("object");
     expect(Object.keys(item.properties).sort()).toEqual([...KEYS].sort());
     for (const k of KEYS) expect(item.properties[k].type).toBe("string");
+    expect(item.properties.kind.enum).toEqual(["card", "badge", "screen", "other"]);
     expect([...item.required].sort()).toEqual([...KEYS].sort());
     expect(item.additionalProperties).toBe(false);
   });
@@ -105,15 +108,45 @@ describe("extractCards", () => {
     create.mockResolvedValue(
       reply({
         cards: [
-          { name: " Jane Tan ", org: "Acme" },
-          { name: "Raj Mehta", email: "raj@corvane.example" },
+          { name: " Jane Tan ", org: "Acme", kind: "card" },
+          { name: "Raj Mehta", email: "raj@corvane.example", kind: "card" },
         ],
       })
     );
     expect(await extractCards(IMG)).toEqual([
-      { ...EMPTY, name: "Jane Tan", org: "Acme" },
-      { ...EMPTY, name: "Raj Mehta", email: "raj@corvane.example" },
+      { ...EMPTY, name: "Jane Tan", org: "Acme", kind: "card" },
+      { ...EMPTY, name: "Raj Mehta", email: "raj@corvane.example", kind: "card" },
     ]);
+  });
+
+  it("reads a name tag as one badge entry with only the name set", async () => {
+    create.mockResolvedValue(reply({ cards: [{ name: "Priya", kind: "badge" }] }));
+    expect(await extractCards(IMG)).toEqual([{ ...EMPTY, name: "Priya", kind: "badge" }]);
+  });
+
+  it("reads a web page with three people in order as screen entries", async () => {
+    create.mockResolvedValue(
+      reply({
+        cards: ["Ann", "Bo", "Cy"].map((name) => ({ name, kind: "screen" })),
+      })
+    );
+    const out = await extractCards(IMG);
+    expect(out.map((c) => c.name)).toEqual(["Ann", "Bo", "Cy"]);
+    expect(out.every((c) => c.kind === "screen")).toBe(true);
+  });
+
+  it.each([
+    ["missing", {}],
+    ["unknown", { kind: "poster" }],
+    ["non-string", { kind: 3 }],
+  ])("turns a %s kind into other", async (_label, extra) => {
+    create.mockResolvedValue(reply({ cards: [{ name: "A", ...extra }] }));
+    expect(await extractCards(IMG)).toEqual([{ ...EMPTY, name: "A", kind: "other" }]);
+  });
+
+  it("drops an entry that has only a kind", async () => {
+    create.mockResolvedValue(reply({ cards: [{ kind: "badge" }, { name: "A", kind: "card" }] }));
+    expect(await extractCards(IMG)).toEqual([{ ...EMPTY, name: "A", kind: "card" }]);
   });
 
   it("caps at 12 and drops empty or malformed entries", async () => {

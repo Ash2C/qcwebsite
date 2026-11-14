@@ -3,6 +3,10 @@ import Anthropic from "@anthropic-ai/sdk";
 // Upper bound on cards kept from one photo.
 export const MAX_CARDS = 12;
 
+export type CardKind = "card" | "badge" | "screen" | "other";
+
+const KINDS: CardKind[] = ["card", "badge", "screen", "other"];
+
 export type CardFields = {
   name: string;
   title: string;
@@ -11,9 +15,10 @@ export type CardFields = {
   phone: string;
   linkedin: string;
   raw_text: string;
+  kind: CardKind;
 };
 
-const KEYS: (keyof CardFields)[] = [
+const KEYS: Exclude<keyof CardFields, "kind">[] = [
   "name",
   "title",
   "org",
@@ -24,7 +29,7 @@ const KEYS: (keyof CardFields)[] = [
 ];
 
 const SYSTEM_PROMPT =
-  "You read one photo that may show one or several business cards or conference name badges. Return one entry in `cards` for each separate card or badge, in reading order: top to bottom, then left to right. Never merge two cards into one entry and never split one card into two. Copy each value exactly as printed on that card. If a value is not printed on that card, leave that field as an empty string; never guess, infer, or borrow a value from another card. `name` is the person's name only. `org` is the company or organisation. `linkedin` is a LinkedIn URL or handle if printed. `raw_text` is all legible text on that card, line by line. If the photo shows no card or badge, or nothing is legible, return an empty `cards` list.";
+  "You are given one image. It may be a business card, a conference badge, a name tag on clothing, a screenshot of a website, a LinkedIn profile, an email signature, a slide, an attendee or team list, or anything else that shows people's names. Return one entry in `cards` for each person you can identify by a visible name, in reading order: top to bottom, then left to right. Never merge two people into one entry and never split one person into two. For each person, copy only the details that are visibly attached to that person, exactly as shown: `name` is the person's name only; `title` their job title; `org` their company or organisation; `email`, `phone` and `linkedin` only if shown for that person. If a detail is not shown for that person, leave that field as an empty string; never guess, infer, or borrow a detail from another person or from elsewhere in the image. A company logo or page header may be used as `org` only when the image is clearly about that one company (a card, a badge, a company's own team page). `raw_text` is the text belonging to that person, line by line. `kind` is `card` for a business card, `badge` for a badge or name tag, `screen` for a screenshot, slide or other image of a screen or document, and `other` for anything else. If the image names no person, or nothing is legible, return an empty `cards` list.";
 
 export function resolveModel(): string {
   const model = process.env.MONSOON_MODEL || "claude-haiku-5-5";
@@ -58,8 +63,11 @@ export async function extractCards(image: {
               type: "array",
               items: {
                 type: "object",
-                properties: Object.fromEntries(KEYS.map((k) => [k, { type: "string" }])),
-                required: [...KEYS],
+                properties: {
+                  ...Object.fromEntries(KEYS.map((k) => [k, { type: "string" }])),
+                  kind: { type: "string", enum: [...KINDS] },
+                },
+                required: [...KEYS, "kind"],
                 additionalProperties: false,
               },
             },
@@ -81,7 +89,7 @@ export async function extractCards(image: {
               data: image.base64,
             },
           },
-          { type: "text", text: "Read every card in this photo." },
+          { type: "text", text: "Find every person named in this image." },
         ],
       },
     ],
@@ -116,7 +124,9 @@ export async function extractCards(image: {
       const v = input[k];
       card[k] = typeof v === "string" ? v.trim() : "";
     }
-    // A card with all seven fields empty carries nothing; drop it.
+    const kind = input.kind;
+    card.kind = KINDS.includes(kind as CardKind) ? (kind as CardKind) : "other";
+    // An entry with all seven text fields empty carries nothing, whatever its kind; drop it.
     if (KEYS.some((k) => card[k] !== "")) cards.push(card);
   }
   return cards;

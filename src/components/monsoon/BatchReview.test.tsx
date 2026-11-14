@@ -23,7 +23,7 @@ const ESTATE: EstateInfo = {
 };
 
 function cardOf(name: string, org = "", email = "") {
-  return { name, title: "", org, email, phone: "", linkedin: "", raw_text: name };
+  return { name, title: "", org, email, phone: "", linkedin: "", raw_text: name, kind: "card" as const };
 }
 const JANE = cardOf("Jane Tan", "Acme Capital");
 const BOB = cardOf("Bob Lee", "", "bob@x.com");

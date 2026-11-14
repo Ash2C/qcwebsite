@@ -59,6 +59,7 @@ const CARD = {
   phone: "",
   linkedin: "",
   raw_text: "Jane Tan Partner Acme Capital",
+  kind: "card" as const,
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
