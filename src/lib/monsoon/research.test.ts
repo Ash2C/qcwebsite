@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BLOCKED_DOMAINS,
+  FREE_MAIL,
   anchorsOf,
   hasAnchor,
   runResearch,
@@ -48,7 +49,7 @@ describe("vet", () => {
         findings: [
           f("title", "Senior Analyst", "https://examplecorp.test/team/ada"),
           f("linkedin_url", "https://www.linkedin.com/in/ada-testperson/?x=1#y", "https://linkedin.com/in/ada-testperson"),
-          f("company_website", "https://www.examplecorp.test/about", "https://news.example.test/ada"),
+          f("company_website", "https://www.examplecorp.test/about", "https://examplecorp.test/team/ada/"),
         ],
         summary: "Ada is an analyst.",
         summary_sources: ["https://news.example.test/ada"],
@@ -60,9 +61,9 @@ describe("vet", () => {
       outcome: "findings",
       identity: "Matches name and company.",
       findings: [
-        { target: "person", field: "title", from: "Analyst", to: "Senior Analyst", source: "https://examplecorp.test/team/ada" },
+        { target: "person", field: "title", from: "Analyst", to: "Senior Analyst", source: "https://www.examplecorp.test/team/ada" },
         { target: "person", field: "linkedin", from: null, to: "https://www.linkedin.com/in/ada-testperson", source: "https://linkedin.com/in/ada-testperson" },
-        { target: "company", field: "website", from: null, to: "https://www.examplecorp.test", source: "https://news.example.test/ada" },
+        { target: "company", field: "website", from: null, to: "https://www.examplecorp.test", source: "https://www.examplecorp.test/team/ada" },
       ],
       summary: "Ada is an analyst.",
       summarySources: ["https://news.example.test/ada"],
@@ -159,6 +160,137 @@ describe("vet", () => {
   it("carries the full blocked list", () => {
     expect(BLOCKED_DOMAINS).toContain("hunter.io");
     expect(BLOCKED_DOMAINS).toHaveLength(33);
+  });
+});
+
+const NEWS = "https://news.example.test/ada";
+const NO_SITE = { ...SUBJECT, companyWebsite: null };
+const nothing = { outcome: "nothing" };
+
+describe("vet hardening", () => {
+  it.each(["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"])("drops prototype-key field %s", (field) => {
+    expect(vet(raw({ findings: [f(field, "x", NEWS)] }), RETURNED, SUBJECT)).toEqual(nothing);
+  });
+
+  it("first occurrence of a field wins", () => {
+    const r = vet(raw({ findings: [f("title", "First", NEWS), f("title", "Second", NEWS)] }), RETURNED, SUBJECT);
+    expect(r.outcome === "findings" && r.findings.map((x) => x.to)).toEqual(["First"]);
+  });
+
+  it("keeps a LinkedIn value only when search returned that profile", () => {
+    const bad = vet(raw({ findings: [f("linkedin_url", "https://www.linkedin.com/in/invented-slug", NEWS)] }), RETURNED, SUBJECT);
+    expect(bad).toEqual(nothing);
+    const ok = vet(raw({ findings: [f("linkedin_url", "https://www.linkedin.com/in/ada-testperson/", NEWS)] }), RETURNED, SUBJECT);
+    expect(ok.outcome === "findings" && ok.findings[0].to).toBe("https://www.linkedin.com/in/ada-testperson");
+  });
+
+  it("compares LinkedIn with the on-file value case-insensitively and scheme-less", () => {
+    for (const on of ["linkedin.com/in/Ada-TestPerson", "http://www.linkedin.com/in/ada-testperson/"]) {
+      const r = vet(raw({ findings: [f("linkedin_url", "https://www.linkedin.com/in/ada-testperson", NEWS)] }), RETURNED, { ...SUBJECT, linkedin: on });
+      expect(r).toEqual(nothing);
+    }
+  });
+
+  it("counts a scheme-less or http on-file LinkedIn as an anchor", () => {
+    const base = { ...SUBJECT, company: null, email: null };
+    expect(hasAnchor({ ...base, linkedin: "linkedin.com/in/ada" })).toBe(true);
+    expect(hasAnchor({ ...base, linkedin: "http://www.linkedin.com/in/ada" })).toBe(true);
+  });
+
+  it("keeps a website only when its source is on the website's own host", () => {
+    expect(vet(raw({ findings: [f("company_website", "https://medium.example.test", NEWS)] }), RETURNED, SUBJECT)).toEqual(nothing);
+    const ok = vet(raw({ findings: [f("company_website", "https://www.examplecorp.test/x", "https://examplecorp.test/team/ada")] }), RETURNED, NO_SITE);
+    expect(ok.outcome).toBe("findings");
+  });
+
+  it.each(["https://10.0.0.1", "https://localhost", "https://intranet", "https://examplecorp.test:8443", "https://u:p@examplecorp.test"])(
+    "drops non-public or odd website %s",
+    (v) => {
+      const returned = [...RETURNED, v + "/a"];
+      expect(vet(raw({ findings: [f("company_website", v, v + "/a")] }), returned, NO_SITE)).toEqual(nothing);
+    }
+  );
+
+  it("does not let a spoofed host vouch for email", () => {
+    const e = f("work_email", "ada@examplecorp.test", "https://examplecorp.test.evil.example/ada");
+    const e2 = f("work_email", "ada@examplecorp.test", "https://notexamplecorp.test/ada");
+    const returned = [...RETURNED, "https://examplecorp.test.evil.example/ada", "https://notexamplecorp.test/ada"];
+    expect(vet(raw({ findings: [e] }), returned, SUBJECT)).toEqual(nothing);
+    expect(vet(raw({ findings: [e2] }), returned, SUBJECT)).toEqual(nothing);
+  });
+
+  const SITE = "https://www.examplecorp.test/team/ada";
+  it.each([
+    ["work_email", "ada@gmail.com"],
+    ["work_email", "a@b@examplecorp.test"],
+    ["work_email", "ada @examplecorp.test"],
+    ["work_email", "ada@localhost"],
+    ["work_email", "a".repeat(120) + "@examplecorp.test"],
+    ["work_phone", "home: 555 1234567"],
+    ["work_phone", "123"],
+    ["country", "Taiwan, home of many things 12345"],
+    ["country", "x".repeat(61)],
+  ])("drops bad %s value %s", (field, value) => {
+    expect(vet(raw({ findings: [f(field, value, SITE)] }), RETURNED, SUBJECT)).toEqual(nothing);
+  });
+
+  it("keeps a clean phone and country", () => {
+    const r = vet(raw({ findings: [f("work_phone", "+886 (2) 1234-5678", SITE), f("country", "Cote d'Ivoire", SITE)] }), RETURNED, SUBJECT);
+    expect(r.outcome === "findings" && r.findings.map((x) => x.field)).toEqual(["phone", "country"]);
+  });
+
+  it("stores the tool's own URL string, not the model's", () => {
+    const r = vet(raw({ findings: [f("title", "Director", "https://NEWS.example.test/ada/?utm=1#frag")] }), RETURNED, SUBJECT);
+    expect(r.outcome === "findings" && r.findings[0].source).toBe(NEWS);
+    const s = vet(raw({ summary: "Ok.", summary_sources: ["https://news.example.test/ada/"] }), RETURNED, SUBJECT);
+    expect(s.outcome === "findings" && s.summarySources).toEqual([NEWS]);
+  });
+
+  it.each([
+    "https://evil.example@news.example.test/ada",
+    "https://news.example.test:8443/ada",
+    "https://news.example.test.:8443/ada",
+    "http://news.example.test/ada",
+  ])("drops source %s", (src) => {
+    const returned = [...RETURNED, "https://evil.example@news.example.test/ada", "https://news.example.test:8443/ada"];
+    expect(vet(raw({ findings: [f("title", "Director", src)] }), returned, SUBJECT)).toEqual(nothing);
+  });
+
+  it("does not store a returned URL over 500 chars", () => {
+    const long = "https://news.example.test/" + "a".repeat(500);
+    expect(vet(raw({ findings: [f("title", "Director", long)] }), [long], SUBJECT)).toEqual(nothing);
+  });
+
+  it("treats a trailing-dot blocked host as blocked", () => {
+    const u = "https://zoominfo.com./p/ada";
+    expect(vet(raw({ findings: [f("title", "Director", u)] }), [u], SUBJECT)).toEqual(nothing);
+  });
+
+  it("spoof hosts are not blocked, real subdomains are", () => {
+    const ok = ["https://notzoominfo.com/a", "https://zoominfo.com.evil.example/a"];
+    for (const u of ok) expect(vet(raw({ findings: [f("title", "Director", u)] }), [u], SUBJECT).outcome).toBe("findings");
+    expect(vet(raw({ findings: [f("title", "Director", "https://x.zoominfo.com/a")] }), ["https://x.zoominfo.com/a"], SUBJECT)).toEqual(nothing);
+  });
+
+  it("drops control characters, line separators and fullwidth parentheses", () => {
+    for (const v of ["Dir ector", "Dir\u0085ector", "Dir\vector", "Dir\tector", "Director（x）"]) {
+      expect(vet(raw({ findings: [f("title", v, NEWS)] }), RETURNED, SUBJECT)).toEqual(nothing);
+    }
+  });
+
+  it("drops a 121-char title and a summary without sources", () => {
+    expect(vet(raw({ findings: [f("title", "x".repeat(121), NEWS)] }), RETURNED, SUBJECT)).toEqual(nothing);
+    expect(vet(raw({ summary: "Text.", summary_sources: [] }), RETURNED, SUBJECT)).toEqual(nothing);
+  });
+
+  it("cuts a summary with no sentence end at the limit", () => {
+    const r = vet(raw({ summary: "a".repeat(2500), summary_sources: [NEWS] }), RETURNED, SUBJECT);
+    expect(r.outcome === "findings" && r.summary.length).toBe(2000);
+  });
+
+  it("freezes the domain lists", () => {
+    expect(Object.isFrozen(BLOCKED_DOMAINS)).toBe(true);
+    expect(Object.isFrozen(FREE_MAIL)).toBe(true);
   });
 });
 

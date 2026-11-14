@@ -12,29 +12,34 @@ export type ResearchSubject = {
   country: string | null;
 };
 
-export const BLOCKED_DOMAINS: readonly string[] = [
+export const BLOCKED_DOMAINS: readonly string[] = Object.freeze([
   "zoominfo.com", "rocketreach.co", "apollo.io", "lusha.com", "signalhire.com", "contactout.com",
   "datanyze.com", "spokeo.com", "whitepages.com", "beenverified.com", "truepeoplesearch.com",
   "fastpeoplesearch.com", "peoplefinders.com", "intelius.com", "radaris.com", "mylife.com", "pipl.com",
   "peekyou.com", "thatsthem.com", "clustrmaps.com", "nuwber.com", "usphonebook.com", "idcrawl.com",
   "instantcheckmate.com", "truthfinder.com", "checkpeople.com", "leadiq.com", "seamless.ai", "hunter.io",
   "snov.io", "facebook.com", "instagram.com", "tiktok.com",
-];
+]);
 
-export const FREE_MAIL: readonly string[] = [
+export const FREE_MAIL: readonly string[] = Object.freeze([
   "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com", "icloud.com",
   "me.com", "aol.com", "proton.me", "protonmail.com", "qq.com", "163.com",
-];
+]);
 
 const MAX_VALUE = 300;
 const MAX_SUMMARY = 2000;
 const MAX_IDENTITY = 400;
 const MAX_SUMMARY_SOURCES = 6;
+const MAX_SOURCE = 500;
 const LINKEDIN_IN = /^https:\/\/([a-z]{2,3}\.)?linkedin\.com\/in\/[^/?#]+\/?$/i;
+
+function cleanHost(h: string): string {
+  return h.toLowerCase().replace(/\.+$/, "").replace(/^www\./, "");
+}
 
 function hostOf(url: string): string | null {
   try {
-    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+    return cleanHost(new URL(url).hostname);
   } catch {
     return null;
   }
@@ -52,7 +57,7 @@ function isBlockedHost(host: string): boolean {
 function normUrl(url: string): string | null {
   try {
     const u = new URL(url);
-    return u.hostname.toLowerCase().replace(/^www\./, "") + u.pathname.replace(/\/+$/, "");
+    return cleanHost(u.hostname) + u.pathname.replace(/\/+$/, "");
   } catch {
     return null;
   }
@@ -65,6 +70,20 @@ function siteHost(site: string | null): string | null {
   return hostOf(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : "https://" + s);
 }
 
+/** A scheme-less or http:// on-file URL, made https for comparison. */
+function withHttps(v: string): string {
+  const t = v.trim();
+  if (/^https:\/\//i.test(t)) return t;
+  if (/^http:\/\//i.test(t)) return "https://" + t.slice(7);
+  return /^[a-z][a-z0-9+.-]*:/i.test(t) ? t : "https://" + t;
+}
+
+/** Comparable form of a LinkedIn URL: case-insensitive, no locale subdomain, no trailing slash. */
+function linkNorm(v: string): string | null {
+  const n = normUrl(withHttps(v));
+  return n === null ? null : n.toLowerCase().replace(/^[a-z]{2,3}\.linkedin\.com/, "linkedin.com");
+}
+
 export function anchorsOf(s: ResearchSubject): { company: string | null; emailDomain: string | null; linkedin: string | null } {
   const company = s.company && s.company.trim() ? s.company.trim() : null;
   let emailDomain: string | null = null;
@@ -74,7 +93,7 @@ export function anchorsOf(s: ResearchSubject): { company: string | null; emailDo
     if (d && !FREE_MAIL.includes(d)) emailDomain = d;
   }
   const li = s.linkedin?.trim() ?? null;
-  const linkedin = li && LINKEDIN_IN.test(li.split(/[?#]/)[0]) ? li : null;
+  const linkedin = li && LINKEDIN_IN.test(withHttps(li).split(/[?#]/)[0]) ? li : null;
   return { company, emailDomain, linkedin };
 }
 
@@ -105,10 +124,15 @@ const FIELD_MAP: Record<string, ResearchField> = {
   work_phone: "phone",
 };
 
+// C0 and C1 control characters, plus the Unicode line and paragraph separators.
+const CONTROL = /[\x00-\x1f\x7f-\x9f]/;
+const LS = String.fromCharCode(0x2028);
+const PS = String.fromCharCode(0x2029);
+
 function cleanValue(v: unknown): string | null {
   if (typeof v !== "string") return null;
   const t = v.trim();
-  if (/[\r\n]/.test(t)) return null;
+  if (CONTROL.test(t) || t.includes(LS) || t.includes(PS)) return null;
   const c = t.replace(/\s+/g, " ");
   if (!c || c.length > MAX_VALUE) return null;
   return c;
@@ -134,20 +158,34 @@ const same = (a: string | null | undefined, b: string): boolean =>
 export function vet(raw: RawResearch, returned: string[], subject: ResearchSubject): Vetted {
   if (raw.identity !== "established") return { outcome: "not_identified" };
 
-  const returnedNorm = new Set(returned.map(normUrl).filter((n): n is string => n !== null));
-  const sourceOk = (url: unknown): url is string => {
-    if (typeof url !== "string") return false;
+  // Usable returned URLs by normalised form; the tool's own string is what gets stored.
+  const returnedByNorm = new Map<string, string>();
+  for (const r of returned) {
+    if (typeof r !== "string") continue;
     let u: URL;
     try {
-      u = new URL(url);
+      u = new URL(r);
     } catch {
-      return false;
+      continue;
     }
-    if (u.protocol !== "https:") return false;
-    const host = u.hostname.toLowerCase().replace(/^www\./, "");
-    if (isBlockedHost(host)) return false;
-    const n = normUrl(url);
-    return n !== null && returnedNorm.has(n);
+    if (!r.startsWith("https://") || r.length > MAX_SOURCE) continue;
+    if (u.protocol !== "https:" || u.username || u.password || u.port) continue;
+    const n = normUrl(r);
+    if (n !== null && !returnedByNorm.has(n)) returnedByNorm.set(n, r);
+  }
+  /** The tool's own URL string for a model-cited source, or null when it does not qualify. */
+  const resolveSource = (url: unknown): string | null => {
+    if (typeof url !== "string") return null;
+    let u: URL;
+    try {
+      u = new URL(url.trim());
+    } catch {
+      return null;
+    }
+    if (u.protocol !== "https:" || u.username || u.password || u.port) return null;
+    if (isBlockedHost(cleanHost(u.hostname))) return null;
+    const n = normUrl(url.trim());
+    return n === null ? null : returnedByNorm.get(n) ?? null;
   };
 
   const onFile = (field: ResearchField): string | null => {
@@ -163,15 +201,13 @@ export function vet(raw: RawResearch, returned: string[], subject: ResearchSubje
   const equalsOnFile = (field: ResearchField, to: string): boolean => {
     const cur = onFile(field);
     if (!cur || !cur.trim()) return false;
-    if (field === "linkedin" || field === "website") {
-      const a = normUrl(cur.trim());
-      const b = normUrl(to);
-      if (a !== null && a === b) return true;
-      if (field === "website") {
-        const ha = siteHost(cur);
-        return ha !== null && ha === hostOf(to);
-      }
-      return false;
+    if (field === "linkedin") {
+      const a = linkNorm(cur);
+      return a !== null && a === linkNorm(to);
+    }
+    if (field === "website") {
+      const ha = siteHost(cur);
+      return ha !== null && ha === hostOf(to);
     }
     return same(cur, to);
   };
@@ -180,34 +216,39 @@ export function vet(raw: RawResearch, returned: string[], subject: ResearchSubje
   const seen = new Set<ResearchField>();
   const items: Item[] = [];
   (Array.isArray(raw.findings) ? raw.findings : []).forEach((rf, idx) => {
-    if (!rf || typeof rf !== "object") return;
+    if (!rf || typeof rf !== "object" || typeof rf.field !== "string") return;
+    if (!Object.hasOwn(FIELD_MAP, rf.field)) return;
     const field = FIELD_MAP[rf.field];
-    if (!field || seen.has(field)) return;
+    if (seen.has(field)) return;
     seen.add(field);
-    if (!sourceOk(rf.source_url)) return;
+    const source = resolveSource(rf.source_url);
+    if (source === null) return;
     const value = cleanValue(rf.value);
     if (value === null) return;
-    items.push({ idx, field, value, source: rf.source_url.trim() });
+    items.push({ idx, field, value, source });
   });
 
   const kept: (Item & { target: "person" | "company" })[] = [];
-  const finish = (it: Item, to: string, target: "person" | "company") => {
-    if (equalsOnFile(it.field, to)) return;
+  const finish = (it: Item, to: string, target: "person" | "company"): boolean => {
+    if (equalsOnFile(it.field, to)) return false;
     kept.push({ ...it, value: to, target });
+    return true;
   };
 
-  // First pass: fields that do not depend on a surviving website.
   const emailPhone: Item[] = [];
-  let survivingWebsiteHost: string | null = null;
+  let websiteHost: string | null = null;
   for (const it of items) {
     if (it.field === "email" || it.field === "phone") {
       emailPhone.push(it);
     } else if (it.field === "title") {
-      if (it.value.length > 120 || it.value.includes("(")) continue;
+      if (it.value.length > 120 || /[(\uFF08]/.test(it.value)) continue;
       finish(it, it.value, "person");
     } else if (it.field === "linkedin") {
       const base = it.value.split(/[?#]/)[0];
       if (!LINKEDIN_IN.test(base)) continue;
+      // The profile itself must be a page the search returned.
+      const n = normUrl(base);
+      if (n === null || !returnedByNorm.has(n)) continue;
       finish(it, base.replace(/\/+$/, ""), "person");
     } else if (it.field === "website") {
       if (!subject.company || !subject.company.trim()) continue;
@@ -217,24 +258,32 @@ export function vet(raw: RawResearch, returned: string[], subject: ResearchSubje
       } catch {
         continue;
       }
-      if (u.protocol !== "https:") continue;
-      const host = u.hostname.toLowerCase().replace(/^www\./, "");
+      if (u.protocol !== "https:" || u.username || u.password || u.port) continue;
+      const host = cleanHost(u.hostname);
+      if (!host.includes(".") || host === "localhost" || host.endsWith(".localhost")) continue;
+      if (/^[\d.]+$/.test(host) || host.includes(":") || u.hostname.startsWith("[")) continue;
       if (isBlockedHost(host) || hostMatches(host, "linkedin.com") || FREE_MAIL.some((d) => hostMatches(host, d))) continue;
-      const before = kept.length;
-      finish(it, `https://${u.host.toLowerCase()}`, "company");
-      // A website equal to the one on file is dropped as a finding but still vouches for its host.
-      if (kept.length > before || equalsOnFile("website", `https://${u.host}`)) survivingWebsiteHost = host;
-    } else {
+      // The site must vouch for itself: the cited page is on the website's own host.
+      if (hostOf(it.source) !== host) continue;
+      if (finish(it, `https://${u.hostname.toLowerCase().replace(/\.+$/, "")}`, "company")) websiteHost = host;
+    } else if (it.field === "country") {
+      if (it.value.length > 60 || !/^[\p{L}\p{M} .'-]+$/u.test(it.value)) continue;
       finish(it, it.value, "person");
     }
   }
 
-  // Second pass: work email and phone, only from the employer's own site.
-  const employerHosts = [siteHost(subject.companyWebsite), survivingWebsiteHost].filter((h): h is string => !!h);
+  // Work email and phone, only from the employer's own site.
+  const employerHosts = [siteHost(subject.companyWebsite), websiteHost].filter((h): h is string => !!h);
   for (const it of emailPhone) {
     const sh = hostOf(it.source);
     if (!sh || !employerHosts.some((h) => hostMatches(sh, h))) continue;
-    if (it.field === "email" && (it.value.split("@").length !== 2 || /\s/.test(it.value))) continue;
+    if (it.field === "email") {
+      if (it.value.length > 120 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(it.value)) continue;
+      const domain = cleanHost(it.value.slice(it.value.lastIndexOf("@") + 1));
+      if (FREE_MAIL.some((d) => hostMatches(domain, d))) continue;
+    } else if (!/^\+?[0-9 ().-]{7,25}$/.test(it.value)) {
+      continue;
+    }
     finish(it, it.value, "person");
   }
 
@@ -250,9 +299,10 @@ export function vet(raw: RawResearch, returned: string[], subject: ResearchSubje
   let summary = typeof raw.summary === "string" ? raw.summary.trim() : "";
   const summarySources: string[] = [];
   if (Array.isArray(raw.summary_sources)) {
-    for (const s of raw.summary_sources) {
+    for (const src of raw.summary_sources) {
       if (summarySources.length >= MAX_SUMMARY_SOURCES) break;
-      if (sourceOk(s) && !summarySources.includes(s.trim())) summarySources.push(s.trim());
+      const r = resolveSource(src);
+      if (r !== null && !summarySources.includes(r)) summarySources.push(r);
     }
   }
   if (summary) summary = cutSummary(summary);
