@@ -95,7 +95,7 @@ export function matchCards(
     db,
     async () => {
       const found = await db.query(
-        `SELECT p.id, p.name, p.name_key, p.title, p.email, lower(p.email) AS email_lc, p.created_at,
+        `SELECT p.id, p.name, p.name_key, p.title, p.email, lower(btrim(p.email)) AS email_lc, p.created_at,
                 po.name AS company, po.name_key AS org_key,
                 own.id AS own_id, own.role AS own_role, own.stage AS own_stage,
                 cm.id AS co_id, cm.role AS co_role, cm.stage AS co_stage
@@ -103,7 +103,7 @@ export function matchCards(
            LEFT JOIN orgs po ON po.id = p.org_id
            LEFT JOIN members own ON own.person_id = p.id
            LEFT JOIN members cm ON cm.org_id = p.org_id
-          WHERE p.name_key = ANY($1::text[]) OR lower(p.email) = ANY($2::text[])`,
+          WHERE p.name_key = ANY($1::text[]) OR lower(btrim(p.email)) = ANY($2::text[])`,
         [keys, emails],
       );
       return cards.map((c) => verdict(c, found.rows as Row[]));

@@ -231,5 +231,22 @@ describe("POST /api/monsoon/read", () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ cards: [FIELDS], matches: null });
     });
+
+    it("gives up on a hung lookup after 4,000 ms and keeps the cards", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      extractCards.mockResolvedValue([FIELDS]);
+      withEstateDb.mockImplementation(() => new Promise(() => {}));
+      const req = await post(photo("traxo"));
+      vi.useFakeTimers();
+      try {
+        const pending = POST(req);
+        await vi.advanceTimersByTimeAsync(4000);
+        const res = await pending;
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ cards: [FIELDS], matches: null });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

@@ -169,6 +169,29 @@ describe.skipIf(!testDb.available)("matchCards (real Postgres)", () => {
     expect(m.candidates.map((c) => c.personId)).toEqual(ids.slice(0, 5));
   });
 
+  it("finds a person whose stored email has stray whitespace", async () => {
+    await db.query("UPDATE people SET email = '  Jane@Northwind.example ' WHERE id = $1", [id.jane]);
+    const [m] = await matchCards(db, [card("Jon Tan", "", "jane@northwind.example")]);
+    expect(m).toMatchObject({ match: "exact", candidates: [{ personId: id.jane, by: "email" }] });
+  });
+
+  it("does not match an empty card email to a stored empty or null email", async () => {
+    await db.query("UPDATE people SET email = '' WHERE id = $1", [id.omar]);
+    const [m] = await matchCards(db, [card("Someone Else", "", ""), card("Someone Else", "", "   ")]);
+    expect(m).toEqual({ match: "none", candidates: [] });
+    const out = await matchCards(db, [card("Li Wei", "", "")]);
+    expect(out[0].candidates.map((c) => c.by)).toEqual(["name"]);
+  });
+
+  it("does not treat an empty org as a name-and-company match with a company-less person", async () => {
+    const [m] = await matchCards(db, [card("Jane Tan", "  ", "")]);
+    expect(m.candidates.every((c) => c.by === "name")).toBe(true);
+    await db.query("DELETE FROM members WHERE id = $1", [id.mJaneSolo]);
+    await db.query("DELETE FROM people WHERE id = $1", [id.jane]);
+    const [solo] = await matchCards(db, [card("Jane Tan", "", "")]);
+    expect(solo).toMatchObject({ match: "same_name", candidates: [{ personId: id.janeSolo, by: "name" }] });
+  });
+
   it("copes with odd input and does not write", async () => {
     const before = await counts();
     const out = await matchCards(db, [

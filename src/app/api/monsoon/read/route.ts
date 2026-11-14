@@ -60,7 +60,19 @@ export async function POST(request: Request) {
     if (estate && cards.length > 0) {
       try {
         const asked = cards.map((c) => ({ name: c.name, org: c.org, email: c.email }));
-        matches = await withEstateDb(estate, (db) => matchCards(db, asked, { timeoutMs: MATCH_TIMEOUT_MS }));
+        // Race the whole lookup (connect included) against the budget, so a hung connection
+        // cannot push the request past maxDuration.
+        const lookup = withEstateDb(estate, (db) => matchCards(db, asked, { timeoutMs: MATCH_TIMEOUT_MS }));
+        lookup.catch(() => {}); // an abandoned lookup must not become an unhandled rejection
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const budget = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("match timeout")), MATCH_TIMEOUT_MS);
+        });
+        try {
+          matches = await Promise.race([lookup, budget]);
+        } finally {
+          clearTimeout(timer);
+        }
       } catch (err) {
         // A failed match never fails the read. Name and code only: the message can carry
         // connection details or contact data.
