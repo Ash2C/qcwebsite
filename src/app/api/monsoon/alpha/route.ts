@@ -20,7 +20,11 @@ function json(body: unknown, status = 200): Response {
   return Response.json(body, { status });
 }
 
+// Paused 2026-11-13 until email and phone verification are built: nothing is saved.
+const SIGNUPS_OPEN = false;
+
 export async function POST(request: Request): Promise<Response> {
+  if (!SIGNUPS_OPEN) return json({ error: "Sign-ups open soon." }, 503);
   const origin = request.headers.get("origin");
   if (origin !== null && !ALLOWED_ORIGIN.test(origin)) return json({ error: "Not allowed" }, 403);
 

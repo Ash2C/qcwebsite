@@ -29,7 +29,17 @@ beforeEach(() => {
 });
 afterEach(() => errorSpy.mockRestore());
 
-describe("POST /api/monsoon/alpha", () => {
+describe("POST /api/monsoon/alpha (paused)", () => {
+  it("answers 503 and never touches the CRM", async () => {
+    const res = await POST(post({ email: "jane@example.com" }, { Origin: "https://quantcloud.com" }));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "Sign-ups open soon." });
+    expect(withDb).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+  });
+});
+
+describe.skip("POST /api/monsoon/alpha (when open again)", () => {
   it("saves a valid email to the Zero One CRM and answers ok", async () => {
     const res = await POST(post({ email: "  Jane@Example.com " }, { Origin: "https://quantcloud.com" }));
     expect(res.status).toBe(200);

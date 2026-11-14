@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import styles from "./AlphaSignup.module.css";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+// Paused until email and phone verification are built.
+const OPEN = false;
 
 type Status = "idle" | "sending" | "done";
 
@@ -78,7 +80,7 @@ export default function AlphaSignup({ fontClass = "" }: { fontClass?: string }) 
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (status === "sending") return;
+    if (!OPEN || status === "sending") return;
     const value = email.trim();
     if (!EMAIL_RE.test(value)) {
       setError("Enter an email we can send your invite to.");
@@ -132,11 +134,12 @@ export default function AlphaSignup({ fontClass = "" }: { fontClass?: string }) 
                   inputMode="email"
                   placeholder="Your email"
                   maxLength={254}
+                  disabled={!OPEN}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                 />
-                <button className={styles.button} type="submit" disabled={status === "sending"}>
-                  {status === "sending" ? "Sending..." : "Request access"}
+                <button className={styles.button} type="submit" disabled={!OPEN || status === "sending"}>
+                  {!OPEN ? "Opening soon" : status === "sending" ? "Sending..." : "Request access"}
                 </button>
               </div>
               <div className={styles.honeypot} aria-hidden="true">
