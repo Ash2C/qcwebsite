@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireSession } from "@/lib/monsoon/auth";
 import { readJson } from "@/lib/monsoon/body";
-import { capture, type CaptureInput } from "@/lib/monsoon/capture";
+import { capture, type CaptureInput, type CaptureKind } from "@/lib/monsoon/capture";
 import { withEstateDb } from "@/lib/monsoon/db";
 import { estateByKey } from "@/lib/monsoon/estates";
 
@@ -10,6 +10,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 const MAX_BODY = 65_536;
+const KINDS: readonly string[] = ["card", "badge", "screen", "other"];
 
 function invalid(error: string) {
   return NextResponse.json({ outcome: "invalid", error }, { status: 400 });
@@ -70,6 +71,7 @@ export async function POST(request: Request) {
       typeof b.samePerson === "string" || b.samePerson === false
         ? b.samePerson
         : undefined,
+    kind: typeof b.kind === "string" && KINDS.includes(b.kind) ? (b.kind as CaptureKind) : undefined,
   };
 
   try {

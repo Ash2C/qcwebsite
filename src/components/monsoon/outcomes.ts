@@ -6,9 +6,9 @@ export type SavePrompt =
   | { kind: "same_name"; matches: { personId: string; org: string | null }[] };
 
 export type Outcome =
-  | { kind: "done"; text: string } // added | existing | duplicate
+  | { kind: "done"; text: string } // added | existing | filed | duplicate
   | { kind: "prompt"; text: string; prompt: SavePrompt } // org_lookalike | same_name
-  | { kind: "info"; text: string }; // ambiguous
+  | { kind: "info"; text: string }; // ambiguous | needs_company
 
 export function describeResult(
   result: Exclude<CaptureResult, { outcome: "invalid" }>,
@@ -30,6 +30,15 @@ export function describeResult(
             : `${name} is already in ${estate} as ${r}; nothing new.`,
       };
     }
+    case "filed": {
+      const filledText = result.filled.length > 0 ? `; filled in ${result.filled.join(", ")}` : "";
+      return {
+        kind: "done",
+        text: result.created
+          ? `${name} filed under ${result.org}.`
+          : `${name} is already on file under ${result.org}; meeting logged${filledText}.`,
+      };
+    }
     case "duplicate":
       return { kind: "done", text: `${name} saved to ${estate}.` };
     case "org_lookalike":
@@ -49,5 +58,7 @@ export function describeResult(
       };
     case "ambiguous":
       return { kind: "info", text: `Several people are named ${name}. Add the company to say which one.` };
+    case "needs_company":
+      return { kind: "info", text: "Add their company so I can tell them apart." };
   }
 }

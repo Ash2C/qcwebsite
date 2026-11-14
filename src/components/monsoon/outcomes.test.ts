@@ -69,6 +69,34 @@ describe("describeResult", () => {
     });
   });
 
+  it("filed, new person", () => {
+    expect(
+      describeResult(
+        { outcome: "filed", person: PERSON, org: "Northwind", role: "investor", filled: [], created: true },
+        ctx,
+      ),
+    ).toEqual({ kind: "done", text: "Jane Tan filed under Northwind." });
+  });
+
+  it("filed, existing person, with and without filled fields", () => {
+    const base = { outcome: "filed" as const, person: PERSON, org: "Northwind", role: "investor", created: false };
+    expect(describeResult({ ...base, filled: [] }, ctx)).toEqual({
+      kind: "done",
+      text: "Jane Tan is already on file under Northwind; meeting logged.",
+    });
+    expect(describeResult({ ...base, filled: ["email", "phone"] }, ctx)).toEqual({
+      kind: "done",
+      text: "Jane Tan is already on file under Northwind; meeting logged; filled in email, phone.",
+    });
+  });
+
+  it("needs_company", () => {
+    expect(describeResult({ outcome: "needs_company", orgs: ["A"] }, ctx)).toEqual({
+      kind: "info",
+      text: "Add their company so I can tell them apart.",
+    });
+  });
+
   it("ambiguous", () => {
     expect(describeResult({ outcome: "ambiguous", orgs: ["A", null] }, ctx)).toEqual({
       kind: "info",

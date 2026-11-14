@@ -3,6 +3,8 @@
 import type { ClientBase } from "pg";
 import { mergeFillEmpty, nameKey, similarOrgNames } from "./rules";
 
+export type CaptureKind = "card" | "badge" | "screen" | "other";
+
 export type CaptureInput = {
   captureId: string; // UUID
   name: string;
@@ -17,24 +19,35 @@ export type CaptureInput = {
   extracted?: unknown; // reader's original output
   newOrg?: boolean;
   samePerson?: string | false; // person id, or false = a different person
+  kind?: CaptureKind; // what the image was; sets the timeline wording
 };
 
 export type CaptureResult =
   | { outcome: "added"; person: string; org: string | null; role: string; filled: string[] }
   | { outcome: "existing"; person: string; org: string | null; role: string; filled: string[] }
+  | { outcome: "filed"; person: string; org: string; role: string; filled: string[]; created: boolean }
   | { outcome: "duplicate"; person: string; org: string | null }
   | { outcome: "org_lookalike"; similar: string[] }
   | { outcome: "same_name"; matches: { personId: string; org: string | null }[] }
   | { outcome: "ambiguous"; orgs: (string | null)[] }
+  | { outcome: "needs_company"; orgs: (string | null)[] }
   | { outcome: "invalid"; error: string };
 
 const SOURCE = "monsoon-app";
 const OWNER = "VF";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const KIND_TEXT: Record<CaptureKind, string> = {
+  card: "Card captured in person",
+  badge: "Badge captured in person",
+  screen: "Captured from a screenshot",
+  other: "Captured from a photo",
+};
 const PERSON_COLUMNS = ["title", "email", "phone", "linkedin_url"] as const;
 
 type PersonRow = {
   id: string;
+  name: string;
+  name_key: string;
   org_id: string | null;
   title: string | null;
   email: string | null;
@@ -129,8 +142,19 @@ export async function capture(db: ClientBase, input: CaptureInput): Promise<Capt
     const namesakes = await peopleByKey(db, key);
 
     if (typeof input.samePerson === "string") {
-      person = namesakes.find((p) => p.id === input.samePerson);
+      // A match is the same name, or the same email (a different spelling of the name).
+      const chosen = UUID_RE.test(input.samePerson)
+        ? ((await db.query("SELECT * FROM people WHERE id = $1", [input.samePerson])).rows[0] as PersonRow | undefined)
+        : undefined;
+      const sameEmail =
+        !!chosen?.email && !!fields.email && chosen.email.toLowerCase() === fields.email.toLowerCase();
+      person = chosen && (chosen.name_key === key || sameEmail) ? chosen : undefined;
       if (!person) return { outcome: "invalid", error: "samePerson is not a person with this name" };
+    } else if (input.samePerson === false && !org && namesakes.length > 0) {
+      // A different person with this name cannot be stored without a company.
+      const orgs: (string | null)[] = [];
+      for (const p of namesakes) orgs.push(await orgName(db, p.org_id));
+      return { outcome: "needs_company", orgs };
     } else if (org && input.samePerson === undefined && namesakes.length > 0) {
       const atTypedOrg = await db.query(
         "SELECT 1 FROM people p JOIN orgs o ON o.id = p.org_id WHERE p.name_key = $1 AND o.name_key = $2",
@@ -189,6 +213,11 @@ export async function capture(db: ClientBase, input: CaptureInput): Promise<Capt
     // 5. The member, if this person has none. An existing member is left alone.
     let member = (await db.query("SELECT id, role FROM members WHERE person_id = $1", [person.id])).rows[0];
     let memberCreated = false;
+    let filedUnder = false; // logged on the company's pipeline entry instead
+    if (!member && person.org_id) {
+      member = (await db.query("SELECT id, role FROM members WHERE org_id = $1", [person.org_id])).rows[0];
+      filedUnder = !!member;
+    }
     if (!member) {
       const stage = (await db.query("SELECT key FROM stages WHERE NOT terminal ORDER BY ord LIMIT 1")).rows[0]?.key;
       member = (
@@ -216,7 +245,8 @@ export async function capture(db: ClientBase, input: CaptureInput): Promise<Capt
     );
 
     // 7. A meeting touch, also for an existing member.
-    let summary = "Card captured in person";
+    let summary = KIND_TEXT[input.kind ?? "card"] ?? KIND_TEXT.card;
+    if (filedUnder) summary = `${person.name}: ${summary}`;
     if (notes) summary += `: ${notes}`;
     if (cardOrg) summary += ` (card shows ${cardOrg})`;
     await db.query("INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'meeting', $2, $3)", [
@@ -225,6 +255,16 @@ export async function capture(db: ClientBase, input: CaptureInput): Promise<Capt
       summary,
     ]);
 
+    if (filedUnder) {
+      return {
+        outcome: "filed",
+        person: person.id,
+        org: (await orgName(db, person.org_id)) ?? "",
+        role: member.role,
+        filled,
+        created,
+      };
+    }
     return {
       outcome: created || memberCreated ? "added" : "existing",
       person: person.id,
@@ -238,7 +278,8 @@ export async function capture(db: ClientBase, input: CaptureInput): Promise<Capt
   try {
     await db.query("SET LOCAL statement_timeout = '10s'");
     const result = await run();
-    await db.query(result.outcome === "added" || result.outcome === "existing" ? "COMMIT" : "ROLLBACK");
+    await db.query(result.outcome === "added" || result.outcome === "existing" || result.outcome === "filed"
+        ? "COMMIT" : "ROLLBACK");
     return result;
   } catch (err) {
     await db.query("ROLLBACK").catch(() => undefined);

@@ -180,6 +180,28 @@ describe("POST /api/monsoon/save", () => {
     expect(await res.json()).toEqual(result);
   });
 
+  it("passes kind when it is one of the four values and drops it otherwise", async () => {
+    capture.mockResolvedValue({ outcome: "duplicate", person: "p", org: null });
+    for (const kind of ["card", "badge", "screen", "other"]) await POST(post(validBody({ kind })));
+    expect(capture.mock.calls.map((c) => c[1].kind)).toEqual(["card", "badge", "screen", "other"]);
+    await POST(post(validBody({ kind: "poster" })));
+    await POST(post(validBody({ kind: 5 })));
+    await POST(post(validBody()));
+    expect(capture.mock.calls.slice(4).map((c) => c[1].kind)).toEqual([undefined, undefined, undefined]);
+  });
+
+  it("returns 200 for filed and needs_company", async () => {
+    for (const result of [
+      { outcome: "filed", person: "p", org: "Northwind", role: "investor", filled: [], created: true },
+      { outcome: "needs_company", orgs: ["A", null] },
+    ]) {
+      capture.mockResolvedValue(result);
+      const res = await POST(post(validBody()));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(result);
+    }
+  });
+
   it("returns 502 without leaking details when the database call throws", async () => {
     const secretUrl = "postgresql://user:hunter2@db.internal.example:5432/x";
     vi.stubEnv("ZEROONE_CRM_DATABASE_URL", secretUrl);
