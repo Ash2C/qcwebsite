@@ -28,6 +28,16 @@ const MEMBER = {
   nextAction: "Send deck", nextActionDate: "2026-11-20", due: "later", notes: "Member notes here",
 };
 
+// Timestamps at local noon, and the expected text built from local-date getters, so the test does
+// not depend on the machine's timezone.
+const NOON_13 = new Date(2026, 10, 13, 12).toISOString();
+const NOON_1 = new Date(2026, 10, 1, 12).toISOString();
+const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function localLabel(iso: string) {
+  const d = new Date(iso);
+  return `${d.getDate()} ${MONTH[d.getMonth()]} ${d.getFullYear()}`;
+}
+
 function profile(over: Record<string, unknown> = {}) {
   return { status: 200, body: { profile: { ...BASE, ...over } } } as never;
 }
@@ -56,6 +66,7 @@ describe("ProfileView", () => {
     expect(screen.getByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
     expect(screen.getByText("LP prospect")).toBeInTheDocument();
     expect(screen.getByText("In talks")).toBeInTheDocument();
+    expect(screen.getByText("Next")).toBeInTheDocument();
     expect(screen.getByText("Send deck · due 20 Nov 2026")).toBeInTheDocument();
     expect(screen.getByText("Member notes here")).toBeInTheDocument();
     expect(screen.getByText("Own notes here")).toBeInTheDocument();
@@ -86,8 +97,8 @@ describe("ProfileView", () => {
         memberOf: "company",
         timelineOf: "Acme Capital",
         timeline: [
-          { at: "2026-11-13T12:00:00.000Z", kind: "note", by: "VF", summary: "Called <b>Jane</b>" },
-          { at: "2026-11-01T12:00:00.000Z", kind: "system", by: null, summary: "Moved" },
+          { at: NOON_13, kind: "note", by: "VF", summary: "Called <b>Jane</b>" },
+          { at: NOON_1, kind: "system", by: null, summary: "Moved" },
         ],
         timelineTotal: 75,
       }),
@@ -96,10 +107,10 @@ describe("ProfileView", () => {
     await flush();
     expect(screen.getByText("filed under Acme Capital")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Timeline of Acme Capital" })).toBeInTheDocument();
-    expect(screen.getByText("13 Nov 2026 · note · Called <b>Jane</b>")).toBeInTheDocument();
+    expect(screen.getByText(`${localLabel(NOON_13)} · note · Called <b>Jane</b>`)).toBeInTheDocument();
     expect(document.querySelector("b")).toBeNull();
     expect(screen.getByText("by VF")).toBeInTheDocument();
-    expect(screen.getByText("1 Nov 2026 · system · Moved")).toBeInTheDocument();
+    expect(screen.getByText(`${localLabel(NOON_1)} · system · Moved`)).toBeInTheDocument();
     expect(screen.getAllByText(/^by /)).toHaveLength(1);
     expect(screen.getByText("Showing 2 of 75")).toBeInTheDocument();
   });
@@ -140,6 +151,60 @@ describe("ProfileView", () => {
     expect(li).toHaveAttribute("target", "_blank");
     expect(li).toHaveAttribute("rel", "noreferrer noopener");
     expect(screen.getByRole("link", { name: "acme.com" })).toHaveAttribute("href", "https://acme.com/");
+  });
+
+  it("does not link an email that could carry extra recipients or a body", async () => {
+    m.loadProfile.mockResolvedValue(profile({ email: "a@b.com?bcc=x@evil.com&body=hi" }));
+    view();
+    await flush();
+    expect(screen.getByText("a@b.com?bcc=x@evil.com&body=hi")).toBeInTheDocument();
+    expect(document.querySelector('a[href^="mailto:"]')).toBeNull();
+  });
+
+  it.each(['a"b@c.com', "a<b>@c.com", "a b@c.com", "a@b@c.com", "a@b.com,c@d.com"])("does not link the email %s", async (email) => {
+    m.loadProfile.mockResolvedValue(profile({ email }));
+    view();
+    await flush();
+    expect(screen.getByText(email)).toBeInTheDocument();
+    expect(document.querySelector('a[href^="mailto:"]')).toBeNull();
+  });
+
+  it("does not link a phone value that is too short or carries query characters", async () => {
+    m.loadProfile.mockResolvedValue(profile({ phone: "123?x&y" }));
+    view();
+    await flush();
+    expect(screen.getByText("123?x&y")).toBeInTheDocument();
+    expect(document.querySelector('a[href^="tel:"]')).toBeNull();
+  });
+
+  it("links each number of a multi-number phone value, annotations as text", async () => {
+    m.loadProfile.mockResolvedValue(profile({ phone: "+1 212-970-5762 (office); +1 973-558-0598 (mobile)" }));
+    view();
+    await flush();
+    const links = Array.from(document.querySelectorAll('a[href^="tel:"]'));
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["tel:+12129705762", "tel:+19735580598"]);
+    expect(links.map((a) => a.textContent)).toEqual(["+1 212-970-5762", "+1 973-558-0598"]);
+    expect(screen.getByText(/\(office\)/)).toBeInTheDocument();
+    expect(screen.getByText(/\(mobile\)/)).toBeInTheDocument();
+  });
+
+  it("keeps the profile and offers Retry when a reload fails", async () => {
+    m.loadProfile.mockResolvedValueOnce(profile()).mockRejectedValueOnce(new Error("net")).mockResolvedValueOnce(profile());
+    let reload: () => void = () => {};
+    view({
+      actions: (_p, r) => {
+        reload = r;
+        return null;
+      },
+    });
+    await flush();
+    await act(async () => reload());
+    expect(screen.getByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
+    expect(screen.getByText("Could not refresh. Check signal.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await flush();
+    expect(screen.queryByText("Could not refresh. Check signal.")).toBeNull();
+    expect(m.loadProfile).toHaveBeenCalledTimes(3);
   });
 
   it("does not link a javascript: LinkedIn value or other non-http schemes", async () => {

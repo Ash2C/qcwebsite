@@ -26,6 +26,13 @@ function lines(hit: ContactHit, estate: EstateInfo): [string | null, string] {
   return [second, third];
 }
 
+// What opening a row asks the server for; null when the row has no usable id (then it is not tappable).
+function targetOf(hit: ContactHit): ContactTarget | null {
+  if (hit.kind === "person") return hit.personId ? { personId: hit.personId } : null;
+  if (hit.orgId) return { orgId: hit.orgId };
+  return hit.member ? { memberId: hit.member.memberId } : null;
+}
+
 export default function ContactsPanel({
   estate,
   state,
@@ -44,9 +51,20 @@ export default function ContactsPanel({
   // A fresh callback each render must not restart the search.
   const unauthorizedRef = useRef(onUnauthorized);
   unauthorizedRef.current = onUnauthorized;
+  // The estate this panel last showed; on a change the old rows and any open profile (whose ids
+  // belong to the old estate) are dropped before anything is rendered or requested for the new one.
+  const shownEstate = useRef(estate.key);
+  const estateChanged = shownEstate.current !== estate.key;
+  useEffect(() => {
+    if (shownEstate.current === estate.key) return;
+    shownEstate.current = estate.key;
+    setHits([]);
+    setPhase("loading");
+    onChange((s) => ({ ...s, open: null }));
+  });
   const q = state.query.trim();
   const searching = q.length >= 2;
-  const listing = state.open === null;
+  const listing = state.open === null && !estateChanged;
   const term = searching ? q : "";
 
   useEffect(() => {
@@ -75,7 +93,8 @@ export default function ContactsPanel({
     };
   }, [estate.key, term, tick, listing]);
 
-  if (state.open) {
+  const rows = estateChanged ? [] : hits;
+  if (state.open && !estateChanged) {
     const open = state.open;
     return (
       <ProfileView
@@ -133,28 +152,38 @@ export default function ContactsPanel({
             Retry
           </button>
         </div>
-      ) : phase === "loading" && hits.length === 0 ? (
+      ) : phase === "loading" && rows.length === 0 ? (
         <p className="px-1 text-neutral-500 dark:text-neutral-400">Loading…</p>
-      ) : phase === "ready" && hits.length === 0 ? (
+      ) : phase === "ready" && rows.length === 0 ? (
         <p className="px-1 text-neutral-500 dark:text-neutral-400">
           {searching ? `No contacts match "${q}".` : "No contacts yet."}
         </p>
       ) : (
         <ul className={`${card} divide-y divide-black/5 overflow-hidden dark:divide-white/10 ${phase === "loading" ? "opacity-60" : ""}`}>
-          {hits.map((hit) => {
+          {rows.map((hit) => {
             const [second, third] = lines(hit, estate);
-            const target: ContactTarget = hit.kind === "company" ? { orgId: hit.orgId ?? undefined } : { personId: hit.personId ?? undefined };
-            return (
-              <li key={`${hit.kind}:${hit.personId ?? hit.orgId}`}>
-                <button
-                  type="button"
-                  onClick={() => onChange((s) => ({ ...s, open: target }))}
-                  className="flex min-h-[64px] w-full flex-col justify-center gap-0.5 px-4 py-2.5 text-left active:bg-neutral-100 dark:active:bg-white/10"
-                >
+            const target = targetOf(hit);
+            const rowClass = "flex min-h-[64px] w-full flex-col justify-center gap-0.5 px-4 py-2.5 text-left";
+            const body = (
+              <>
                   <span className="break-words text-[17px] font-semibold text-neutral-900 dark:text-white">{hit.name}</span>
                   {second ? <span className="break-words text-[15px] text-neutral-600 dark:text-neutral-300">{second}</span> : null}
                   <span className="break-words text-[14px] text-neutral-500 dark:text-neutral-400">{third}</span>
-                </button>
+              </>
+            );
+            return (
+              <li key={`${hit.kind}:${hit.personId ?? hit.orgId ?? hit.member?.memberId ?? hit.name}`}>
+                {target ? (
+                  <button
+                    type="button"
+                    onClick={() => onChange((s) => ({ ...s, open: target }))}
+                    className={`${rowClass} active:bg-neutral-100 dark:active:bg-white/10`}
+                  >
+                    {body}
+                  </button>
+                ) : (
+                  <div className={rowClass}>{body}</div>
+                )}
               </li>
             );
           })}

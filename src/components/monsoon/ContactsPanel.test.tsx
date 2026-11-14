@@ -36,9 +36,19 @@ const COMPANY = {
 
 const hits = (...contacts: unknown[]) => ({ status: 200, body: { contacts } }) as never;
 
-function Harness({ onUnauthorized = () => {} }: { onUnauthorized?: () => void }) {
-  const [state, setState] = useState<ContactsState>(EMPTY_CONTACTS);
-  return <ContactsPanel estate={ESTATE} state={state} onChange={setState} onUnauthorized={onUnauthorized} />;
+const OTHER = { ...ESTATE, key: "zeroone", label: "Zero One" };
+
+function Harness({
+  onUnauthorized = () => {},
+  estate = ESTATE,
+  initial = EMPTY_CONTACTS,
+}: {
+  onUnauthorized?: () => void;
+  estate?: typeof ESTATE;
+  initial?: ContactsState;
+}) {
+  const [state, setState] = useState<ContactsState>(initial);
+  return <ContactsPanel estate={estate} state={state} onChange={setState} onUnauthorized={onUnauthorized} />;
 }
 
 async function advance(ms: number) {
@@ -195,5 +205,44 @@ describe("ContactsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /Acme Capital/ }));
     await advance(0);
     expect(m.loadProfile).toHaveBeenCalledWith("traxo", { orgId: "o1" }, expect.any(String));
+  });
+
+  it("drops the old estate's rows and an open profile when the estate changes, before the new response", async () => {
+    m.searchContacts.mockResolvedValueOnce(hits(SELF));
+    const { rerender } = render(<Harness />);
+    await advance(0);
+    expect(screen.getByText("Jane Tan")).toBeInTheDocument();
+    m.searchContacts.mockImplementationOnce(() => new Promise(() => {}));
+    rerender(<Harness estate={OTHER} />);
+    await advance(0);
+    expect(screen.queryByText("Jane Tan")).toBeNull();
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    expect(m.searchContacts).toHaveBeenLastCalledWith("zeroone", "");
+  });
+
+  it("never requests a profile of the new estate with the old ids", async () => {
+    m.searchContacts.mockResolvedValue(hits());
+    m.loadProfile.mockResolvedValue({ status: 404, body: { error: "Not found" } } as never);
+    const { rerender } = render(<Harness initial={{ query: "", open: { personId: "p1" } }} />);
+    await advance(0);
+    expect(m.loadProfile).toHaveBeenCalledTimes(1);
+    rerender(<Harness initial={{ query: "", open: { personId: "p1" } }} estate={OTHER} />);
+    await advance(0);
+    expect(m.loadProfile).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("textbox", { name: "Search contacts" })).toBeInTheDocument();
+  });
+
+  it("opens a company hit without an orgId by its memberId, and leaves a row with no id untappable", async () => {
+    const byMember = { ...COMPANY, orgId: null };
+    const noId = { ...COMPANY, orgId: null, name: "Ghost Co", member: null, memberOf: null };
+    m.searchContacts.mockResolvedValue(hits(byMember, noId));
+    m.loadProfile.mockResolvedValue({ status: 404, body: { error: "Not found" } } as never);
+    render(<Harness />);
+    await advance(0);
+    expect(screen.queryByRole("button", { name: /Ghost Co/ })).toBeNull();
+    expect(screen.getByText("Ghost Co")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Acme Capital/ }));
+    await advance(0);
+    expect(m.loadProfile).toHaveBeenCalledWith("traxo", { memberId: "m2" }, expect.any(String));
   });
 });

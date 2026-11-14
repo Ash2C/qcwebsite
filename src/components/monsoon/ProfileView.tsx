@@ -43,7 +43,34 @@ function webHref(value: string): string | null {
 const linkClass = "text-[#0E7FA6] underline-offset-2 hover:underline dark:text-[#6AE6FF]";
 const sectionHeading = "px-1 text-sm font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400";
 const chip =
-  "rounded-full bg-[#0E7FA6]/10 px-3 py-1 text-sm font-semibold text-[#0E7FA6] dark:bg-[#6AE6FF]/15 dark:text-[#6AE6FF]";
+  "break-words rounded-full bg-[#0E7FA6]/10 px-3 py-1 text-sm font-semibold text-[#0E7FA6] dark:bg-[#6AE6FF]/15 dark:text-[#6AE6FF]";
+
+const ADDRESS_BAD = /[\s@?&#<>"',;\u0000-\u001f\u007f]/;
+
+// A mailto: href only for a plain address; null for anything that could carry extra recipients or a body.
+function mailHref(value: string): string | null {
+  const parts = value.split("@");
+  if (parts.length !== 2 || !parts[0] || !parts[1] || ADDRESS_BAD.test(parts[0]) || ADDRESS_BAD.test(parts[1])) return null;
+  return `mailto:${encodeURIComponent(parts[0])}@${encodeURIComponent(parts[1])}`;
+}
+
+type PhonePart = { text: string; note: string; href: string | null };
+
+// A stored phone value may hold several numbers ("a (office); b (mobile)"), each with an annotation.
+function phoneParts(value: string): PhonePart[] {
+  return value
+    .split(/[;/]/)
+    .map((raw) => raw.trim())
+    .filter(Boolean)
+    .map((raw) => {
+      const cut = raw.search(/\(\s*[a-z]|\b(?:office|mobile|ext)\b/i);
+      const number = (cut < 0 ? raw : raw.slice(0, cut)).trim();
+      const note = cut < 0 ? "" : raw.slice(cut);
+      const digits = number.replace(/\D/g, "");
+      const dial = (number.startsWith("+") ? "+" : "") + digits;
+      return { text: number, note, href: digits.length >= 6 ? `tel:${dial}` : null };
+    });
+}
 
 type Phase = "loading" | "ready" | "missing" | "failed";
 
@@ -157,6 +184,7 @@ export default function ProfileView({
   if (!profile) return null;
 
   const p = profile;
+  const refreshFailed = phase === "failed";
   const member = p.member;
   const companyName = p.company ?? p.timelineOf;
   const subtitle = p.kind === "company" ? null : p.title || p.company;
@@ -165,6 +193,17 @@ export default function ProfileView({
   return (
     <div className="flex flex-col gap-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
       {back}
+
+      {refreshFailed ? (
+        <div className="flex items-center justify-between gap-3 px-1">
+          <p role="alert" className="text-red-700 dark:text-red-300">
+            Could not refresh. Check signal.
+          </p>
+          <button type="button" onClick={reload} className="min-h-[44px] px-3 font-medium text-[#0E7FA6] dark:text-[#6AE6FF]">
+            Retry
+          </button>
+        </div>
+      ) : null}
 
       <header className="flex flex-col gap-2 px-1">
         <h2 className="break-words text-[28px] font-bold leading-tight text-neutral-900 dark:text-white">{p.name}</h2>
@@ -193,35 +232,45 @@ export default function ProfileView({
               <span className={chip}>{stageLabel(member.stage)}</span>
             </>
           ) : p.memberOf === "company" ? (
-            <span className="text-[15px] text-neutral-600 dark:text-neutral-300">
+            <span className="break-words text-[15px] text-neutral-600 dark:text-neutral-300">
               filed under {companyName ?? "its company"}
             </span>
           ) : (
             <span className="text-[15px] text-neutral-600 dark:text-neutral-300">Not on the pipeline</span>
           )}
         </div>
-        {member?.nextAction ? (
-          <p className="break-words text-[16px] text-neutral-800 dark:text-neutral-200">
-            {`${member.nextAction}${member.nextActionDate ? ` · due ${formatDate(member.nextActionDate)}` : ""}`}
-          </p>
-        ) : null}
       </header>
 
       <dl className={`${card} divide-y divide-black/5 dark:divide-white/10`}>
         <Detail label="Email">
           {p.email ? (
-            <a href={`mailto:${p.email}`} className={linkClass}>
-              {p.email}
-            </a>
+            mailHref(p.email) ? (
+              <a href={mailHref(p.email)!} className={linkClass}>
+                {p.email}
+              </a>
+            ) : (
+              p.email
+            )
           ) : (
             "(none)"
           )}
         </Detail>
         <Detail label="Phone">
           {p.phone ? (
-            <a href={`tel:${p.phone.replace(/\s+/g, "")}`} className={linkClass}>
-              {p.phone}
-            </a>
+            <div className="flex flex-col">
+              {phoneParts(p.phone).map((part, i) => (
+                <span key={i}>
+                  {part.href ? (
+                    <a href={part.href} className={linkClass}>
+                      {part.text}
+                    </a>
+                  ) : (
+                    part.text
+                  )}
+                  {part.note ? ` ${part.note}` : null}
+                </span>
+              ))}
+            </div>
           ) : (
             "(none)"
           )}
@@ -229,6 +278,11 @@ export default function ProfileView({
         <Detail label="LinkedIn">{p.linkedin ? <ExternalLink value={p.linkedin} /> : "(none)"}</Detail>
         <Detail label="Country">{p.country || "(none)"}</Detail>
         <Detail label="Website">{p.website ? <ExternalLink value={p.website} /> : "(none)"}</Detail>
+        {member?.nextAction ? (
+          <Detail label="Next">
+            {`${member.nextAction}${member.nextActionDate ? ` · due ${formatDate(member.nextActionDate)}` : ""}`}
+          </Detail>
+        ) : null}
       </dl>
 
       {actions ? actions(p, reload) : null}
