@@ -1,0 +1,88 @@
+/* The quantcloud.com home page: the Monsoon private-alpha sign-up. Colours and type follow the
+   Monsoon logo: the icon's ink background, its cyan drop gradient, and Sora (the wordmark's face). */
+.page {
+  --ink: #07090c;
+  --ink-glow: #17222d;
+  --field: #0e1822;
+  --line: #1c2733;
+  --fg: #eef1f4;
+  --dim: #7f8995;
+  --cyan-hi: #b4f5ff;
+  --cyan: #6ae6ff;
+  --cyan-deep: #2496c0;
+  position: relative;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: radial-gradient(90% 70% at 50% 18%, var(--ink-glow) 0%, var(--ink) 70%) var(--ink);
+  color: var(--fg);
+  overflow: hidden;
+}
+.rain { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.main {
+  position: relative;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  padding-block: 56px;
+  padding-left: max(20px, env(safe-area-inset-left, 0px));
+  padding-right: max(20px, env(safe-area-inset-right, 0px));
+}
+.col { width: 100%; max-width: 420px; display: grid; justify-items: center; gap: 28px; text-align: center; }
+.logo { height: 44px; width: auto; max-width: 100%; display: block; }
+.line { margin: 0; font-weight: 500; font-size: clamp(20px, 3.4vw, 24px); letter-spacing: -0.01em; }
+.sub { margin: -16px 0 0; color: var(--dim); font-size: 13px; letter-spacing: 0.16em; text-transform: uppercase; }
+.form { width: 100%; display: grid; gap: 10px; }
+.row {
+  display: flex;
+  gap: 8px;
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 6px;
+  transition: border-color 0.2s;
+}
+.row:focus-within { border-color: var(--cyan); }
+.input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 16px;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  padding: 10px;
+  outline: none;
+  caret-color: var(--cyan);
+}
+.input::placeholder { color: var(--dim); }
+.button {
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: #04121a;
+  background: linear-gradient(180deg, var(--cyan-hi) 0%, var(--cyan) 45%, var(--cyan-deep) 140%);
+  border: 0;
+  border-radius: 10px;
+  padding: 0 16px;
+  min-height: 44px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.button:disabled { opacity: 0.6; cursor: default; }
+.button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.msg { margin: 0; min-height: 1.5em; font-size: 13.5px; color: var(--dim); }
+.err { color: #ff9c8a; }
+.done { margin: 0; font-size: 18px; font-weight: 500; }
+.honeypot { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+.srOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.signin {
+  position: absolute;
+  right: max(20px, env(safe-area-inset-right, 0px));
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  font-size: 12.5px;
+  color: var(--dim);
+  text-decoration: none;
+}
+.signin:hover, .signin:focus-visible { color: var(--fg); }

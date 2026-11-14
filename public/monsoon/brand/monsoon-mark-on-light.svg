@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="20 8 60 86" role="img" aria-label="Monsoon mark">
+  <title>Monsoon</title>
+  <defs>
+    <linearGradient id="mdeep" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3CCBEA"/><stop offset=".5" stop-color="#1BA3CC"/><stop offset="1" stop-color="#0D6A8F"/></linearGradient>
+  </defs>
+      <path d="M50 12 C50 12 23.5 44.5 23.5 63 A26.5 26.5 0 0 0 76.5 63 C76.5 44.5 50 12 50 12 Z" fill="#FFFFFF" stroke="url(#mdeep)" stroke-width="4.5" stroke-linejoin="round"/>
+      <g fill="url(#mdeep)"><rect x="35" y="65" width="8" height="14" rx="1.6"/><rect x="46" y="57" width="8" height="22" rx="1.6"/><rect x="57" y="47" width="8" height="32" rx="1.6"/></g>
+</svg>
