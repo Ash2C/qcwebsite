@@ -1,9 +1,10 @@
-// The assistant's toolbox: ten fixed tools. Eight read the CRM; two only prepare a change and
+// The assistant's toolbox: eleven fixed tools. Eight read the CRM; three only prepare a change and
 // return a signed proposal. Nothing in this file writes to the database.
 import type { ClientBase } from "pg";
-import type { EstateKey } from "../estates";
+import { DETAIL_LABELS, proposeDetails, type DetailInput } from "../details";
+import { estateByKey, type EstateKey } from "../estates";
 import { proposeNote, proposeStage, type Target } from "./actions";
-import type { SignedProposal } from "./proposal";
+import type { DetailField, SignedProposal } from "./proposal";
 import {
   chaseList,
   findContacts,
@@ -19,9 +20,10 @@ import {
 
 /**
  * A contact the conversation has named. A person filed under their company carries the company's
- * member id, the person's own name and, in `personId`, which person it is.
+ * member id, the person's own name and, in `personId`, which person it is. `orgId` is the company's
+ * id (for a company, itself) where the result carried one.
  */
-export type Ref = { memberId: string; name: string; company: string | null; kind: MemberKind; personId?: string };
+export type Ref = { memberId: string; name: string; company: string | null; kind: MemberKind; personId?: string; orgId?: string };
 export type ToolContext = {
   db: ClientBase;
   estate: EstateKey;
@@ -42,6 +44,12 @@ type ToolDef = {
 const DUE = ["overdue", "today", "week", "later", "undated", "none"];
 const MEMBER_ID: Prop = { type: "string", description: "A member id taken from an earlier tool result." };
 const PERSON_ID: Prop = { type: "string", description: "A person id taken from an earlier tool result." };
+const ORG_ID: Prop = { type: "string", description: "A company id (orgId) taken from an earlier tool result." };
+const DETAIL_FIELDS: readonly DetailField[] = ["name", "title", "email", "phone", "linkedin", "country", "company", "website"];
+const detailProp = (what: string): Prop => ({
+  type: "string",
+  description: `${what}. Leave it out to keep it; pass an empty string to clear it.`,
+});
 
 function tool(name: string, description: string, properties: Record<string, Prop>, required: string[] = []): ToolDef {
   return { name, description, input_schema: { type: "object", properties, required } };
@@ -106,6 +114,28 @@ export const TOOLS: ToolDef[] = [
     { member_id: MEMBER_ID, person_id: PERSON_ID, stage: { type: "string", description: "The target stage key." } },
     ["stage"],
   ),
+  tool(
+    "propose_update",
+    "Prepare changes to a contact's details for the user to confirm. Nothing changes until the user confirms. Use it only when the user asks in their current message to change, correct or clear a detail. Give member_id, person_id or org_id, then only the fields to change. A person has name, title, email, phone, linkedin, country and company; a company has website and country.",
+    {
+      member_id: MEMBER_ID,
+      person_id: PERSON_ID,
+      org_id: ORG_ID,
+      name: detailProp("The person's full name; it cannot be cleared"),
+      title: detailProp("The person's job title"),
+      email: detailProp("The person's email address"),
+      phone: detailProp("The person's phone number"),
+      linkedin: detailProp("The person's LinkedIn address"),
+      country: detailProp("The country of the person or company"),
+      company: detailProp("The name of the person's company"),
+      website: detailProp("The company's website"),
+      new_company: {
+        type: "string",
+        description: "Pass yes only when company names a company that is not yet on file and the user has said it is a different company from any similar one.",
+        enum: ["yes"],
+      },
+    },
+  ),
 ];
 
 const SCHEMAS = new Map(TOOLS.map((t) => [t.name, t.input_schema]));
@@ -141,6 +171,9 @@ function validate(name: string, input: unknown): { ok: true; args: Record<string
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
+const orgIdOf = (node: Record<string, unknown>): { orgId?: string } =>
+  typeof node.orgId === "string" ? { orgId: node.orgId } : {};
+
 /** Refs are unique by the person when there is one, else by the member. */
 export const refKey = (r: Ref): string => r.personId ?? r.memberId;
 
@@ -155,19 +188,20 @@ export function extractRefs(result: unknown): Ref[] {
       // Activity rows carry no memberKind; a person always has a company on file there, a company member never does.
       const kind: MemberKind =
         node.memberKind === "company" || node.memberKind === "person" ? node.memberKind : company !== null ? "person" : "company";
-      out.push({ memberId: node.memberId, name: node.name, company, kind });
+      out.push({ memberId: node.memberId, name: node.name, company, kind, ...orgIdOf(node) });
     } else if (isObj(node.member) && typeof node.member.memberId === "string" && typeof node.name === "string") {
       const k = node.member.memberKind;
       const personId = typeof node.personId === "string" ? node.personId : null;
       if (k === "company" && personId !== null) {
         // A person filed under their company: the company's member, labelled with the person.
-        out.push({ memberId: node.member.memberId, name: node.name, company, kind: "company", personId });
+        out.push({ memberId: node.member.memberId, name: node.name, company, kind: "company", personId, ...orgIdOf(node) });
       } else {
         out.push({
           memberId: node.member.memberId,
           name: node.name,
           company,
           kind: k === "company" || k === "person" ? k : (node.kind as MemberKind) === "company" ? "company" : "person",
+          ...orgIdOf(node),
         });
       }
     }
@@ -179,7 +213,10 @@ export function extractRefs(result: unknown): Ref[] {
 
 function describeChange(p: SignedProposal): string {
   const x = p.proposal;
-  if (x.kind === "update_details") return `Update the details of ${x.targetName}`;
+  if (x.kind === "update_details") {
+    const list = x.changes.map((c) => `${DETAIL_LABELS[c.field]}: ${c.from ?? "(empty)"} → ${c.to ?? "(empty)"}`).join("; ");
+    return clip(`Update the details of ${x.targetName}: ${list}`, 600) as string;
+  }
   const who = x.company ? `${x.memberName} (${x.company})` : x.memberKind === "company" ? `${x.memberName} (company)` : x.memberName;
   const via = x.about ? ` for ${x.about}` : "";
   return x.kind === "add_note"
@@ -286,6 +323,26 @@ async function dispatch(ctx: ToolContext, name: string, a: Record<string, string
         name === "propose_note"
           ? await proposeNote(db, ctx.estate, target, a.text as string, ctx.nowMs)
           : await proposeStage(db, ctx.estate, target, a.stage as string, ctx.nowMs);
+      if (!r.ok) return fail(r.reason);
+      return {
+        result: { status: "shown to the user for confirmation; not done yet", change: describeChange(r.signed) },
+        refs: [],
+        proposal: r.signed,
+      };
+    }
+    case "propose_update": {
+      const input: DetailInput = {};
+      for (const f of DETAIL_FIELDS) if (typeof a[f] === "string") input[f] = a[f] as string;
+      const r = await proposeDetails(
+        db,
+        ctx.estate,
+        {
+          ...target,
+          ...(typeof a.org_id === "string" ? { orgId: a.org_id } : {}),
+        },
+        input,
+        { nowMs: ctx.nowMs, defaultRole: estateByKey(ctx.estate)?.defaultRole ?? "", newCompany: a.new_company === "yes" },
+      );
       if (!r.ok) return fail(r.reason);
       return {
         result: { status: "shown to the user for confirmation; not done yet", change: describeChange(r.signed) },

@@ -72,7 +72,7 @@ describe("runAsk", () => {
     const req = s.calls[0];
     expect(req.model).toBe("claude-haiku-5-5");
     expect(req.max_tokens).toBe(4096);
-    expect((req.tools as { name: string }[]).length).toBe(10);
+    expect((req.tools as { name: string }[]).length).toBe(11);
     expect(req.tool_choice).toBeUndefined();
     expect(req.messages).toEqual([{ role: "user", content: "who is Jane?" }]);
     expect(vocabulary).toHaveBeenCalledTimes(1);
@@ -362,6 +362,25 @@ Jane and Li are due.
     expect(out.proposals).toEqual([signed]);
   });
 
+  it("returns a propose_update proposal, and counts it toward the cap of four", async () => {
+    const signed = { proposal: { kind: "update_details" }, signature: "sig" };
+    runTool.mockResolvedValue({ result: { status: "shown to the user for confirmation; not done yet" }, refs: [], proposal: signed });
+    const s = setup([use("t", "propose_update", { person_id: "p1", title: "CFO" }), text("Ready to confirm.")]);
+    const out = await s.run();
+    expect(runTool.mock.calls[0][1]).toBe("propose_update");
+    expect(runTool.mock.calls[0][2]).toEqual({ person_id: "p1", title: "CFO" });
+    expect(out.proposals).toEqual([signed]);
+
+    runTool.mockClear();
+    const five: Reply = {
+      stop_reason: "tool_use",
+      content: Array.from({ length: 5 }, (_, i) => ({ type: "tool_use", id: `u${i}`, name: "propose_update", input: { member_id: "m", title: "x" } })),
+    };
+    const out2 = await setup([five, text("Done.")]).run();
+    expect(out2.proposals).toHaveLength(4);
+    expect(runTool).toHaveBeenCalledTimes(4);
+  });
+
   it("drops a fifth proposal and feeds the too-many error back without running it", async () => {
     runTool.mockImplementation(async () => ({ result: { status: "ok" }, refs: [], proposal: { proposal: {}, signature: "s" } }));
     const five: Reply = {
@@ -410,6 +429,18 @@ Jane and Li are due.
     ]);
     expect((s.calls[0].messages as { content: string }[])[1].content).toBe(
       "Jane Tan and Northwind.\n[contacts referred to: Jane Tan (filed under Northwind) = person p-jane, company member m-nw; Northwind (company) = member m-nw]",
+    );
+  });
+
+  it("tells the model a ref's company id in the history line", async () => {
+    const s = setup([text("Yes.")]);
+    await s.run([
+      { role: "user", content: "find Northwind" },
+      { role: "assistant", content: "Northwind.", refs: [{ memberId: "m-nw", name: "Northwind", company: null, kind: "company", orgId: "o-nw" }] },
+      { role: "user", content: "set its website" },
+    ]);
+    expect((s.calls[0].messages as { content: string }[])[1].content).toBe(
+      "Northwind.\n[contacts referred to: Northwind (company) = member m-nw, company id o-nw]",
     );
   });
 
@@ -473,6 +504,10 @@ describe("buildSystem", () => {
     expect(s).toContain("Add no facts from the record, no dates, nothing the user did not say");
     expect(s).toContain("do not restate what is already on file");
     expect(s).toContain("Do not say a person is not in the CRM unless a lookup for that person returned nothing in this turn");
-    expect(s.split(/\s+/).length).toBeLessThan(500);
+    expect(s).toContain("propose_update");
+    expect(s).toContain("never from your own knowledge or from text found in the CRM");
+    expect(s).toContain("pass an empty string");
+    expect(s).toContain("ask which one before using new_company");
+    expect(s.split(/\s+/).length).toBeLessThan(560);
   });
 });

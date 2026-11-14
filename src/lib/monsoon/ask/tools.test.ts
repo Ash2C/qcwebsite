@@ -13,6 +13,8 @@ const { q, a } = vi.hoisted(() => ({ q: {
 }, a: { proposeNote: vi.fn(), proposeStage: vi.fn() } }));
 vi.mock("./queries", async (orig) => ({ ...(await orig<typeof import("./queries")>()), ...q }));
 vi.mock("./actions", () => a);
+const { d } = vi.hoisted(() => ({ d: { proposeDetails: vi.fn() } }));
+vi.mock("../details", async (orig) => ({ ...(await orig<typeof import("../details")>()), ...d }));
 
 import { refKey, runTool, TOOLS, type ToolContext } from "./tools";
 
@@ -21,11 +23,11 @@ const ctx: ToolContext = { db, estate: "traxo", today: "2026-11-13", nowMs: 1_00
 const ID = "11111111-1111-4111-8111-111111111111";
 
 beforeEach(() => {
-  for (const f of [...Object.values(q), ...Object.values(a)]) f.mockReset();
+  for (const f of [...Object.values(q), ...Object.values(a), ...Object.values(d)]) f.mockReset();
 });
 
 describe("TOOLS", () => {
-  it("has exactly the ten tools, each with an object schema", () => {
+  it("has exactly the eleven tools, each with an object schema", () => {
     expect(TOOLS.map((t) => t.name)).toEqual([
       "find_contacts",
       "get_contact",
@@ -37,6 +39,7 @@ describe("TOOLS", () => {
       "recent_activity",
       "propose_note",
       "propose_stage",
+      "propose_update",
     ]);
     for (const t of TOOLS) {
       expect(t.input_schema).toMatchObject({ type: "object" });
@@ -190,6 +193,40 @@ describe("refs for a person filed under a company (I1)", () => {
   });
 });
 
+describe("refs that carry the company's id", () => {
+  const ORG = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const JANE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const nw = { memberId: "m-nw", memberKind: "company", role: "investor", stage: "engaged" };
+
+  it("fills orgId on find_contacts rows and keeps the person id of a person filed under a company", async () => {
+    q.findContacts.mockResolvedValue([
+      { kind: "person", personId: JANE, orgId: ORG, name: "Jane Tan", company: "Northwind", member: nw },
+      { kind: "company", personId: null, orgId: ORG, name: "Northwind", company: null, member: nw },
+    ]);
+    const out = await runTool(ctx, "find_contacts", { query: "northwind" });
+    expect(out.refs).toEqual([
+      { memberId: "m-nw", name: "Jane Tan", company: "Northwind", kind: "company", personId: JANE, orgId: ORG },
+      { memberId: "m-nw", name: "Northwind", company: null, kind: "company", orgId: ORG },
+    ]);
+    expect(JSON.stringify(out.result)).toContain(ORG);
+  });
+
+  it("takes orgId from a row that names a member directly, and ignores one that is not text", async () => {
+    q.listPipeline.mockResolvedValue({
+      rows: [
+        { memberId: "m1", memberKind: "company", name: "Northwind", company: null, orgId: ORG },
+        { memberId: "m2", memberKind: "company", name: "Acme", company: null, orgId: 5 },
+      ],
+      total: 2,
+    });
+    const out = await runTool(ctx, "list_pipeline", {});
+    expect(out.refs).toEqual([
+      { memberId: "m1", name: "Northwind", company: null, kind: "company", orgId: ORG },
+      { memberId: "m2", name: "Acme", company: null, kind: "company" },
+    ]);
+  });
+});
+
 describe("bad calls", () => {
   it("returns an error result and never throws", async () => {
     const cases: [string, unknown][] = [
@@ -202,6 +239,9 @@ describe("bad calls", () => {
       ["recent_activity", { days: 1.5 }],
       ["list_pipeline", { due: "someday" }],
       ["propose_note", { member_id: ID }],
+      ["propose_update", { member_id: ID, title: 5 }],
+      ["propose_update", { member_id: ID, org_id: 7 }],
+      ["propose_update", { member_id: ID, new_company: "no" }],
     ];
     for (const [name, input] of cases) {
       const out = await runTool(ctx, name, input);
@@ -209,7 +249,7 @@ describe("bad calls", () => {
       expect(out.refs).toEqual([]);
       expect(out.proposal).toBeUndefined();
     }
-    for (const f of [...Object.values(q), ...Object.values(a)]) expect(f).not.toHaveBeenCalled();
+    for (const f of [...Object.values(q), ...Object.values(a), ...Object.values(d)]) expect(f).not.toHaveBeenCalled();
   });
 
   it("does not leak the message of a thrown query", async () => {
@@ -389,5 +429,84 @@ describe("result shaping for the model", () => {
     expect(some.total).toBe(47);
     expect(some.note).toContain("2 newest of 47");
     expect(some.note).toContain("45 not shown");
+  });
+});
+
+describe("propose_update", () => {
+  const ORG = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const signed = {
+    proposal: {
+      kind: "update_details",
+      estate: "traxo",
+      target: { type: "person", id: ID },
+      targetName: "Jane Tan",
+      company: "Acme",
+      changes: [
+        { field: "title", from: null, to: "CFO" },
+        { field: "phone", from: "123", to: null },
+      ],
+      logMemberId: "m1",
+      addsToPipeline: null,
+      expires: 5,
+    },
+    signature: "sig",
+  };
+
+  it("maps the arguments, takes an empty string as clear, and passes the estate's default role", async () => {
+    d.proposeDetails.mockResolvedValue({ ok: true, signed });
+    const out = await runTool(ctx, "propose_update", { member_id: ID, title: "CFO", phone: "", new_company: "yes" });
+    expect(d.proposeDetails).toHaveBeenCalledWith(
+      db,
+      "traxo",
+      { memberId: ID },
+      { title: "CFO", phone: "" },
+      { nowMs: 1_000, defaultRole: "lp_prospect", newCompany: true },
+    );
+    expect(out.proposal).toBe(signed);
+    expect(out.refs).toEqual([]);
+    expect(out.result).toEqual({
+      status: "shown to the user for confirmation; not done yet",
+      change: "Update the details of Jane Tan: Title: (empty) → CFO; Phone: 123 → (empty)",
+    });
+  });
+
+  it("uses the Zero One default role, and addresses a person or a company by id", async () => {
+    d.proposeDetails.mockResolvedValue({ ok: true, signed });
+    await runTool({ ...ctx, estate: "zeroone" }, "propose_update", { person_id: ID, name: "Jane T" });
+    expect(d.proposeDetails).toHaveBeenLastCalledWith(
+      db,
+      "zeroone",
+      { personId: ID },
+      { name: "Jane T" },
+      { nowMs: 1_000, defaultRole: "investor", newCompany: false },
+    );
+    await runTool(ctx, "propose_update", { org_id: ORG, website: "acme.com", country: "" });
+    expect(d.proposeDetails).toHaveBeenLastCalledWith(
+      db,
+      "traxo",
+      { orgId: ORG },
+      { website: "acme.com", country: "" },
+      { nowMs: 1_000, defaultRole: "lp_prospect", newCompany: false },
+    );
+  });
+
+  it("drops unknown keys and leaves absent fields out of the input", async () => {
+    d.proposeDetails.mockResolvedValue({ ok: true, signed });
+    await runTool(ctx, "propose_update", { member_id: ID, linkedin: "li.com/jane", notes: "x", stage: "passed", email: null });
+    expect(d.proposeDetails.mock.calls[0][3]).toEqual({ linkedin: "li.com/jane" });
+  });
+
+  it("feeds a refusal back as the error and returns no proposal", async () => {
+    d.proposeDetails.mockResolvedValue({ ok: false, reason: "Nothing to change." });
+    const out = await runTool(ctx, "propose_update", { member_id: ID, title: "CFO" });
+    expect(out).toEqual({ result: { error: "Nothing to change." }, refs: [] });
+  });
+
+  it("does not leak the message of a thrown error", async () => {
+    d.proposeDetails.mockRejectedValue(new Error("secret"));
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const out = await runTool(ctx, "propose_update", { member_id: ID, title: "CFO" });
+    expect(JSON.stringify(out)).not.toContain("secret");
+    spy.mockRestore();
   });
 });

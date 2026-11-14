@@ -175,6 +175,33 @@ describe("POST /api/monsoon/ask", () => {
     expect(messages[1].refs[1]).not.toHaveProperty("personId");
   });
 
+  it("keeps a UUID-shaped orgId on a ref and drops a malformed one, keeping the ref", async () => {
+    const O = "44444444-4444-4444-8444-444444444444";
+    const nw = { memberId: M1, name: "Northwind", company: null, kind: "company" };
+    await POST(
+      post(
+        valid({
+          messages: [
+            user("who?"),
+            { role: "assistant", content: "Northwind.", refs: [{ ...nw, orgId: O }, { ...nw, orgId: "nope" }, { ...nw, orgId: 7 }, nw] },
+            user("set its website"),
+          ],
+        }),
+      ),
+    );
+    const messages = runAsk.mock.calls[0][1];
+    expect(messages[1].refs).toEqual([{ ...nw, orgId: O }, nw, nw, nw]);
+    expect(messages[1].refs[1]).not.toHaveProperty("orgId");
+  });
+
+  it("counts a ref's org id toward the 60,000 character cap", async () => {
+    const O = "44444444-4444-4444-8444-444444444444";
+    const ref = (orgId?: string) => ({ memberId: M1, name: "n", company: null, kind: "company", ...(orgId ? { orgId } : {}) });
+    const turn = (r: unknown) => valid({ messages: [user("a"), { role: "assistant", content: "y".repeat(59_961), refs: [r] }, user("x")] });
+    expect((await POST(post(turn(ref())))).status).toBe(200);
+    expect((await POST(post(turn(ref(O))))).status).toBe(400);
+  });
+
   it("counts a ref's person id toward the 60,000 character cap", async () => {
     const P = "33333333-3333-4333-8333-333333333333";
     const ref = (personId?: string) => ({ memberId: M1, name: "n", company: null, kind: "company", ...(personId ? { personId } : {}) });
