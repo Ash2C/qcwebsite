@@ -6,6 +6,7 @@ import { requireSession } from "@/lib/monsoon/auth";
 import { readJson } from "@/lib/monsoon/body";
 import { withEstateDb } from "@/lib/monsoon/db";
 import { estateByKey } from "@/lib/monsoon/estates";
+import { resolveToday } from "@/lib/monsoon/today";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,22 +19,12 @@ const MAX_USER_CHARS = 2000;
 const MAX_REFS_PER_MESSAGE = 30;
 const MAX_REF_TEXT = 200;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const DAY_MS = 86_400_000;
 
 function bad(error: string) {
   return NextResponse.json({ error }, { status: 400 });
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-
-/** The client's date when it is within one day of the server's UTC date, else the server's. */
-function resolveToday(value: unknown, nowMs: number): string {
-  const server = new Date(nowMs).toISOString().slice(0, 10);
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return server;
-  const t = Date.parse(`${value}T00:00:00Z`);
-  if (Number.isNaN(t) || new Date(t).toISOString().slice(0, 10) !== value) return server;
-  return Math.abs(t - Date.parse(`${server}T00:00:00Z`)) <= DAY_MS ? value : server;
-}
 
 /** Malformed refs are dropped silently, never rejected. */
 function cleanRefs(value: unknown): Ref[] {
