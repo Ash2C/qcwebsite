@@ -96,7 +96,8 @@ describe("passcodes", () => {
     expect(await verifyPasscode("x", DUMMY_PASSCODE_HASH)).toBe(false);
   });
   it("generates five words from the list", () => {
-    expect(WORDS.length).toBe(7776);
+    expect(WORDS.length).toBe(7772);
+    for (const w of WORDS) expect(w).toMatch(/^[a-z]+$/);
     const parts = generatePasscode().split("-");
     expect(parts).toHaveLength(5);
     for (const p of parts) expect(WORDS).toContain(p);

@@ -1,4 +1,4 @@
-// EFF large wordlist (7,776 words), https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt
+// EFF large wordlist (7,776 words minus the 4 hyphenated: drop-down, felt-tip, t-shirt, yo-yo), https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt
 export const WORDS: readonly string[] = Object.freeze([
   "abacus",
   "abdomen",
@@ -2008,7 +2008,6 @@ export const WORDS: readonly string[] = Object.freeze([
   "drone",
   "drool",
   "droop",
-  "drop-down",
   "dropbox",
   "dropkick",
   "droplet",
@@ -2527,7 +2526,6 @@ export const WORDS: readonly string[] = Object.freeze([
   "feel",
   "feisty",
   "feline",
-  "felt-tip",
   "feminine",
   "feminism",
   "feminist",
@@ -6639,7 +6637,6 @@ export const WORDS: readonly string[] = Object.freeze([
   "synthetic",
   "syrup",
   "system",
-  "t-shirt",
   "tabasco",
   "tabby",
   "tableful",
@@ -7747,7 +7744,6 @@ export const WORDS: readonly string[] = Object.freeze([
   "yield",
   "yin",
   "yippee",
-  "yo-yo",
   "yodel",
   "yoga",
   "yogurt",
