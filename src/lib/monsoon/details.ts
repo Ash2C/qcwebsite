@@ -4,9 +4,8 @@
 // never from a proposal.
 import type { ClientBase } from "pg";
 import type { ProposeResult } from "./ask/actions";
-import { PROPOSAL_TTL_MS, signProposal, type DetailChange, type DetailField, type Proposal } from "./ask/proposal";
+import { PROPOSAL_TTL_MS, signProposal, type Binding, type DetailChange, type DetailField, type Proposal } from "./ask/proposal";
 import { readOnly } from "./ask/queries";
-import type { EstateKey } from "./estates";
 import { nameKey, similarOrgNames } from "./rules";
 
 export const DETAIL_LABELS: Record<DetailField, string> = {
@@ -164,7 +163,7 @@ export async function logMemberFor(db: ClientBase, row: { type: string; id: stri
 
 export async function proposeDetails(
   db: ClientBase,
-  estate: EstateKey,
+  bind: Binding,
   target: Target,
   input: DetailInput,
   opts: { nowMs: number; defaultRole: string; newCompany?: boolean },
@@ -240,7 +239,8 @@ export async function proposeDetails(
 
     const proposal: DetailsProposal = {
       kind: "update_details",
-      estate,
+      customer: bind.customer,
+      estate: bind.estate,
       target: { type: row.type, id: row.id },
       targetName: row.name,
       company: row.company,

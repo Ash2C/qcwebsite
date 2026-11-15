@@ -35,6 +35,7 @@ describe.skipIf(!testDb.available)("Applying research (real Postgres)", () => {
   function proposal(over: Partial<Research> = {}): Research {
     return {
       kind: "apply_research",
+      customer: "c0000000-0000-4000-8000-00000000000a",
       estate: "zeroone",
       person: { id: id.jane, name: "Jane Tan" },
       company: { id: id.nw, name: "Northwind Capital" },

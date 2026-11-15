@@ -7,6 +7,7 @@ import { ensureOwner } from "./owners";
 import { testDb } from "./testing/db";
 
 const NOW = 1_800_000_000_000;
+const CUSTOMER = "c0000000-0000-4000-8000-00000000000a";
 type Details = Extract<Proposal, { kind: "update_details" }>;
 
 describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
@@ -34,7 +35,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
     return out;
   }
   async function propose(target: Parameters<typeof proposeDetails>[2], input: DetailInput, opts: { newCompany?: boolean } = {}) {
-    return proposeDetails(db, "zeroone", target, input, { nowMs: NOW, defaultRole: "investor", ...opts });
+    return proposeDetails(db, { customer: CUSTOMER, estate: "zeroone" }, target, input, { nowMs: NOW, defaultRole: "investor", ...opts });
   }
   async function proposed(target: Parameters<typeof proposeDetails>[2], input: DetailInput, opts: { newCompany?: boolean } = {}): Promise<Details> {
     const r = await propose(target, input, opts);
@@ -82,6 +83,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
       if (!r.ok) return;
       expect(r.signed.proposal).toEqual({
         kind: "update_details",
+        customer: CUSTOMER,
         estate: "zeroone",
         target: { type: "person", id: id.liwei },
         targetName: "Li Wei",

@@ -1,8 +1,7 @@
 // The two changes Ask can make. A propose function only reads; the write functions run in one
 // transaction each and are called by `act` after a signed proposal has been verified.
 import type { ClientBase } from "pg";
-import type { EstateKey } from "../estates";
-import { PROPOSAL_TTL_MS, signProposal, type Proposal, type SignedProposal } from "./proposal";
+import { PROPOSAL_TTL_MS, signProposal, type Binding, type Proposal, type SignedProposal } from "./proposal";
 import { readOnly, vocabulary, type MemberKind } from "./queries";
 
 export type Target = { memberId?: string; personId?: string };
@@ -72,9 +71,10 @@ async function resolve(db: ClientBase, target: Target): Promise<Resolution> {
   return { ok: false, reason: NO_CONTACT };
 }
 
-function sign(member: Resolved, estate: EstateKey, nowMs: number, extra?: { fromStage: string; toStage: string }): SignedProposal {
+function sign(member: Resolved, bind: Binding, nowMs: number, extra?: { fromStage: string; toStage: string }): SignedProposal {
   const base = {
-    estate,
+    customer: bind.customer,
+    estate: bind.estate,
     memberId: member.memberId,
     memberKind: member.memberKind,
     memberName: member.memberName,
@@ -94,7 +94,7 @@ function startsWithName(text: string, name: string): boolean {
 
 export async function proposeNote(
   db: ClientBase,
-  estate: EstateKey,
+  bind: Binding,
   target: Target,
   text: string,
   nowMs: number,
@@ -104,7 +104,7 @@ export async function proposeNote(
   if (note.length > MAX_NOTE) return { ok: false, reason: `The note is too long (limit ${MAX_NOTE} characters).` };
   const found = await resolve(db, target);
   if (!found.ok) return found;
-  const signed = sign(found.member, estate, nowMs);
+  const signed = sign(found.member, bind, nowMs);
   const { about } = found.member;
   // The card shows this as the suggested text: about a person filed under a company, lead with their name.
   signed.text = about && !startsWithName(note, about) ? `${about}: ${note}` : note;
@@ -113,7 +113,7 @@ export async function proposeNote(
 
 export async function proposeStage(
   db: ClientBase,
-  estate: EstateKey,
+  bind: Binding,
   target: Target,
   stage: string,
   nowMs: number,
@@ -125,7 +125,7 @@ export async function proposeStage(
     return { ok: false, reason: `Unknown stage. Stages are: ${stages.map((s) => s.key).join(", ")}.` };
   }
   if (stage === found.member.stage) return { ok: false, reason: `${found.member.memberName} is already in ${stage}.` };
-  return { ok: true, signed: sign(found.member, estate, nowMs, { fromStage: found.member.stage, toStage: stage }) };
+  return { ok: true, signed: sign(found.member, bind, nowMs, { fromStage: found.member.stage, toStage: stage }) };
 }
 
 /** Run `fn` in one read-committed transaction; commit when it asks to, otherwise roll back. */

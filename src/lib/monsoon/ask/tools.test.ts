@@ -22,7 +22,9 @@ vi.mock("../research-subject", () => rs);
 import { refKey, runTool, TOOLS, type ToolContext } from "./tools";
 
 const db = { fake: true } as unknown as ClientBase;
-const ctx: ToolContext = { db, estate: "traxo", today: "2026-11-13", nowMs: 1_000 };
+const CUSTOMER = "c0000000-0000-4000-8000-00000000000a";
+const BIND = { customer: CUSTOMER, estate: "traxo" };
+const ctx: ToolContext = { db, customerId: CUSTOMER, estate: "traxo", defaultRole: "lp_prospect", today: "2026-11-13", nowMs: 1_000 };
 const ID = "11111111-1111-4111-8111-111111111111";
 
 beforeEach(() => {
@@ -319,6 +321,7 @@ describe("propose tools", () => {
   const signed = {
     proposal: {
       kind: "add_note",
+      customer: CUSTOMER,
       estate: "traxo",
       memberId: ID,
       memberKind: "person",
@@ -334,7 +337,7 @@ describe("propose tools", () => {
   it("propose_note returns the proposal and says it is not done yet", async () => {
     a.proposeNote.mockResolvedValue({ ok: true, signed });
     const out = await runTool(ctx, "propose_note", { member_id: ID, text: "Call back Tuesday" });
-    expect(a.proposeNote).toHaveBeenCalledWith(db, "traxo", { memberId: ID }, "Call back Tuesday", 1_000);
+    expect(a.proposeNote).toHaveBeenCalledWith(db, BIND, { memberId: ID }, "Call back Tuesday", 1_000);
     expect(out.proposal).toBe(signed);
     expect(out.result).toEqual({
       status: "shown to the user for confirmation; not done yet",
@@ -351,7 +354,7 @@ describe("propose tools", () => {
       },
     });
     const out = await runTool(ctx, "propose_stage", { person_id: ID, stage: "engaged" });
-    expect(a.proposeStage).toHaveBeenCalledWith(db, "traxo", { personId: ID }, "engaged", 1_000);
+    expect(a.proposeStage).toHaveBeenCalledWith(db, BIND, { personId: ID }, "engaged", 1_000);
     expect(out.result).toMatchObject({ change: "Move Jane Tan (Acme) from contacted to engaged" });
   });
 
@@ -465,6 +468,7 @@ describe("propose_update", () => {
   const signed = {
     proposal: {
       kind: "update_details",
+      customer: CUSTOMER,
       estate: "traxo",
       target: { type: "person", id: ID },
       targetName: "Jane Tan",
@@ -485,7 +489,7 @@ describe("propose_update", () => {
     const out = await runTool(ctx, "propose_update", { member_id: ID, title: "CFO", phone: "", new_company: "yes" });
     expect(d.proposeDetails).toHaveBeenCalledWith(
       db,
-      "traxo",
+      BIND,
       { memberId: ID },
       { title: "CFO", phone: "" },
       { nowMs: 1_000, defaultRole: "lp_prospect", newCompany: true },
@@ -500,10 +504,10 @@ describe("propose_update", () => {
 
   it("uses the Zero One default role, and addresses a person or a company by id", async () => {
     d.proposeDetails.mockResolvedValue({ ok: true, signed });
-    await runTool({ ...ctx, estate: "zeroone" }, "propose_update", { person_id: ID, name: "Jane T" });
+    await runTool({ ...ctx, estate: "zeroone", defaultRole: "investor" }, "propose_update", { person_id: ID, name: "Jane T" });
     expect(d.proposeDetails).toHaveBeenLastCalledWith(
       db,
-      "zeroone",
+      { customer: CUSTOMER, estate: "zeroone" },
       { personId: ID },
       { name: "Jane T" },
       { nowMs: 1_000, defaultRole: "investor", newCompany: false },
@@ -511,7 +515,7 @@ describe("propose_update", () => {
     await runTool(ctx, "propose_update", { org_id: ORG, website: "acme.com", country: "" });
     expect(d.proposeDetails).toHaveBeenLastCalledWith(
       db,
-      "traxo",
+      BIND,
       { orgId: ORG },
       { website: "acme.com", country: "" },
       { nowMs: 1_000, defaultRole: "lp_prospect", newCompany: false },
@@ -538,12 +542,14 @@ describe("propose_update", () => {
     expect(d.proposeDetails.mock.calls[2][2]).toEqual({ memberId: ID });
   });
 
-  it("refuses for an unknown estate instead of passing an empty role", async () => {
-    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const out = await runTool({ ...ctx, estate: "nowhere" as never }, "propose_update", { member_id: ID, title: "CFO" });
-    expect(out).toEqual({ result: { error: "That lookup failed." }, refs: [] });
-    expect(d.proposeDetails).not.toHaveBeenCalled();
-    spy.mockRestore();
+  it("binds the proposal to the context's customer, never to one named in the input", async () => {
+    d.proposeDetails.mockResolvedValue({ ok: true, signed });
+    a.proposeNote.mockResolvedValue({ ok: true, signed });
+    const other = "c0000000-0000-4000-8000-00000000000b";
+    await runTool(ctx, "propose_update", { member_id: ID, title: "CFO", customer: other, customerId: other, estate: "x" });
+    expect(d.proposeDetails.mock.calls[0][1]).toEqual(BIND);
+    await runTool(ctx, "propose_note", { member_id: ID, text: "hi", customer: other, estate: "x" });
+    expect(a.proposeNote.mock.calls[0][1]).toEqual(BIND);
   });
 
   it("feeds a refusal back as the error and returns no proposal", async () => {

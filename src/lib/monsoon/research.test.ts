@@ -12,6 +12,7 @@ import {
   type ResearchSubject,
 } from "./research";
 
+const MODEL = "claude-sonnet-5-5";
 const SUBJECT: ResearchSubject = {
   name: "Ada Testperson",
   company: "Examplecorp",
@@ -483,7 +484,6 @@ const results = (...urls: string[]) => ({
 
 beforeEach(() => {
   create.mockReset();
-  vi.stubEnv("MONSOON_RESEARCH_MODEL", "");
 });
 afterEach(() => vi.unstubAllEnvs());
 
@@ -492,13 +492,13 @@ describe("runResearch", () => {
     create.mockResolvedValue(
       reply(raw({ findings: [f("title", "Director", "https://news.example.test/ada")] }), [results("https://news.example.test/ada")])
     );
-    const run = await runResearch(client, SUBJECT);
+    const run = await runResearch(client, MODEL, SUBJECT);
     expect(run).toMatchObject({ vetted: { outcome: "findings" } });
     const [params, opts] = create.mock.calls[0];
     expect(params.tools).toEqual([{ type: "web_search_20250305", name: "web_search", max_uses: 6, blocked_domains: BLOCKED_DOMAINS }]);
     expect(params.tool_choice).toBeUndefined();
     expect(params.max_tokens).toBe(4000);
-    expect(params.model).toBe("claude-haiku-5-5");
+    expect(params.model).toBe(MODEL);
     expect(params.output_config.format.schema.additionalProperties).toBe(false);
     expect(params.output_config.format.schema.properties.findings.items.properties.field.enum).toEqual([
       "title", "linkedin_url", "country", "company_website", "work_email", "work_phone",
@@ -513,29 +513,23 @@ describe("runResearch", () => {
         { type: "web_search_tool_result", tool_use_id: "s1", content: { type: "web_search_tool_result_error", error_code: "unavailable" } },
       ])
     );
-    expect(await runResearch(client, SUBJECT)).toEqual({ vetted: { outcome: "nothing" } });
+    expect(await runResearch(client, MODEL, SUBJECT)).toEqual({ vetted: { outcome: "nothing" } });
   });
 
   it("maps refusal, pause_turn, max_tokens, timeouts and malformed JSON", async () => {
     create.mockResolvedValueOnce(reply(raw(), [], "refusal"));
-    expect(await runResearch(client, SUBJECT)).toEqual({ failed: "refused" });
+    expect(await runResearch(client, MODEL, SUBJECT)).toEqual({ failed: "refused" });
     create.mockResolvedValueOnce(reply(raw(), [], "pause_turn"));
-    expect(await runResearch(client, SUBJECT)).toEqual({ failed: "timeout" });
+    expect(await runResearch(client, MODEL, SUBJECT)).toEqual({ failed: "timeout" });
     create.mockResolvedValueOnce(reply(raw(), [], "max_tokens"));
-    expect(await runResearch(client, SUBJECT)).toEqual({ failed: "timeout" });
+    expect(await runResearch(client, MODEL, SUBJECT)).toEqual({ failed: "timeout" });
     create.mockRejectedValueOnce(new Anthropic.APIConnectionTimeoutError());
-    expect(await runResearch(client, SUBJECT, { timeoutMs: 1000 })).toEqual({ failed: "timeout" });
+    expect(await runResearch(client, MODEL, SUBJECT, { timeoutMs: 1000 })).toEqual({ failed: "timeout" });
     create.mockRejectedValueOnce(new Anthropic.APIConnectionError({ message: "x" }));
-    expect(await runResearch(client, SUBJECT)).toEqual({ failed: "timeout" });
+    expect(await runResearch(client, MODEL, SUBJECT)).toEqual({ failed: "timeout" });
     create.mockResolvedValueOnce(reply("not json"));
-    expect(await runResearch(client, SUBJECT)).toEqual({ failed: "malformed" });
+    expect(await runResearch(client, MODEL, SUBJECT)).toEqual({ failed: "malformed" });
     create.mockResolvedValueOnce(reply({ identity: "established" }));
-    expect(await runResearch(client, SUBJECT)).toEqual({ failed: "malformed" });
-  });
-
-  it("refuses an Opus model id", async () => {
-    vi.stubEnv("MONSOON_RESEARCH_MODEL", "claude-opus-5-5");
-    await expect(runResearch(client, SUBJECT)).rejects.toThrow("MONSOON_RESEARCH_MODEL must not be an Opus or Fable model");
-    expect(create).not.toHaveBeenCalled();
+    expect(await runResearch(client, MODEL, SUBJECT)).toEqual({ failed: "malformed" });
   });
 });

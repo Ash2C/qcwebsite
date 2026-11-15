@@ -4,7 +4,6 @@
 import type { ClientBase } from "pg";
 import { DETAIL_LABELS, proposeDetails, type DetailInput } from "../details";
 import { readSubject } from "../research-subject";
-import { estateByKey, type EstateKey } from "../estates";
 import { proposeNote, proposeStage, type Target } from "./actions";
 import type { DetailField, SignedProposal } from "./proposal";
 import {
@@ -29,7 +28,12 @@ import {
 export type Ref = { memberId: string; name: string; company: string | null; kind: MemberKind; personId?: string; orgId?: string };
 export type ToolContext = {
   db: ClientBase;
-  estate: EstateKey;
+  /** The signed-in customer's id; every proposal is bound to it. Never from a request body. */
+  customerId: string;
+  /** The pipeline key. */
+  estate: string;
+  /** The pipeline's default role, for a details change that adds a person to the pipeline. */
+  defaultRole: string;
   today: string;
   nowMs: number;
   /** Milliseconds left in the request; bounds each query's statement timeout. */
@@ -265,6 +269,7 @@ function withOwner(rows: unknown[]): unknown[] {
 
 async function dispatch(ctx: ToolContext, name: string, a: Record<string, string | number>): Promise<ToolOutcome> {
   const { db, today } = ctx;
+  const bind = { customer: ctx.customerId, estate: ctx.estate };
   // Statement timeout for this lookup: what is left of the request minus 3 seconds, at least 1 second.
   const opts = ctx.remainingMs ? { timeoutMs: Math.max(1000, ctx.remainingMs() - 3000) } : undefined;
   const read = (result: unknown): ToolOutcome => ({ result, refs: extractRefs(result) });
@@ -337,8 +342,8 @@ async function dispatch(ctx: ToolContext, name: string, a: Record<string, string
     case "propose_stage": {
       const r =
         name === "propose_note"
-          ? await proposeNote(db, ctx.estate, target, a.text as string, ctx.nowMs)
-          : await proposeStage(db, ctx.estate, target, a.stage as string, ctx.nowMs);
+          ? await proposeNote(db, bind, target, a.text as string, ctx.nowMs)
+          : await proposeStage(db, bind, target, a.stage as string, ctx.nowMs);
       if (!r.ok) return fail(r.reason);
       return {
         result: { status: "shown to the user for confirmation; not done yet", change: describeChange(r.signed) },
@@ -349,8 +354,6 @@ async function dispatch(ctx: ToolContext, name: string, a: Record<string, string
     case "propose_update": {
       const input: DetailInput = {};
       for (const f of DETAIL_FIELDS) if (typeof a[f] === "string") input[f] = a[f] as string;
-      const defaults = estateByKey(ctx.estate);
-      if (!defaults) return fail(FAILED);
       // One id only, the most specific: the person, then the company, then the member.
       const only: Target & { orgId?: string } =
         typeof a.person_id === "string"
@@ -360,9 +363,9 @@ async function dispatch(ctx: ToolContext, name: string, a: Record<string, string
             : typeof a.member_id === "string"
               ? { memberId: a.member_id }
               : {};
-      const r = await proposeDetails(db, ctx.estate, only, input, {
+      const r = await proposeDetails(db, bind, only, input, {
         nowMs: ctx.nowMs,
-        defaultRole: defaults.defaultRole,
+        defaultRole: ctx.defaultRole,
         newCompany: a.new_company === "yes",
       });
       if (!r.ok) return fail(r.reason);

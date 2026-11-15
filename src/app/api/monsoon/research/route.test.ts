@@ -1,11 +1,12 @@
+import type { MockInstance } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { verifyProposal } from "@/lib/monsoon/ask/proposal";
-import { signLegacySession } from "@/lib/monsoon/auth";
 
-const withEstateDb = vi.fn();
 const readSubject = vi.fn();
 const runResearch = vi.fn();
-vi.mock("@/lib/monsoon/db", () => ({ withEstateDb: (...a: unknown[]) => withEstateDb(...a) }));
+vi.mock("@/lib/monsoon/accounts/account", async () =>
+  (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
+);
 vi.mock("@/lib/monsoon/research-subject", () => ({ readSubject: (...a: unknown[]) => readSubject(...a) }));
 vi.mock("@/lib/monsoon/research", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/monsoon/research")>()),
@@ -24,6 +25,8 @@ vi.mock("@/lib/monsoon/ask/proposal", async (importOriginal) => {
   };
 });
 
+import type { Account } from "@/lib/monsoon/accounts/account";
+import { fakeAccount, signInAs, signOut } from "@/lib/monsoon/testing/account";
 import { POST } from "./route";
 
 const MEMBER = "11111111-1111-4111-8111-111111111111";
@@ -31,6 +34,15 @@ const PERSON = "22222222-2222-4222-8222-222222222222";
 const ORG = "33333333-3333-4333-8333-333333333333";
 const LOGM = "44444444-4444-4444-8444-444444444444";
 const fakeClient = { fake: true };
+const fakeClaude = { claude: true };
+const CUSTOMER = "c0000000-0000-4000-8000-00000000000a";
+const PIPELINES = [
+  { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", connected: true },
+  { key: "zeroone", label: "Zero One", defaultRole: "investor", connected: true },
+];
+let account: Account;
+let withDb: MockInstance<Account["withDb"]>;
+let anthropic: MockInstance<Account["anthropic"]>;
 
 const subject = {
   name: "Jane Tan",
@@ -69,13 +81,11 @@ const vetted = (over: Record<string, unknown> = {}) => ({
 });
 
 function post(body: unknown, authenticated = true): Request {
+  if (!authenticated) signOut();
   return new Request("http://localhost/api/monsoon/research", {
     method: "POST",
     body: typeof body === "string" ? body : JSON.stringify(body),
-    headers: {
-      "Content-Type": "application/json",
-      ...(authenticated ? { Cookie: `monsoon_session=${signLegacySession()}` } : {}),
-    },
+    headers: { "Content-Type": "application/json" },
   });
 }
 
@@ -83,18 +93,19 @@ const calls = (f: unknown) => JSON.stringify((f as { mock: { calls: unknown[] } 
 
 let dbDone = false;
 beforeEach(() => {
-  for (const f of [withEstateDb, readSubject, runResearch]) f.mockReset();
+  for (const f of [readSubject, runResearch]) f.mockReset();
   dbDone = false;
-  withEstateDb.mockImplementation(async (_e, fn) => {
-    const out = await fn(fakeClient);
+  account = fakeAccount({ customer: { id: CUSTOMER }, pipelines: PIPELINES, claude: fakeClaude, model: "claude-sonnet-5-5" });
+  withDb = vi.spyOn(account, "withDb").mockImplementation(async (_key, fn) => {
+    const out = await fn(fakeClient as never);
     dbDone = true;
     return out;
   });
+  anthropic = vi.spyOn(account, "anthropic");
+  signInAs(account);
   readSubject.mockResolvedValue(read());
   runResearch.mockResolvedValue(vetted());
-  vi.stubEnv("MONSOON_PASSCODE", "correct-horse-battery-staple");
   vi.stubEnv("MONSOON_SESSION_SECRET", "x".repeat(32));
-  vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
   vi.spyOn(console, "error").mockImplementation(() => undefined);
   vi.spyOn(console, "log").mockImplementation(() => undefined);
 });
@@ -113,7 +124,7 @@ describe("POST /api/monsoon/research", () => {
   it("answers 401 before reading the body and calls nothing", async () => {
     expect((await POST(post({ estate: "traxo", memberId: MEMBER }, false))).status).toBe(401);
     expect((await POST(post("{", false))).status).toBe(401);
-    expect(withEstateDb).not.toHaveBeenCalled();
+    expect(withDb).not.toHaveBeenCalled();
     expect(runResearch).not.toHaveBeenCalled();
   });
 
@@ -129,7 +140,7 @@ describe("POST /api/monsoon/research", () => {
       { estate: "traxo", memberId: "nope" },
     ];
     for (const b of bodies) expect((await POST(post(b))).status).toBe(400);
-    expect(withEstateDb).not.toHaveBeenCalled();
+    expect(withDb).not.toHaveBeenCalled();
     expect(runResearch).not.toHaveBeenCalled();
   });
 
@@ -169,6 +180,10 @@ describe("POST /api/monsoon/research", () => {
     expect(verifyProposal(p, body.signed.signature, Date.now())).toBe(true);
     expect(p.kind).toBe("apply_research");
     expect(p.estate).toBe("zeroone");
+    expect(p.customer).toBe(CUSTOMER);
+    expect(withDb.mock.calls[0][0]).toBe("zeroone");
+    expect(account.record).toHaveBeenCalledTimes(1);
+    expect(account.record).toHaveBeenCalledWith("research", "zeroone");
     expect(p.findings.map((f: { id: string }) => f.id)).toEqual(["f1", "f2"]);
     expect(p.person).toEqual({ id: PERSON, name: "Jane Tan" });
     expect(p.company).toEqual({ id: ORG, name: "Northwind Capital" });
@@ -245,6 +260,7 @@ describe("POST /api/monsoon/research", () => {
     const res = await POST(post({ estate: "traxo", memberId: MEMBER }));
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: "Could not run research. Check signal and try again." });
+    expect(account.record).not.toHaveBeenCalled();
     const logged = calls(console.error);
     expect(logged).toContain("monsoon: research failed");
     expect(logged).toContain("RateLimitError");
@@ -252,13 +268,40 @@ describe("POST /api/monsoon/research", () => {
     expect(logged).not.toContain("secret query");
   });
 
-  it("answers 502 when the model id is not allowed", async () => {
-    runResearch.mockRejectedValue(new Error("MONSOON_RESEARCH_MODEL must not be an Opus or Fable model"));
+  it("answers 502 when the model id is not allowed, and records nothing", async () => {
+    vi.spyOn(account, "model").mockImplementation(() => {
+      throw new Error("This model is not allowed for this customer");
+    });
     expect((await POST(post({ estate: "traxo", memberId: MEMBER }))).status).toBe(502);
+    expect(runResearch).not.toHaveBeenCalled();
+    expect(account.record).not.toHaveBeenCalled();
+  });
+
+  it("answers 502 without a Claude key", async () => {
+    signInAs(fakeAccount({ pipelines: PIPELINES, db: fakeClient }));
+    expect((await POST(post({ estate: "traxo", memberId: MEMBER }))).status).toBe(502);
+    expect(runResearch).not.toHaveBeenCalled();
+  });
+
+  it("uses the customer's client and model, and records research on a none outcome from the model", async () => {
+    runResearch.mockResolvedValue({ vetted: { outcome: "nothing" } });
+    await POST(post({ estate: "traxo", memberId: MEMBER, customer: "c0000000-0000-4000-8000-00000000000b" }));
+    expect(anthropic).toHaveBeenCalledWith({ timeout: 45_000 });
+    expect(runResearch.mock.calls[0][0]).toBe(fakeClaude);
+    expect(runResearch.mock.calls[0][1]).toBe("claude-sonnet-5-5");
+    expect(account.record).toHaveBeenCalledWith("research", "traxo");
+  });
+
+  it("records nothing when the model is never asked or the contact is unknown", async () => {
+    readSubject.mockResolvedValue(read({ subject: { ...subject, company: null }, company: null }));
+    await POST(post({ estate: "traxo", personId: PERSON }));
+    readSubject.mockResolvedValue({ ok: false, reason: "missing" });
+    await POST(post({ estate: "traxo", personId: PERSON }));
+    expect(account.record).not.toHaveBeenCalled();
   });
 
   it("finishes the database callback before the model call starts, with a 45 s timeout", async () => {
-    runResearch.mockImplementation(async (_c, _s, opts) => {
+    runResearch.mockImplementation(async (_c, _m, _s, opts) => {
       expect(dbDone).toBe(true);
       expect(opts).toEqual({ timeoutMs: 45_000 });
       return vetted();

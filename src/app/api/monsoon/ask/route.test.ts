@@ -1,33 +1,33 @@
+import type { MockInstance } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signLegacySession } from "@/lib/monsoon/auth";
 
-const withEstateDb = vi.fn();
 const runAsk = vi.fn();
-const ctorOptions: unknown[] = [];
-vi.mock("@/lib/monsoon/db", () => ({ withEstateDb: (...a: unknown[]) => withEstateDb(...a) }));
 vi.mock("@/lib/monsoon/ask/loop", () => ({ runAsk: (...a: unknown[]) => runAsk(...a) }));
-vi.mock("@anthropic-ai/sdk", () => ({
-  default: class {
-    constructor(options?: unknown) {
-      ctorOptions.push(options);
-    }
-    messages = { create: vi.fn() };
-  },
-}));
-
+vi.mock("@/lib/monsoon/accounts/account", async () =>
+  (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
+);
+import type { Account } from "@/lib/monsoon/accounts/account";
+import { fakeAccount, signInAs, signOut } from "@/lib/monsoon/testing/account";
 import { POST } from "./route";
 
 const fakeDb = { fake: true };
+const fakeMessages = { create: vi.fn() };
 const RESULT = { answer: "Hi.", refs: [], proposals: [] };
+const CUSTOMER = "c0000000-0000-4000-8000-00000000000a";
+const PIPELINES = [
+  { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", connected: true },
+  { key: "zeroone", label: "Zero One", defaultRole: "investor", connected: true },
+];
+let account: Account;
+let withDb: MockInstance<Account["withDb"]>;
+let anthropic: MockInstance<Account["anthropic"]>;
 
 function post(body: unknown, authenticated = true): Request {
+  if (!authenticated) signOut();
   return new Request("http://localhost/api/monsoon/ask", {
     method: "POST",
     body: typeof body === "string" ? body : JSON.stringify(body),
-    headers: {
-      "Content-Type": "application/json",
-      ...(authenticated ? { Cookie: `monsoon_session=${signLegacySession()}` } : {}),
-    },
+    headers: { "Content-Type": "application/json" },
   });
 }
 const M1 = "11111111-1111-4111-8111-111111111111";
@@ -41,9 +41,18 @@ const valid = (over: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => {
-  withEstateDb.mockReset().mockImplementation(async (_e, fn) => fn(fakeDb));
   runAsk.mockReset().mockResolvedValue(RESULT);
-  ctorOptions.length = 0;
+  account = fakeAccount({
+    customer: { id: CUSTOMER },
+    person: { name: "Ann Lee", ownerKey: "AL" },
+    pipelines: PIPELINES,
+    db: fakeDb,
+    claude: { messages: fakeMessages },
+    model: "claude-sonnet-5-5",
+  });
+  withDb = vi.spyOn(account, "withDb");
+  anthropic = vi.spyOn(account, "anthropic");
+  signInAs(account);
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-11-13T10:00:00Z"));
   vi.stubEnv("MONSOON_PASSCODE", "correct-horse-battery-staple");
@@ -64,13 +73,13 @@ describe("POST /api/monsoon/ask", () => {
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: "unauthorized" });
     expect(runAsk).not.toHaveBeenCalled();
-    expect(withEstateDb).not.toHaveBeenCalled();
+    expect(withDb).not.toHaveBeenCalled();
   });
 
   const cases: [string, unknown][] = [
     ["malformed JSON", "{nope"],
     ["a non-object body", []],
-    ["an unknown estate", valid({ estate: "acme" })],
+    ["an estate that is not one of the account's pipelines", valid({ estate: "acme" })],
     ["a missing estate", { messages: [user("hi")] }],
     ["messages not an array", valid({ messages: "hi" })],
     ["empty messages", valid({ messages: [] })],
@@ -144,7 +153,18 @@ describe("POST /api/monsoon/ask", () => {
     expect(await res.json()).toEqual(RESULT);
     expect(runAsk).toHaveBeenCalledTimes(1);
     const [deps, messages] = runAsk.mock.calls[0];
-    expect(deps).toMatchObject({ db: fakeDb, estate: "traxo", estateLabel: "Traxo", today: "2026-11-13" });
+    expect(deps).toMatchObject({
+      db: fakeDb,
+      customerId: CUSTOMER,
+      estate: "traxo",
+      estateLabel: "Traxo",
+      defaultRole: "lp_prospect",
+      person: { name: "Ann Lee", ownerKey: "AL" },
+      model: "claude-sonnet-5-5",
+      today: "2026-11-13",
+      client: fakeMessages,
+    });
+    expect(withDb.mock.calls[0][0]).toBe("traxo");
     expect(typeof deps.now()).toBe("number");
     expect(deps.startedAt).toBe(new Date("2026-11-13T10:00:00Z").getTime());
     expect(messages).toEqual([
@@ -153,7 +173,9 @@ describe("POST /api/monsoon/ask", () => {
       { role: "assistant", content: "No refs", refs: [] },
       user("move her"),
     ]);
-    expect(ctorOptions).toEqual([{ timeout: 20_000, maxRetries: 0 }]);
+    expect(anthropic).toHaveBeenCalledWith({ timeout: 20_000 });
+    expect(account.record).toHaveBeenCalledTimes(1);
+    expect(account.record).toHaveBeenCalledWith("ask", "traxo");
   });
 
   it("keeps a UUID-shaped personId on a ref and drops a malformed one, keeping the ref", async () => {
@@ -221,11 +243,25 @@ describe("POST /api/monsoon/ask", () => {
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0]).toEqual(["monsoon: ask failed", "APIError", 529]);
     expect(JSON.stringify(spy.mock.calls)).not.toContain("secret");
+    expect(account.record).not.toHaveBeenCalled();
   });
 
   it("answers 502 when the database cannot be reached", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
-    withEstateDb.mockRejectedValue(new Error("TRAXO_CRM_DATABASE_URL is not set"));
+    withDb.mockRejectedValue(new Error("postgres://u:pw@h"));
     expect((await POST(post(valid()))).status).toBe(502);
+    expect(account.record).not.toHaveBeenCalled();
+  });
+
+  it("ignores a customer id in the body: the proposals are bound to the signed-in customer", async () => {
+    await POST(post(valid({ customer: "c0000000-0000-4000-8000-00000000000b", customerId: "c0000000-0000-4000-8000-00000000000b" })));
+    expect(runAsk.mock.calls[0][0].customerId).toBe(CUSTOMER);
+  });
+
+  it("answers 502 without a Claude key and records nothing", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    signInAs(fakeAccount({ pipelines: PIPELINES, db: fakeDb }));
+    expect((await POST(post(valid()))).status).toBe(502);
+    expect(runAsk).not.toHaveBeenCalled();
   });
 });

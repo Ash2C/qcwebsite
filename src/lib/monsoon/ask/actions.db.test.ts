@@ -7,6 +7,9 @@ import { addNote, moveStage, proposeNote, proposeStage } from "./actions";
 import { verifyProposal } from "./proposal";
 
 const NOW = 1_800_000_000_000;
+const CUSTOMER = "c0000000-0000-4000-8000-00000000000a";
+const ZEROONE = { customer: CUSTOMER, estate: "zeroone" };
+const TRAXO = { customer: CUSTOMER, estate: "traxo" };
 
 describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
   let db: Client;
@@ -64,11 +67,12 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
 
   describe("proposeNote", () => {
     it("proposes for a person member", async () => {
-      const r = await proposeNote(db, "zeroone", { memberId: id.mLi }, "  called back  ", NOW);
+      const r = await proposeNote(db, ZEROONE, { memberId: id.mLi }, "  called back  ", NOW);
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       expect(r.signed.proposal).toEqual({
         kind: "add_note",
+        customer: CUSTOMER,
         estate: "zeroone",
         memberId: id.mLi,
         memberKind: "person",
@@ -82,7 +86,7 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
     });
 
     it("proposes for a company member", async () => {
-      const r = await proposeNote(db, "traxo", { memberId: id.mNw }, "review in March", NOW);
+      const r = await proposeNote(db, TRAXO, { memberId: id.mNw }, "review in March", NOW);
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       expect(r.signed.proposal).toMatchObject({
@@ -94,7 +98,7 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
     });
 
     it("applies a note about a person to the company member and prefixes the name", async () => {
-      const r = await proposeNote(db, "zeroone", { personId: id.jane }, "wants the deck in January", NOW);
+      const r = await proposeNote(db, ZEROONE, { personId: id.jane }, "wants the deck in January", NOW);
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       expect(r.signed.proposal).toMatchObject({ memberId: id.mNw, memberName: "Northwind Capital", about: "Jane Tan" });
@@ -102,13 +106,13 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
     });
 
     it("does not double-prefix text that already starts with the name", async () => {
-      const r = await proposeNote(db, "zeroone", { personId: id.jane }, "Jane Tan: wants the deck", NOW);
+      const r = await proposeNote(db, ZEROONE, { personId: id.jane }, "Jane Tan: wants the deck", NOW);
       expect(r.ok && r.signed.text).toBe("Jane Tan: wants the deck");
     });
 
     it("matches the name on a word boundary and without regard to case when prefixing", async () => {
       const text = async (t: string) => {
-        const r = await proposeNote(db, "zeroone", { personId: id.jane }, t, NOW);
+        const r = await proposeNote(db, ZEROONE, { personId: id.jane }, t, NOW);
         return r.ok ? r.signed.text : null;
       };
       expect(await text("Jane Tanaka wants the deck")).toBe("Jane Tan: Jane Tanaka wants the deck");
@@ -121,14 +125,14 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
     });
 
     it("uses the person's own member when there is one", async () => {
-      const r = await proposeNote(db, "zeroone", { personId: id.liwei }, "hello", NOW);
+      const r = await proposeNote(db, ZEROONE, { personId: id.liwei }, "hello", NOW);
       const proposal = r.ok ? r.signed.proposal : undefined;
       expect(proposal?.kind === "add_note" && proposal.memberId).toBe(id.mLi);
       expect(proposal?.kind === "add_note" && proposal.about).toBeNull();
     });
 
     it("explains a person who is on file but not on the pipeline", async () => {
-      const r = await proposeNote(db, "zeroone", { personId: id.sam }, "hello", NOW);
+      const r = await proposeNote(db, ZEROONE, { personId: id.sam }, "hello", NOW);
       expect(r).toEqual({
         ok: false,
         reason: "Sam Ortiz is on file but not on the pipeline, so there is no timeline to change. Capture can add them.",
@@ -137,24 +141,25 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
 
     it("refuses an unknown or malformed target", async () => {
       for (const target of [{}, { memberId: "nope" }, { memberId: randomUUID() }, { personId: randomUUID() }, { personId: "x" }]) {
-        expect(await proposeNote(db, "zeroone", target, "hello", NOW)).toEqual({ ok: false, reason: "No such contact." });
+        expect(await proposeNote(db, ZEROONE, target, "hello", NOW)).toEqual({ ok: false, reason: "No such contact." });
       }
     });
 
     it("refuses blank and over-long text, accepts exactly 2,000", async () => {
-      expect((await proposeNote(db, "zeroone", { memberId: id.mLi }, "   ", NOW)).ok).toBe(false);
-      expect((await proposeNote(db, "zeroone", { memberId: id.mLi }, "x".repeat(2001), NOW)).ok).toBe(false);
-      expect((await proposeNote(db, "zeroone", { memberId: id.mLi }, "x".repeat(2000), NOW)).ok).toBe(true);
+      expect((await proposeNote(db, ZEROONE, { memberId: id.mLi }, "   ", NOW)).ok).toBe(false);
+      expect((await proposeNote(db, ZEROONE, { memberId: id.mLi }, "x".repeat(2001), NOW)).ok).toBe(false);
+      expect((await proposeNote(db, ZEROONE, { memberId: id.mLi }, "x".repeat(2000), NOW)).ok).toBe(true);
     });
   });
 
   describe("proposeStage", () => {
     it("proposes a move with the current stage as from", async () => {
-      const r = await proposeStage(db, "zeroone", { memberId: id.mLi }, "client", NOW);
+      const r = await proposeStage(db, ZEROONE, { memberId: id.mLi }, "client", NOW);
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       expect(r.signed.proposal).toEqual({
         kind: "move_stage",
+        customer: CUSTOMER,
         estate: "zeroone",
         memberId: id.mLi,
         memberKind: "person",
@@ -169,37 +174,37 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
     });
 
     it("moves the company for a person filed under a company member", async () => {
-      const r = await proposeStage(db, "zeroone", { personId: id.jane }, "client", NOW);
+      const r = await proposeStage(db, ZEROONE, { personId: id.jane }, "client", NOW);
       expect(r.ok && r.signed.proposal).toMatchObject({ memberId: id.mNw, about: "Jane Tan", fromStage: "engaged" });
     });
 
     it("lists the stages for an unknown stage", async () => {
-      expect(await proposeStage(db, "zeroone", { memberId: id.mLi }, "won", NOW)).toEqual({
+      expect(await proposeStage(db, ZEROONE, { memberId: id.mLi }, "won", NOW)).toEqual({
         ok: false,
         reason: "Unknown stage. Stages are: uncontacted, contacted, engaged, client, passed.",
       });
     });
 
     it("refuses the stage the member is already in", async () => {
-      expect(await proposeStage(db, "zeroone", { memberId: id.mLi }, "contacted", NOW)).toEqual({
+      expect(await proposeStage(db, ZEROONE, { memberId: id.mLi }, "contacted", NOW)).toEqual({
         ok: false,
         reason: "Li Wei is already in contacted.",
       });
     });
 
     it("refuses an unknown contact and a person not on the pipeline", async () => {
-      expect(await proposeStage(db, "zeroone", {}, "client", NOW)).toEqual({ ok: false, reason: "No such contact." });
-      const r = await proposeStage(db, "zeroone", { personId: id.sam }, "client", NOW);
+      expect(await proposeStage(db, ZEROONE, {}, "client", NOW)).toEqual({ ok: false, reason: "No such contact." });
+      const r = await proposeStage(db, ZEROONE, { personId: id.sam }, "client", NOW);
       expect(!r.ok && r.reason).toContain("on file but not on the pipeline");
     });
   });
 
   it("a propose call writes nothing", async () => {
     const before = await snapshot();
-    await proposeNote(db, "zeroone", { memberId: id.mLi }, "hello", NOW);
-    await proposeNote(db, "zeroone", { personId: id.jane }, "hello", NOW);
-    await proposeStage(db, "zeroone", { memberId: id.mLi }, "client", NOW);
-    await proposeStage(db, "zeroone", { personId: id.sam }, "client", NOW);
+    await proposeNote(db, ZEROONE, { memberId: id.mLi }, "hello", NOW);
+    await proposeNote(db, ZEROONE, { personId: id.jane }, "hello", NOW);
+    await proposeStage(db, ZEROONE, { memberId: id.mLi }, "client", NOW);
+    await proposeStage(db, ZEROONE, { personId: id.sam }, "client", NOW);
     expect(await snapshot()).toEqual(before);
   });
 

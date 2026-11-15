@@ -1,13 +1,18 @@
 // A proposal is a change the server itself offered and the user was shown. The server signs it
 // (HMAC-SHA256 with the session secret); `act` only carries out a change whose signature verifies.
+// Every proposal names the customer it was made for and the pipeline key, both inside the signature,
+// so a proposal made for one customer can never be carried out for another.
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { estateByKey, type EstateKey } from "../estates";
 import type { MemberKind } from "./queries";
+
+/** Who a proposal is for: the customer's id (uuid) and the pipeline key. Never from a request body. */
+export type Binding = { customer: string; estate: string };
 
 export type Proposal =
   | {
       kind: "add_note";
-      estate: EstateKey;
+      customer: string;
+      estate: string;
       memberId: string;
       memberKind: MemberKind;
       memberName: string;
@@ -17,7 +22,8 @@ export type Proposal =
     }
   | {
       kind: "move_stage";
-      estate: EstateKey;
+      customer: string;
+      estate: string;
       memberId: string;
       memberKind: MemberKind;
       memberName: string;
@@ -29,7 +35,8 @@ export type Proposal =
     }
   | {
       kind: "update_details";
-      estate: EstateKey;
+      customer: string;
+      estate: string;
       target: { type: "person" | "company"; id: string };
       targetName: string; // name as read when proposed
       company: string | null; // person targets: company name when proposed
@@ -40,7 +47,8 @@ export type Proposal =
     }
   | {
       kind: "apply_research";
-      estate: EstateKey;
+      customer: string;
+      estate: string;
       person: { id: string; name: string };
       company: { id: string; name: string } | null; // the person's company when researched
       identity: string; // 1..400 chars, why this is the right person
@@ -73,6 +81,7 @@ const MAX_URL = 500;
 const RESEARCH_FIELDS: readonly string[] = ["title", "linkedin", "country", "email", "phone", "website"];
 const FINDING_ID_RE = /^f[1-8]$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ESTATE_RE = /^[a-z0-9-]{2,32}$/;
 
 /** `text` is the suggested note text; it is not signed because the user may edit it on the card. */
 export type SignedProposal = { proposal: Proposal; signature: string; text?: string };
@@ -81,12 +90,12 @@ export const PROPOSAL_TTL_MS = 30 * 60 * 1000;
 
 const MIN_SECRET = 32;
 const PREFIX = "monsoon-proposal-v1:";
-const COMMON = ["kind", "estate", "memberId", "memberKind", "memberName", "company", "about", "expires"];
+const COMMON = ["kind", "customer", "estate", "memberId", "memberKind", "memberName", "company", "about", "expires"];
 const KEYS: Record<string, readonly string[]> = {
   add_note: COMMON,
   move_stage: [...COMMON, "fromStage", "toStage"],
-  update_details: ["kind", "estate", "target", "targetName", "company", "changes", "logMemberId", "addsToPipeline", "expires"],
-  apply_research: ["kind", "estate", "person", "company", "identity", "findings", "summarySources", "logMemberId", "addsToPipeline", "expires"],
+  update_details: ["kind", "customer", "estate", "target", "targetName", "company", "changes", "logMemberId", "addsToPipeline", "expires"],
+  apply_research: ["kind", "customer", "estate", "person", "company", "identity", "findings", "summarySources", "logMemberId", "addsToPipeline", "expires"],
 };
 
 function secret(): string {
@@ -195,7 +204,8 @@ function wellFormed(p: unknown): p is Proposal {
   if (!keys) return false;
   const own = Object.keys(o);
   if (own.length !== keys.length || !keys.every((k) => Object.hasOwn(o, k))) return false;
-  if (!estateByKey(o.estate)) return false;
+  if (!isString(o.customer) || !UUID_RE.test(o.customer)) return false;
+  if (!isString(o.estate) || !ESTATE_RE.test(o.estate)) return false;
   if (typeof o.expires !== "number" || !Number.isFinite(o.expires)) return false;
   if (o.kind === "update_details") return wellFormedDetails(o);
   if (o.kind === "apply_research") return wellFormedResearch(o);

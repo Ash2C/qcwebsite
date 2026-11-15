@@ -1,14 +1,15 @@
+import type { MockInstance } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signLegacySession } from "@/lib/monsoon/auth";
 
-const withEstateDb = vi.fn();
 const proposeNote = vi.fn();
 const proposeStage = vi.fn();
 const proposeDetails = vi.fn();
 const addNote = vi.fn();
 const moveStage = vi.fn();
 const applyDetails = vi.fn();
-vi.mock("@/lib/monsoon/db", () => ({ withEstateDb: (...a: unknown[]) => withEstateDb(...a) }));
+vi.mock("@/lib/monsoon/accounts/account", async () =>
+  (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
+);
 vi.mock("@/lib/monsoon/ask/actions", () => ({
   proposeNote: (...a: unknown[]) => proposeNote(...a),
   proposeStage: (...a: unknown[]) => proposeStage(...a),
@@ -21,26 +22,34 @@ vi.mock("@/lib/monsoon/details", async (importOriginal) => ({
   applyDetails: (...a: unknown[]) => applyDetails(...a),
 }));
 
+import type { Account } from "@/lib/monsoon/accounts/account";
+import { fakeAccount, signInAs, signOut } from "@/lib/monsoon/testing/account";
 import { POST } from "./route";
 
 const MEMBER = "11111111-1111-4111-8111-111111111111";
 const PERSON = "22222222-2222-4222-8222-222222222222";
 const fakeClient = { fake: true };
 const signed = { proposal: { kind: "x" }, signature: "y" };
+const CUSTOMER = "c0000000-0000-4000-8000-00000000000a";
+const PIPELINES = [
+  { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", connected: true },
+  { key: "zeroone", label: "Zero One", defaultRole: "investor", connected: true },
+];
+const TRAXO = { customer: CUSTOMER, estate: "traxo" };
+let account: Account;
+let withDb: MockInstance<Account["withDb"]>;
 
 function post(body: unknown, authenticated = true): Request {
+  if (!authenticated) signOut();
   return new Request("http://localhost/api/monsoon/propose", {
     method: "POST",
     body: typeof body === "string" ? body : JSON.stringify(body),
-    headers: {
-      "Content-Type": "application/json",
-      ...(authenticated ? { Cookie: `monsoon_session=${signLegacySession()}` } : {}),
-    },
+    headers: { "Content-Type": "application/json" },
   });
 }
 
 function nothingCalled() {
-  expect(withEstateDb).not.toHaveBeenCalled();
+  expect(withDb).not.toHaveBeenCalled();
   for (const f of [proposeNote, proposeStage, proposeDetails]) expect(f).not.toHaveBeenCalled();
 }
 function neverWrites() {
@@ -48,10 +57,10 @@ function neverWrites() {
 }
 
 beforeEach(() => {
-  for (const f of [withEstateDb, proposeNote, proposeStage, proposeDetails, addNote, moveStage, applyDetails]) f.mockReset();
-  withEstateDb.mockImplementation(async (_e, fn) => fn(fakeClient));
-  vi.stubEnv("MONSOON_PASSCODE", "correct-horse-battery-staple");
-  vi.stubEnv("MONSOON_SESSION_SECRET", "x".repeat(32));
+  for (const f of [proposeNote, proposeStage, proposeDetails, addNote, moveStage, applyDetails]) f.mockReset();
+  account = fakeAccount({ customer: { id: CUSTOMER }, pipelines: PIPELINES, db: fakeClient });
+  withDb = vi.spyOn(account, "withDb");
+  signInAs(account);
 });
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -96,8 +105,8 @@ describe("POST /api/monsoon/propose", () => {
     const res = await POST(post({ estate: "traxo", kind: "add_note", target: { memberId: MEMBER, orgId: PERSON }, text: "hi" }));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, signed });
-    expect(proposeNote).toHaveBeenCalledWith(fakeClient, "traxo", { memberId: MEMBER }, "hi", expect.any(Number));
-    expect(withEstateDb.mock.calls[0][0].key).toBe("traxo");
+    expect(proposeNote).toHaveBeenCalledWith(fakeClient, TRAXO, { memberId: MEMBER }, "hi", expect.any(Number));
+    expect(withDb.mock.calls[0][0]).toBe("traxo");
 
     proposeNote.mockResolvedValue({ ok: false, reason: "The note is empty." });
     const no = await POST(post({ estate: "traxo", kind: "add_note", target: { personId: PERSON }, text: "" }));
@@ -110,7 +119,7 @@ describe("POST /api/monsoon/propose", () => {
     proposeStage.mockResolvedValue({ ok: true, signed });
     const res = await POST(post({ estate: "zeroone", kind: "move_stage", target: { personId: PERSON }, stage: "engaged" }));
     expect(await res.json()).toEqual({ ok: true, signed });
-    expect(proposeStage).toHaveBeenCalledWith(fakeClient, "zeroone", { personId: PERSON }, "engaged", expect.any(Number));
+    expect(proposeStage).toHaveBeenCalledWith(fakeClient, { customer: CUSTOMER, estate: "zeroone" }, { personId: PERSON }, "engaged", expect.any(Number));
     neverWrites();
   });
 
@@ -127,7 +136,7 @@ describe("POST /api/monsoon/propose", () => {
     expect(await res.json()).toEqual({ ok: true, signed });
     expect(proposeDetails).toHaveBeenCalledWith(
       fakeClient,
-      "traxo",
+      TRAXO,
       { personId: PERSON, orgId: MEMBER },
       { title: "Director", phone: null },
       { nowMs: expect.any(Number), defaultRole: "lp_prospect", newCompany: true },
@@ -151,5 +160,18 @@ describe("POST /api/monsoon/propose", () => {
     expect(log).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(log.mock.calls)).not.toMatch(/hunter2|secret|boom/);
     neverWrites();
+  });
+
+  it("binds proposals to the signed-in customer, ignoring a customer named in the body", async () => {
+    proposeNote.mockResolvedValue({ ok: true, signed });
+    const other = "c0000000-0000-4000-8000-00000000000b";
+    await POST(post({ estate: "traxo", kind: "add_note", target: { memberId: MEMBER }, text: "hi", customer: other, customerId: other }));
+    expect(proposeNote.mock.calls[0][1]).toEqual(TRAXO);
+  });
+
+  it("refuses a pipeline key the account does not have", async () => {
+    signInAs(fakeAccount({ customer: { id: CUSTOMER }, pipelines: [PIPELINES[1]], db: fakeClient }));
+    expect((await POST(post({ estate: "traxo", kind: "add_note", target: { memberId: MEMBER }, text: "hi" }))).status).toBe(400);
+    expect(proposeNote).not.toHaveBeenCalled();
   });
 });
