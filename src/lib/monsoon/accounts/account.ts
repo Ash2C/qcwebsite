@@ -31,6 +31,9 @@ export type Account = {
 // Lives in its own file so the test helper can share the class without importing this module.
 export { NotConnected };
 
+/** The CRM schema version Monsoon needs: max(version) in a customer's schema_migrations. */
+export const CRM_SCHEMA_VERSION = 1;
+
 const REFUSED_FOR_QUANTCLOUD = /opus|fable/i;
 
 /** Builds an Account from loaded rows. Exported for the session route; routes use requireAccount. */

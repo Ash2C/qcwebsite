@@ -1,31 +1,37 @@
+import type { MockInstance } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signLegacySession } from "@/lib/monsoon/auth";
 
-const withEstateDb = vi.fn();
 const getProfile = vi.fn();
-vi.mock("@/lib/monsoon/db", () => ({ withEstateDb: (...a: unknown[]) => withEstateDb(...a) }));
 vi.mock("@/lib/monsoon/contacts", () => ({ getProfile: (...a: unknown[]) => getProfile(...a) }));
 
+vi.mock("@/lib/monsoon/accounts/account", async () =>
+  (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
+);
+import type { Account } from "@/lib/monsoon/accounts/account";
+import { fakeAccount, signInAs, signOut } from "@/lib/monsoon/testing/account";
 import { GET } from "./route";
 
 const fakeDb = { fake: true };
+const PIPELINES = [
+  { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", connected: true },
+  { key: "zeroone", label: "Zero One", defaultRole: "investor", connected: true },
+];
+let withDb: MockInstance<Account["withDb"]>;
 const ID = "11111111-1111-4111-8111-111111111111";
 const ID2 = "22222222-2222-4222-8222-222222222222";
 const PROFILE = { kind: "person", name: "Mia Chen" };
 
-function get(query: string, authenticated = true): Request {
-  return new Request(`http://localhost/api/monsoon/contact${query}`, {
-    headers: authenticated ? { Cookie: `monsoon_session=${signLegacySession()}` } : {},
-  });
+function get(query: string): Request {
+  return new Request(`http://localhost/api/monsoon/contact${query}`);
 }
 
 beforeEach(() => {
-  withEstateDb.mockReset().mockImplementation(async (_e, fn) => fn(fakeDb));
+  const account = fakeAccount({ pipelines: PIPELINES, db: fakeDb });
+  withDb = vi.spyOn(account, "withDb");
+  signInAs(account);
   getProfile.mockReset().mockResolvedValue(PROFILE);
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-11-13T10:00:00Z"));
-  vi.stubEnv("MONSOON_PASSCODE", "correct-horse-battery-staple");
-  vi.stubEnv("MONSOON_SESSION_SECRET", "x".repeat(32));
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -34,10 +40,11 @@ afterEach(() => {
 });
 
 describe("GET /api/monsoon/contact", () => {
-  it("answers 401 without a session and calls nothing", async () => {
-    const res = await GET(get(`?estate=traxo&memberId=${ID}`, false));
+  it("answers 401 when requireAccount refuses and calls nothing", async () => {
+    signOut();
+    const res = await GET(get(`?estate=traxo&memberId=${ID}`));
     expect(res.status).toBe(401);
-    expect(withEstateDb).not.toHaveBeenCalled();
+    expect(withDb).not.toHaveBeenCalled();
     expect(getProfile).not.toHaveBeenCalled();
   });
 
@@ -45,7 +52,14 @@ describe("GET /api/monsoon/contact", () => {
     const res = await GET(get(`?estate=qforce&memberId=${ID}`));
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "Unknown estate" });
-    expect(withEstateDb).not.toHaveBeenCalled();
+    expect(withDb).not.toHaveBeenCalled();
+  });
+
+  it("answers 400 for an estate that is not one of the account's pipelines", async () => {
+    signInAs(fakeAccount({ pipelines: [PIPELINES[0]], db: fakeDb }));
+    const res = await GET(get(`?estate=zeroone&memberId=${ID}`));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Unknown estate" });
   });
 
   it("answers 400 when no id or more than one id is given", async () => {
@@ -60,7 +74,7 @@ describe("GET /api/monsoon/contact", () => {
       expect(res.status).toBe(400);
       expect((await res.json()).error).toBeTruthy();
     }
-    expect(withEstateDb).not.toHaveBeenCalled();
+    expect(withDb).not.toHaveBeenCalled();
   });
 
   it("returns the profile for each kind of id", async () => {

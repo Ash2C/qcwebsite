@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/monsoon/auth";
-import { withEstateDb } from "@/lib/monsoon/db";
-import { estateByKey } from "@/lib/monsoon/estates";
+import { requireAccount } from "@/lib/monsoon/accounts/account";
 import { extractCards } from "@/lib/monsoon/extract";
 import { matchCards, type CardMatch } from "@/lib/monsoon/match";
 
@@ -18,8 +16,9 @@ const TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
 type MediaType = (typeof TYPES)[number];
 
 export async function POST(request: Request) {
-  const denied = requireSession(request);
-  if (denied) return denied;
+  const auth = await requireAccount(request);
+  if (!auth.ok) return auth.response;
+  const { account } = auth;
 
   // Refuse oversized bodies before formData() buffers them.
   const header = request.headers.get("content-length");
@@ -51,18 +50,19 @@ export async function POST(request: Request) {
 
   try {
     const base64 = Buffer.from(await file.arrayBuffer()).toString("base64");
-    const cards = await extractCards({
+    // Resolved per request: the customer's own key and model (NotConnected without a key).
+    const cards = await extractCards(account.anthropic({ timeout: 25_000 }), account.model(), {
       base64,
       mediaType: file.type as MediaType,
     });
     let matches: CardMatch[] | null = null;
-    const estate = estateByKey(form.get("estate"));
+    const estate = account.pipeline(form.get("estate"));
     if (estate && cards.length > 0) {
       try {
         const asked = cards.map((c) => ({ name: c.name, org: c.org, email: c.email }));
         // Race the whole lookup (connect included) against the budget, so a hung connection
         // cannot push the request past maxDuration.
-        const lookup = withEstateDb(estate, (db) => matchCards(db, asked, { timeoutMs: MATCH_TIMEOUT_MS }));
+        const lookup = account.withDb(estate.key, (db) => matchCards(db, asked, { timeoutMs: MATCH_TIMEOUT_MS }));
         lookup.catch(() => {}); // an abandoned lookup must not become an unhandled rejection
         let timer: ReturnType<typeof setTimeout> | undefined;
         const budget = new Promise<never>((_, reject) => {

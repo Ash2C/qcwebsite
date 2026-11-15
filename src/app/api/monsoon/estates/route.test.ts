@@ -1,80 +1,101 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signLegacySession } from "@/lib/monsoon/auth";
 
-const withEstateDb = vi.fn();
-vi.mock("@/lib/monsoon/db", () => ({
-  withEstateDb: (...args: unknown[]) => withEstateDb(...args),
-}));
-
+vi.mock("@/lib/monsoon/accounts/account", async () =>
+  (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
+);
+import { fakeAccount, signInAs, signOut } from "@/lib/monsoon/testing/account";
 import { GET } from "./route";
 
-function request(authenticated: boolean): Request {
-  return new Request("http://localhost/api/monsoon/estates", {
-    headers: authenticated
-      ? { Cookie: `monsoon_session=${signLegacySession()}` }
-      : {},
-  });
+const request = () => new Request("http://localhost/api/monsoon/estates");
+
+const ROLES = [{ key: "investor", label: "Investor" }];
+const PIPELINES = [
+  { key: "a", label: "Alpha", defaultRole: "lp_prospect", connected: true },
+  { key: "b", label: "Beta", defaultRole: "investor", connected: true },
+];
+
+// A db whose queries answer roles and the schema version.
+function dbWith(version: number | null, roles = ROLES) {
+  return {
+    query: vi.fn(async (sql: string) =>
+      /schema_migrations/.test(sql) ? { rows: [{ max: version }] } : { rows: roles },
+    ),
+  };
 }
 
-const ROLES: Record<string, { key: string; label: string }[]> = {
-  traxo: [{ key: "lp_prospect", label: "LP prospect" }],
-  zeroone: [{ key: "investor", label: "Investor" }],
-};
-
 beforeEach(() => {
-  withEstateDb.mockReset();
-  vi.stubEnv("MONSOON_PASSCODE", "correct-horse-battery-staple");
-  vi.stubEnv("MONSOON_SESSION_SECRET", "x".repeat(32));
+  signOut();
 });
-
-afterEach(() => {
-  vi.unstubAllEnvs();
-  vi.restoreAllMocks();
-});
+afterEach(() => vi.restoreAllMocks());
 
 describe("GET /api/monsoon/estates", () => {
-  it("returns 401 without a session and touches no database", async () => {
-    const res = await GET(request(false));
-    expect(res.status).toBe(401);
-    expect(withEstateDb).not.toHaveBeenCalled();
+  it("returns 401 when requireAccount refuses", async () => {
+    expect((await GET(request())).status).toBe(401);
   });
 
-  it("lists both estates in order with their roles", async () => {
-    withEstateDb.mockImplementation(async (estate, fn) =>
-      fn({ query: async () => ({ rows: ROLES[estate.key] }) })
-    );
-    const res = await GET(request(true));
+  it("lists the account's pipelines with roles, plus person and customer names", async () => {
+    signInAs(fakeAccount({ pipelines: PIPELINES, db: dbWith(1) }));
+    const res = await GET(request());
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.estates.map((e: { key: string }) => e.key)).toEqual([
-      "traxo",
-      "zeroone",
-    ]);
+    expect(body.person).toEqual({ name: "Vincent" });
+    expect(body.customer).toEqual({ name: "Test Co" });
     expect(body.estates[0]).toEqual({
-      key: "traxo",
-      label: "Traxo",
+      key: "a",
+      label: "Alpha",
       defaultRole: "lp_prospect",
       available: true,
-      roles: ROLES.traxo,
+      roles: ROLES,
     });
-    expect(body.estates[1].defaultRole).toBe("investor");
-    expect(body.estates[1].roles).toEqual(ROLES.zeroone);
+    expect(body.estates.map((e: { key: string }) => e.key)).toEqual(["a", "b"]);
   });
 
-  it("one estate down does not hide the other", async () => {
-    const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    withEstateDb.mockImplementation(async (estate, fn) => {
-      if (estate.key === "traxo") throw new Error("connect ECONNREFUSED");
-      return fn({ query: async () => ({ rows: ROLES.zeroone }) });
+  it("reports not_connected for a pipeline with no database, without connecting", async () => {
+    const account = fakeAccount({
+      pipelines: [{ ...PIPELINES[0], connected: false }, PIPELINES[1]],
+      db: dbWith(1),
     });
-    const res = await GET(request(true));
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.estates[0].available).toBe(false);
-    expect(body.estates[0].roles).toEqual([]);
+    const withDb = vi.spyOn(account, "withDb");
+    signInAs(account);
+    const body = await (await GET(request())).json();
+    expect(body.estates[0]).toMatchObject({ available: false, reason: "not_connected", roles: [] });
     expect(body.estates[1].available).toBe(true);
-    expect(body.estates[1].roles).toEqual(ROLES.zeroone);
+    expect(withDb).toHaveBeenCalledTimes(1);
+    expect(withDb.mock.calls[0][0]).toBe("b");
+  });
+
+  it("reports unreachable when withDb rejects, and one down does not hide the other", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const account = fakeAccount({ pipelines: PIPELINES, db: dbWith(1) });
+    const real = account.withDb.bind(account);
+    account.withDb = (key, fn) =>
+      key === "a" ? Promise.reject(new Error("connect ECONNREFUSED hunter2")) : real(key, fn);
+    signInAs(account);
+    const body = await (await GET(request())).json();
+    expect(body.estates[0]).toMatchObject({ available: false, reason: "unreachable", roles: [] });
+    expect(body.estates[1].available).toBe(true);
     expect(log).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(log.mock.calls)).not.toContain("hunter2");
+  });
+
+  it("reports needs_update when the schema version is behind", async () => {
+    signInAs(fakeAccount({ pipelines: PIPELINES, db: dbWith(0) }));
+    const body = await (await GET(request())).json();
+    expect(body.estates[0]).toMatchObject({ available: false, reason: "needs_update", roles: [] });
+  });
+
+  it("reports needs_update when schema_migrations has no version at all", async () => {
+    signInAs(fakeAccount({ pipelines: PIPELINES, db: dbWith(null) }));
+    const body = await (await GET(request())).json();
+    expect(body.estates[0].reason).toBe("needs_update");
+  });
+
+  it("reports unreachable when the schema table is missing (query fails)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const db = { query: vi.fn(async () => { throw Object.assign(new Error("no table"), { code: "42P01" }); }) };
+    signInAs(fakeAccount({ pipelines: PIPELINES, db }));
+    const body = await (await GET(request())).json();
+    expect(body.estates[0]).toMatchObject({ available: false, reason: "unreachable" });
   });
 });
 

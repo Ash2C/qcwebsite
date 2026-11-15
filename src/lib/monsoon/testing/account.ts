@@ -68,6 +68,7 @@ export function signOut(refusal: Refusal = unauthorized): void {
 export function mockRequireAccount() {
   return {
     NotConnected,
+    CRM_SCHEMA_VERSION: 1,
     requireAccount: vi.fn(async (_request: Request) =>
       typeof current === "function"
         ? { ok: false as const, response: current() }

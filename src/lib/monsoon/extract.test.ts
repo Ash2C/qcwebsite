@@ -1,19 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const create = vi.fn();
-const ctorOptions: unknown[] = [];
-vi.mock("@anthropic-ai/sdk", () => ({
-  default: class {
-    constructor(options?: unknown) {
-      ctorOptions.push(options);
-      // The real client throws when no API key is configured.
-      if (!process.env.ANTHROPIC_API_KEY) throw new Error("missing api key");
-    }
-    messages = { create: (...args: unknown[]) => create(...args) };
-  },
-}));
+const client = { messages: { create: (...args: unknown[]) => create(...args) } } as unknown as Anthropic;
 
-import { extractCards, resolveModel } from "./extract";
+import type Anthropic from "@anthropic-ai/sdk";
+import { extractCards as extract } from "./extract";
+
+const MODEL = "claude-haiku-5-5";
+const extractCards = (image: Parameters<typeof extract>[2]) => extract(client, MODEL, image);
 
 const TEXT_KEYS = ["name", "title", "org", "email", "phone", "linkedin", "raw_text"];
 const KEYS = [...TEXT_KEYS, "kind"];
@@ -40,33 +34,6 @@ function reply(input: unknown, stop_reason = "end_turn") {
 
 beforeEach(() => {
   create.mockReset();
-  vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
-  vi.stubEnv("MONSOON_MODEL", "");
-});
-
-afterEach(() => {
-  vi.unstubAllEnvs();
-});
-
-describe("resolveModel", () => {
-  it("defaults to claude-haiku-5-5", () => {
-    expect(resolveModel()).toBe("claude-haiku-5-5");
-  });
-
-  it("returns an override", () => {
-    vi.stubEnv("MONSOON_MODEL", "claude-sonnet-5-5");
-    expect(resolveModel()).toBe("claude-sonnet-5-5");
-  });
-
-  it.each(["claude-opus-5-5", "claude-fable-5-2", "CLAUDE-OPUS-X"])(
-    "refuses %s",
-    (id) => {
-      vi.stubEnv("MONSOON_MODEL", id);
-      expect(() => resolveModel()).toThrow(
-        "MONSOON_MODEL must not be an Opus or Fable model"
-      );
-    }
-  );
 });
 
 const IMG = { base64: "x", mediaType: "image/jpeg" } as const;
@@ -76,7 +43,6 @@ describe("extractCards", () => {
     create.mockResolvedValue(reply({ cards: [] }));
     await extractCards({ base64: "QUJD", mediaType: "image/png" });
     expect(create).toHaveBeenCalledTimes(1);
-    expect(ctorOptions.at(-1)).toEqual({ timeout: 25_000, maxRetries: 0 });
     const args = create.mock.calls[0][0];
     expect(args.model).toBe("claude-haiku-5-5");
     expect(args.max_tokens).toBe(8192);
@@ -187,17 +153,5 @@ describe("extractCards", () => {
   it("lets an API error throw", async () => {
     create.mockRejectedValue(new Error("boom"));
     await expect(extractCards(IMG)).rejects.toThrow("boom");
-  });
-
-  it("fails when MONSOON_MODEL is refused, before calling the API", async () => {
-    vi.stubEnv("MONSOON_MODEL", "claude-opus-5-5");
-    await expect(extractCards(IMG)).rejects.toThrow("Opus or Fable");
-    expect(create).not.toHaveBeenCalled();
-  });
-
-  it("fails when ANTHROPIC_API_KEY is missing", async () => {
-    vi.stubEnv("ANTHROPIC_API_KEY", "");
-    await expect(extractCards(IMG)).rejects.toThrow();
-    expect(create).not.toHaveBeenCalled();
   });
 });

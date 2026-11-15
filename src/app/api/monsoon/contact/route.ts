@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/monsoon/auth";
+import { requireAccount } from "@/lib/monsoon/accounts/account";
 import { getProfile } from "@/lib/monsoon/contacts";
-import { withEstateDb } from "@/lib/monsoon/db";
-import { estateByKey } from "@/lib/monsoon/estates";
 import { resolveToday } from "@/lib/monsoon/today";
 
 export const runtime = "nodejs";
@@ -13,11 +11,12 @@ const ID_KEYS = ["memberId", "personId", "orgId"] as const;
 
 export async function GET(request: Request) {
   const startedAt = Date.now();
-  const denied = requireSession(request);
-  if (denied) return denied;
+  const auth = await requireAccount(request);
+  if (!auth.ok) return auth.response;
+  const { account } = auth;
 
   const params = new URL(request.url).searchParams;
-  const estate = estateByKey(params.get("estate"));
+  const estate = account.pipeline(params.get("estate"));
   if (!estate) return NextResponse.json({ error: "Unknown estate" }, { status: 400 });
 
   const given = ID_KEYS.filter((k) => (params.get(k) ?? "") !== "");
@@ -26,7 +25,7 @@ export async function GET(request: Request) {
   const today = resolveToday(params.get("today"), startedAt);
 
   try {
-    const profile = await withEstateDb(estate, (db) => getProfile(db, target, today));
+    const profile = await account.withDb(estate.key, (db) => getProfile(db, target, today));
     if (!profile) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json({ profile });
   } catch (err) {

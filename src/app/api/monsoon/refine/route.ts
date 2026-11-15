@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/monsoon/auth";
+import { requireAccount } from "@/lib/monsoon/accounts/account";
 import { readJson } from "@/lib/monsoon/body";
 import {
   MAX_FIELD,
@@ -22,8 +22,9 @@ function bad(error: string) {
 }
 
 export async function POST(request: Request) {
-  const denied = requireSession(request);
-  if (denied) return denied;
+  const auth = await requireAccount(request);
+  if (!auth.ok) return auth.response;
+  const { account } = auth;
 
   const read = await readJson(request, MAX_BODY);
   if (!read.ok) return read.response;
@@ -48,7 +49,12 @@ export async function POST(request: Request) {
   }
 
   try {
-    const out = await refineContact({ fields, notes: b.notes, spoken: b.spoken });
+    const out = await refineContact(account.anthropic({ timeout: 25_000 }), account.model(), {
+      fields,
+      notes: b.notes,
+      spoken: b.spoken,
+    });
+    await account.record("tidy");
     return NextResponse.json(out);
   } catch (err) {
     // Error name only: never the dictated text, the notes or any field value.
