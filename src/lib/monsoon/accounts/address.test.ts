@@ -34,6 +34,16 @@ describe("assertAllowedDbUrl", () => {
     "postgresql://u:p@10.0.0.1:6543/postgres",
     `postgresql://u:p@${HOST}:5433/postgres`,
     "not a url",
+    `postgresql://u:p@${HOST}:6543/postgres?host=10.0.0.1`,
+    `postgresql://u:p@${HOST}:6543/postgres?port=80`,
+    `postgresql://u:p@${HOST}:6543/postgres?user=postgres`,
+    `postgresql://u:p@${HOST}:6543/postgres?`,
+    `postgresql://u:p@${HOST}:6543/postgres#frag`,
+    `socket://${HOST}/var/run/postgresql`,
+    `mysql://u:p@${HOST}:6543/postgres`,
+    `http://u:p@${HOST}:6543/postgres`,
+    `postgresql://u:p@${HOST}:6543/post gres`,
+    `postgresql://u:p@${HOST}:6543/postgrés`,
   ])("rejects %s", (url) => {
     expect(codeOf(() => assertAllowedDbUrl(url))).toBe("not_allowed");
   });

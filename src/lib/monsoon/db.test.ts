@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clientConfig, withEstateDb, withPipelineDb } from "./db";
+import { clientConfig, withEstateDb, withPipelineDb, pipelineClientConfig } from "./db";
 import { ESTATES } from "./estates";
 import { testDb } from "./testing/db";
 
@@ -106,5 +106,34 @@ describe("withPipelineDb", () => {
     const fn = vi.fn();
     await expect(withPipelineDb("postgresql://u:p@127.0.0.1:1/x", fn)).rejects.toThrow();
     expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe("pipelineClientConfig", () => {
+  it("uses explicit fields from the validated URL and no connectionString", () => {
+    vi.stubEnv("MONSOON_DB_CA_CERT", "CA");
+    const c = pipelineClientConfig(
+      "postgresql://monsoon_app.abc:p%40ss%3A%2F@aws-1-us-east-1.pooler.supabase.com:6543/postgres"
+    );
+    expect("connectionString" in c).toBe(false);
+    expect(c.host).toBe("aws-1-us-east-1.pooler.supabase.com");
+    expect(c.port).toBe(6543);
+    expect(c.user).toBe("monsoon_app.abc");
+    expect(c.password).toBe("p@ss:/");
+    expect(c.database).toBe("postgres");
+    expect(c.ssl).toEqual({ rejectUnauthorized: true, ca: "CA" });
+    expect(c.connectionTimeoutMillis).toBe(8000);
+    expect(c.query_timeout).toBe(10000);
+  });
+
+  it("refuses query-string overrides", () => {
+    expect(() =>
+      pipelineClientConfig("postgresql://u:p@x.pooler.supabase.com:6543/postgres?host=169.254.169.254&port=80")
+    ).toThrow();
+  });
+
+  it("uses no ssl for allowed local hosts", () => {
+    expect(pipelineClientConfig("postgresql://u:p@[::1]:5432/x").ssl).toBeUndefined();
+    expect(pipelineClientConfig("postgresql://u:p@[::1]:5432/x").host).toBe("::1");
   });
 });

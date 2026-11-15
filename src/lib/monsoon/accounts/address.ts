@@ -38,22 +38,38 @@ export function buildPoolerUrl(input: {
 }
 
 export function assertAllowedDbUrl(url: string): void {
+  parseAllowedDbUrl(url);
+}
+
+// Validates the address and returns the parsed URL. The caller must connect using
+// fields taken from this parse, never by handing the raw string to pg.
+export function parseAllowedDbUrl(url: string): URL {
+  // Whitespace/non-ASCII make pg re-encode the string differently than we parse it;
+  // "?" and "#" let query params override host, port, user or the socket path.
+  if (typeof url !== "string" || /[^!-~]/.test(url) || /[?#]/.test(url)) {
+    throw new AddressError("not_allowed");
+  }
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     throw new AddressError("not_allowed");
   }
+  if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
+    throw new AddressError("not_allowed");
+  }
+  if (parsed.search !== "" || parsed.hash !== "") throw new AddressError("not_allowed");
   const host = parsed.hostname.toLowerCase();
   if (
     process.env.MONSOON_ALLOW_LOCAL_DB === "1" &&
     process.env.NODE_ENV !== "production" &&
     LOCAL_HOSTS.has(host)
   ) {
-    return;
+    return parsed;
   }
   const port = parsed.port === "" ? "5432" : parsed.port;
   if (!POOLER_HOST.test(host) || !ALLOWED_PORTS.has(port)) {
     throw new AddressError("not_allowed");
   }
+  return parsed;
 }
