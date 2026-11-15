@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clientConfig, withEstateDb } from "./db";
+import { clientConfig, withEstateDb, withPipelineDb } from "./db";
 import { ESTATES } from "./estates";
 import { testDb } from "./testing/db";
 
@@ -81,6 +81,30 @@ describe("withEstateDb", () => {
     vi.stubEnv("TRAXO_CRM_DATABASE_URL", "postgresql://u:p@127.0.0.1:1/x");
     const fn = vi.fn();
     await expect(withEstateDb(ESTATES[0], fn)).rejects.toThrow();
+    expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe("withPipelineDb", () => {
+  it("refuses a disallowed address before connecting", async () => {
+    const fn = vi.fn();
+    await expect(
+      withPipelineDb("postgresql://u:p@evil.com:6543/postgres", fn)
+    ).rejects.toMatchObject({ code: "not_allowed" });
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(!testDb.available)("runs fn against a local allowed database", async () => {
+    const result = await withPipelineDb(
+      "postgresql://postgres:test@127.0.0.1:55433/postgres",
+      async (db) => (await db.query("SELECT 1 AS one")).rows[0].one
+    );
+    expect(result).toBe(1);
+  });
+
+  it("rejects with the connect error and never runs fn when connect fails", async () => {
+    const fn = vi.fn();
+    await expect(withPipelineDb("postgresql://u:p@127.0.0.1:1/x", fn)).rejects.toThrow();
     expect(fn).not.toHaveBeenCalled();
   });
 });

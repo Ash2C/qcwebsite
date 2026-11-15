@@ -8,6 +8,7 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: true,
+    env: { MONSOON_ALLOW_LOCAL_DB: "1" },
   },
   resolve: {
     alias: {
