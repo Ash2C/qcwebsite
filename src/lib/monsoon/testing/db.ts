@@ -1,6 +1,6 @@
 // Test harness: throwaway databases on the local Docker Postgres (container `monsoon-test`).
 // Never points at anything but a database whose name contains "test".
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "pg";
 
@@ -112,8 +112,7 @@ async function populateCrm(client: Client): Promise<void> {
 }
 
 async function populateAccounts(client: Client): Promise<void> {
-  // Task 3 adds accounts/schema.sql; until then the database is just an empty public schema.
-  if (existsSync(ACCOUNTS_SCHEMA_SQL)) await client.query(readFileSync(ACCOUNTS_SCHEMA_SQL, "utf8"));
+  await client.query(readFileSync(ACCOUNTS_SCHEMA_SQL, "utf8"));
 }
 
 export function makeTestDb(name: string): TestDb {

@@ -32,13 +32,13 @@ describe("test harness", () => {
     }
   });
 
-  it.skipIf(!testDb.available)("accounts reset() leaves an empty public schema when no schema.sql exists", async () => {
+  it.skipIf(!testDb.available)("accounts reset() applies the accounts schema", async () => {
     const db = makeAccountsTestDb();
     await db.reset();
     const client = await db.connect();
     try {
-      const res = await client.query("SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = 'public'");
-      expect(typeof res.rows[0].n).toBe("number");
+      const res = await client.query("SELECT to_regclass('public.customers') AS t");
+      expect(res.rows[0].t).toBe("customers");
     } finally {
       await client.end();
     }
