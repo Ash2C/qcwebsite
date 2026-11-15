@@ -106,8 +106,11 @@ const LEGACY_RULES: { name: string; re: RegExp }[] = [
 const PRUNE_FILE = "lib/monsoon/accounts/store.ts";
 const PRUNE_STATEMENT = "DELETE FROM sign_in_attempts WHERE at < now() - interval '30 days'";
 
+// Only the statement as a complete string literal (same quote character on both sides) is exempt.
+const PRUNE_LITERALS = ["\"", "`"].map((q) => q + PRUNE_STATEMENT + q);
+
 function violations(source: string, file?: string): string[] {
-  if (file === PRUNE_FILE) source = source.split(PRUNE_STATEMENT).join(" ");
+  if (file === PRUNE_FILE) for (const lit of PRUNE_LITERALS) source = source.split(lit).join(" ");
   // raw and comments blanked, and each again with escaped quotes (a \" inside a TypeScript
   // string) turned into plain ones, so an escaped quoted identifier is seen as one.
   const texts = [source, withoutComments(source)];
@@ -246,6 +249,8 @@ describe("never delete", () => {
     expect(violations(prune, PRUNE_FILE)).toEqual([]);
     expect(violations(prune, "lib/monsoon/capture.ts")).toContain("DELETE FROM");
     expect(violations(prune)).toContain("DELETE FROM");
+    expect(violations(`await db.query("${PRUNE_STATEMENT} OR true");`, PRUNE_FILE)).toContain("DELETE FROM");
+    expect(violations(`// ${PRUNE_STATEMENT}`, PRUNE_FILE)).toContain("DELETE FROM");
     expect(violations(prune + ' await db.query("DELETE FROM customers");', PRUNE_FILE)).toContain("DELETE FROM");
     expect(violations('await db.query("DELETE FROM sign_in_attempts");', PRUNE_FILE)).toContain("DELETE FROM");
     expect(violations("DELETE FROM customers WHERE id = $1", "lib/monsoon/accounts/admin.ts")).toContain("DELETE FROM");
