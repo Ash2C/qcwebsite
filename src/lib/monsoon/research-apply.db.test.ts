@@ -3,6 +3,7 @@ import type { Client } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Proposal, ResearchFinding } from "./ask/proposal";
 import { applyResearch } from "./research-apply";
+import { ensureOwner } from "./owners";
 import { testDb } from "./testing/db";
 
 type Research = Extract<Proposal, { kind: "apply_research" }>;
@@ -84,7 +85,7 @@ describe.skipIf(!testDb.available)("Applying research (real Postgres)", () => {
   });
 
   it("writes only the ticked findings and one system touch with the exact text", async () => {
-    const r = await applyResearch(db, proposal(), ["f1", "f3"], "Jane runs the desk.");
+    const r = await applyResearch(db, proposal(), ["f1", "f3"], "Jane runs the desk.", "VF");
     expect(r).toEqual({ status: "saved", written: ["Title", "Website"], skipped: [], name: "Jane Tan" });
     const p = (await db.query("SELECT title, linkedin_url FROM people WHERE id = $1", [id.jane])).rows[0];
     expect(p).toEqual({ title: "Director", linkedin_url: null });
@@ -99,21 +100,21 @@ describe.skipIf(!testDb.available)("Applying research (real Postgres)", () => {
   });
 
   it("omits the summary and its sources when no summary is saved", async () => {
-    await applyResearch(db, proposal(), ["f2"], "");
+    await applyResearch(db, proposal(), ["f2"], "", "VF");
     const t = await systemTouches();
     expect(t[0].summary).toBe(`Research saved: LinkedIn: (empty) → https://linkedin.com/in/jane-tan\n\nSources: ${U.linkedin}`);
   });
 
   it("de-duplicates sources, finding sources first", async () => {
     const same = findings.map((f) => ({ ...f, source: U.sum }));
-    await applyResearch(db, proposal({ findings: same }), ["f1", "f2"], "S.");
+    await applyResearch(db, proposal({ findings: same }), ["f1", "f2"], "S.", "VF");
     const t = await systemTouches();
     expect(t[0].summary.endsWith(`\n\nSources: ${U.sum}`)).toBe(true);
   });
 
   it("skips a finding whose from no longer matches and reports partly", async () => {
     await db.query("UPDATE people SET title = 'VP' WHERE id = $1", [id.jane]);
-    const r = await applyResearch(db, proposal(), ["f1", "f2"], "");
+    const r = await applyResearch(db, proposal(), ["f1", "f2"], "", "VF");
     expect(r).toEqual({ status: "partly", written: ["LinkedIn"], skipped: ["Title"], name: "Jane Tan" });
     expect((await db.query("SELECT title FROM people WHERE id = $1", [id.jane])).rows[0].title).toBe("VP");
     const t = await systemTouches();
@@ -123,7 +124,7 @@ describe.skipIf(!testDb.available)("Applying research (real Postgres)", () => {
 
   it("skips the website finding when the person has moved company", async () => {
     await db.query("UPDATE people SET org_id = $1 WHERE id = $2", [id.acme, id.jane]);
-    const r = await applyResearch(db, proposal(), ["f1", "f3"], "");
+    const r = await applyResearch(db, proposal(), ["f1", "f3"], "", "VF");
     expect(r).toEqual({ status: "partly", written: ["Title"], skipped: ["Website"], name: "Jane Tan" });
     expect((await db.query("SELECT website FROM orgs WHERE id = $1", [id.nw])).rows[0].website).toBeNull();
   });
@@ -133,7 +134,7 @@ describe.skipIf(!testDb.available)("Applying research (real Postgres)", () => {
       db,
       proposal({ person: { id: id.liwei, name: "Li Wei" }, company: { id: id.acme, name: "Acme Capital" }, logMemberId: id.mAcme }),
       ["f2"],
-      "",
+      "", "VF"
     );
     expect(r.status).toBe("saved");
     const t = await systemTouches();
@@ -147,7 +148,7 @@ describe.skipIf(!testDb.available)("Applying research (real Postgres)", () => {
       db,
       proposal({ person: { id: id.sam, name: "Sam Ortiz" }, company: null, logMemberId: null, addsToPipeline: "investor" }),
       ["f2"],
-      "",
+      "", "VF"
     );
     expect(r.status).toBe("saved");
     const m = (await db.query("SELECT id, role, owner, source FROM members WHERE person_id = $1", [id.sam])).rows;
@@ -163,7 +164,7 @@ describe.skipIf(!testDb.available)("Applying research (real Postgres)", () => {
       db,
       proposal({ person: { id: id.sam, name: "Sam Ortiz" }, company: null, logMemberId: null, addsToPipeline: null }),
       ["f2"],
-      "",
+      "", "VF"
     );
     expect(r.status).toBe("unlogged");
     expect(await count("touches")).toBe(before);
@@ -171,7 +172,7 @@ describe.skipIf(!testDb.available)("Applying research (real Postgres)", () => {
   });
 
   it("a summary alone writes one touch and no field", async () => {
-    const r = await applyResearch(db, proposal(), [], "Only a summary.");
+    const r = await applyResearch(db, proposal(), [], "Only a summary.", "VF");
     expect(r).toEqual({ status: "saved", written: [], skipped: [], name: "Jane Tan" });
     const t = await systemTouches();
     expect(t).toHaveLength(1);
@@ -181,21 +182,21 @@ describe.skipIf(!testDb.available)("Applying research (real Postgres)", () => {
 
   it("nothing ticked and no summary is unchanged with no new rows", async () => {
     const before = [await count("people"), await count("orgs"), await count("touches"), await count("members")];
-    const r = await applyResearch(db, proposal(), [], "");
+    const r = await applyResearch(db, proposal(), [], "", "VF");
     expect(r.status).toBe("unchanged");
     expect([await count("people"), await count("orgs"), await count("touches"), await count("members")]).toEqual(before);
   });
 
   it("every ticked finding stale and no summary is unchanged", async () => {
     await db.query("UPDATE people SET title = 'VP' WHERE id = $1", [id.jane]);
-    const r = await applyResearch(db, proposal(), ["f1"], "");
+    const r = await applyResearch(db, proposal(), ["f1"], "", "VF");
     expect(r).toEqual({ status: "unchanged", written: [], skipped: ["Title"], name: "Jane Tan" });
     expect(await systemTouches()).toHaveLength(0);
   });
 
   it("a summary saved while every ticked finding is stale reports partly, with nothing written", async () => {
     await db.query("UPDATE people SET title = 'VP' WHERE id = $1", [id.jane]);
-    const r = await applyResearch(db, proposal(), ["f1"], "Jane runs the desk.");
+    const r = await applyResearch(db, proposal(), ["f1"], "Jane runs the desk.", "VF");
     expect(r).toEqual({ status: "partly", written: [], skipped: ["Title"], name: "Jane Tan" });
     const t = await systemTouches();
     expect(t).toHaveLength(1);
@@ -210,7 +211,7 @@ Sources: ${U.sum}`);
     await db.query("UPDATE people SET email = 'jane@northwind.example', phone = '+65 5555 0100', country = 'Singapore' WHERE id = $1", [id.jane]);
     const cols = "name, name_key, org_id, email, phone, country, linkedin_url, source";
     const before = (await db.query(`SELECT ${cols} FROM people WHERE id = $1`, [id.jane])).rows[0];
-    await applyResearch(db, proposal(), ["f1", "f2"], "");
+    await applyResearch(db, proposal(), ["f1", "f2"], "", "VF");
     const after = (await db.query(`SELECT ${cols}, title FROM people WHERE id = $1`, [id.jane])).rows[0];
     const { title, linkedin_url, ...rest } = after;
     const { linkedin_url: _l, ...beforeRest } = before;
@@ -220,17 +221,31 @@ Sources: ${U.sum}`);
   });
 
   it("reports a deleted person as missing", async () => {
-    const r = await applyResearch(db, proposal({ person: { id: randomUUID(), name: "Gone Person" } }), ["f1"], "");
+    const r = await applyResearch(db, proposal({ person: { id: randomUUID(), name: "Gone Person" } }), ["f1"], "", "VF");
     expect(r).toEqual({ status: "missing", written: [], skipped: [], name: "Gone Person" });
   });
 
   it("never lowers a row count or rewrites an existing touch", async () => {
     const before = { people: await count("people"), orgs: await count("orgs"), touches: await count("touches") };
     const old = (await touches()).filter((x) => x.kind === "note");
-    await applyResearch(db, proposal(), ["f1", "f2", "f3"], "Summary.");
+    await applyResearch(db, proposal(), ["f1", "f2", "f3"], "Summary.", "VF");
     expect(await count("people")).toBeGreaterThanOrEqual(before.people);
     expect(await count("orgs")).toBeGreaterThanOrEqual(before.orgs);
     expect(await count("touches")).toBe(before.touches + 1);
     expect((await touches()).filter((x) => x.kind === "note")).toEqual(old);
+  });
+
+  it("stamps the added member and the log touch with the given owner key", async () => {
+    await ensureOwner(db, "AB", "Ana B");
+    const r = await applyResearch(
+      db,
+      proposal({ person: { id: id.sam, name: "Sam Ortiz" }, company: null, logMemberId: null, addsToPipeline: "investor" }),
+      ["f2"],
+      "",
+      "AB",
+    );
+    expect(r.status).toBe("saved");
+    expect((await db.query("SELECT owner FROM members WHERE person_id = $1", [id.sam])).rows).toEqual([{ owner: "AB" }]);
+    expect((await systemTouches())[0].by_whom).toBe("AB");
   });
 });

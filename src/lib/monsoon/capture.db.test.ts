@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { capture, type CaptureInput } from "./capture";
+import { ensureOwner } from "./owners";
 import { testDb } from "./testing/db";
 
 function input(over: Partial<CaptureInput> = {}): CaptureInput {
@@ -39,13 +40,13 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
       if (typeof a[0] === "string") seen.push(a[0]);
       return orig(...a);
     };
-    await capture(db, input());
+    await capture(db, input(), "VF");
     expect(seen[0]).toBe("BEGIN ISOLATION LEVEL READ COMMITTED");
     expect(seen[1]).toBe("SET LOCAL statement_timeout = '10s'");
   });
 
   it("adds a new person, org, member, capture row and meeting touch", async () => {
-    const r = await capture(db, input({ org: "Acme Capital", email: "jane@acme.com", notes: "met at SFF" }));
+    const r = await capture(db, input({ org: "Acme Capital", email: "jane@acme.com", notes: "met at SFF" }), "VF");
     expect(r.outcome).toBe("added");
     if (r.outcome !== "added") return;
     expect(r.org).toBe("Acme Capital");
@@ -63,20 +64,20 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
   });
 
   it('touch summary without notes is exactly "Card captured in person"', async () => {
-    await capture(db, input({ org: "Acme Capital" }));
+    await capture(db, input({ org: "Acme Capital" }), "VF");
     expect(await touchSummaries()).toEqual(["Card captured in person"]);
   });
 
   it("stores rawText and extracted on the capture row", async () => {
-    await capture(db, input({ rawText: "JANE TAN\nAcme", extracted: { name: "Jane Tan", n: 1 } }));
+    await capture(db, input({ rawText: "JANE TAN\nAcme", extracted: { name: "Jane Tan", n: 1 } }), "VF");
     const c = (await db.query("SELECT raw_text, extracted FROM captures")).rows[0];
     expect(c.raw_text).toBe("JANE TAN\nAcme");
     expect(c.extracted).toEqual({ name: "Jane Tan", n: 1 });
   });
 
   it("existing person at the same org: fills only empty fields, leaves the member alone", async () => {
-    await capture(db, input({ org: "Acme Capital", email: "jane@acme.com" }));
-    const r = await capture(db, input({ org: "Acme Capital", email: "other@acme.com", phone: "123", role: "introducer" }));
+    await capture(db, input({ org: "Acme Capital", email: "jane@acme.com" }), "VF");
+    const r = await capture(db, input({ org: "Acme Capital", email: "other@acme.com", phone: "123", role: "introducer" }), "VF");
     expect(r).toMatchObject({ outcome: "existing", role: "investor", filled: ["phone"] });
     const p = (await db.query("SELECT email, phone FROM people")).rows[0];
     expect(p).toEqual({ email: "jane@acme.com", phone: "123" });
@@ -85,54 +86,54 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
   });
 
   it("matches names regardless of case and spacing", async () => {
-    await capture(db, input({ org: "Acme Capital" }));
-    const r = await capture(db, input({ name: "  jane   TAN ", org: "Acme Capital" }));
+    await capture(db, input({ org: "Acme Capital" }), "VF");
+    const r = await capture(db, input({ name: "  jane   TAN ", org: "Acme Capital" }), "VF");
     expect(r.outcome).toBe("existing");
     expect(await count("people")).toBe(1);
   });
 
   it("lookalike org is refused, then accepted with newOrg", async () => {
-    await capture(db, input({ org: "Northwind Capital" }));
+    await capture(db, input({ org: "Northwind Capital" }), "VF");
     const before = await counts();
-    const r = await capture(db, input({ name: "Bob Lee", org: "Northwind Capital Management" }));
+    const r = await capture(db, input({ name: "Bob Lee", org: "Northwind Capital Management" }), "VF");
     expect(r).toEqual({ outcome: "org_lookalike", similar: ["Northwind Capital"] });
     expect(await counts()).toEqual(before);
-    const again = await capture(db, input({ name: "Bob Lee", org: "Northwind Capital Management", newOrg: true }));
+    const again = await capture(db, input({ name: "Bob Lee", org: "Northwind Capital Management", newOrg: true }), "VF");
     expect(again.outcome).toBe("added");
     expect(await count("orgs")).toBe(2);
   });
 
   it("lookalike org resolved by re-saving with the existing name", async () => {
-    await capture(db, input({ org: "Northwind Capital" }));
-    const r = await capture(db, input({ name: "Bob Lee", org: "Northwind Capital" }));
+    await capture(db, input({ org: "Northwind Capital" }), "VF");
+    const r = await capture(db, input({ name: "Bob Lee", org: "Northwind Capital" }), "VF");
     expect(r.outcome).toBe("added");
     expect(await count("orgs")).toBe(1);
   });
 
   it("several lookalikes are all returned", async () => {
-    await capture(db, input({ name: "A One", org: "Acme Capital Partners Asia" }));
-    await capture(db, input({ name: "B Two", org: "Acme Capital Pte Ltd", newOrg: true }));
-    const r = await capture(db, input({ name: "C Three", org: "Acme Capital" }));
+    await capture(db, input({ name: "A One", org: "Acme Capital Partners Asia" }), "VF");
+    await capture(db, input({ name: "B Two", org: "Acme Capital Pte Ltd", newOrg: true }), "VF");
+    const r = await capture(db, input({ name: "C Three", org: "Acme Capital" }), "VF");
     expect(r).toEqual({ outcome: "org_lookalike", similar: ["Acme Capital Partners Asia", "Acme Capital Pte Ltd"] });
   });
 
   describe("same name under another company", () => {
     let personId: string;
     beforeEach(async () => {
-      const r = await capture(db, input({ org: "Acme Capital" }));
+      const r = await capture(db, input({ org: "Acme Capital" }), "VF");
       if (r.outcome !== "added") throw new Error("seed failed");
       personId = r.person;
     });
 
     it("asks first", async () => {
       const before = await counts();
-      const r = await capture(db, input({ org: "Borealis Partners" }));
+      const r = await capture(db, input({ org: "Borealis Partners" }), "VF");
       expect(r).toEqual({ outcome: "same_name", matches: [{ personId, org: "Acme Capital" }] });
       expect(await counts()).toEqual(before);
     });
 
     it("same person keeps the company on file and notes the card's company", async () => {
-      const r = await capture(db, input({ org: "Borealis Partners", samePerson: personId, phone: "123" }));
+      const r = await capture(db, input({ org: "Borealis Partners", samePerson: personId, phone: "123" }), "VF");
       expect(r).toMatchObject({ outcome: "existing", org: "Acme Capital", filled: ["phone"] });
       expect(await count("orgs")).toBe(1);
       const s = await touchSummaries();
@@ -140,25 +141,25 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
     });
 
     it("different person creates a second one", async () => {
-      const r = await capture(db, input({ org: "Borealis Partners", samePerson: false }));
+      const r = await capture(db, input({ org: "Borealis Partners", samePerson: false }), "VF");
       expect(r).toMatchObject({ outcome: "added", org: "Borealis Partners" });
       expect(await count("people")).toBe(2);
     });
 
     it("samePerson naming a person who is not a match is invalid", async () => {
-      const other = await capture(db, input({ name: "Bob Lee", org: "Acme Capital" }));
+      const other = await capture(db, input({ name: "Bob Lee", org: "Acme Capital" }), "VF");
       if (other.outcome !== "added") throw new Error("seed failed");
       const before = await counts();
-      const r = await capture(db, input({ org: "Borealis Partners", samePerson: other.person }));
+      const r = await capture(db, input({ org: "Borealis Partners", samePerson: other.person }), "VF");
       expect(r.outcome).toBe("invalid");
       expect(await counts()).toEqual(before);
     });
   });
 
   it("choosing a match by email", async () => {
-    const jon = await capture(db, input({ name: "Jonathan Poe", org: "Acme Capital", email: "jon@acme.com" }));
+    const jon = await capture(db, input({ name: "Jonathan Poe", org: "Acme Capital", email: "jon@acme.com" }), "VF");
     if (jon.outcome !== "added") throw new Error("seed failed");
-    const r = await capture(db, input({ name: "Jon Poe", email: "JON@acme.com", phone: "5", samePerson: jon.person }));
+    const r = await capture(db, input({ name: "Jon Poe", email: "JON@acme.com", phone: "5", samePerson: jon.person }), "VF");
     expect(r).toMatchObject({ outcome: "existing", person: jon.person, filled: ["phone"] });
     expect(await count("people")).toBe(1);
   });
@@ -185,14 +186,14 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
 
     it("a stored email with stray spaces and capitals still matches", async () => {
       const id = await seed("  Jon@Acme.COM 	", true);
-      const r = await capture(db, input({ name: "Jon Poe", email: " jon@acme.com ", samePerson: id }));
+      const r = await capture(db, input({ name: "Jon Poe", email: " jon@acme.com ", samePerson: id }), "VF");
       expect(r).toMatchObject({ outcome: "filed", person: id, created: false });
       expect(await count("people")).toBe(1);
     });
 
     it("filed under the company when the name differs: the timeline and the result use the name on file", async () => {
       const id = await seed("jon@acme.com", true);
-      const r = await capture(db, input({ name: "Jon Poe", email: "jon@acme.com", samePerson: id }));
+      const r = await capture(db, input({ name: "Jon Poe", email: "jon@acme.com", samePerson: id }), "VF");
       expect(r).toMatchObject({ outcome: "filed", name: "Jonathan Poe" });
       expect(await touchSummaries()).toEqual(["Jonathan Poe: Card captured in person"]);
     });
@@ -200,7 +201,7 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
     it("a stored email with no email on the card is invalid and writes nothing", async () => {
       const id = await seed("jon@acme.com");
       const before = await counts();
-      const r = await capture(db, input({ name: "Jon Poe", samePerson: id }));
+      const r = await capture(db, input({ name: "Jon Poe", samePerson: id }), "VF");
       expect(r.outcome).toBe("invalid");
       expect(await counts()).toEqual(before);
     });
@@ -208,29 +209,29 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
     it("an email on the card but none stored is invalid and writes nothing", async () => {
       const id = await seed(null);
       const before = await counts();
-      const r = await capture(db, input({ name: "Jon Poe", email: "jon@acme.com", samePerson: id }));
+      const r = await capture(db, input({ name: "Jon Poe", email: "jon@acme.com", samePerson: id }), "VF");
       expect(r.outcome).toBe("invalid");
       expect(await counts()).toEqual(before);
     });
   });
 
   it("existing and added results carry the name on file", async () => {
-    const first = await capture(db, input({ org: "Acme Capital" }));
+    const first = await capture(db, input({ org: "Acme Capital" }), "VF");
     expect(first).toMatchObject({ outcome: "added", name: "Jane Tan" });
-    const again = await capture(db, input({ name: "  jane   tan ", org: "Acme Capital" }));
+    const again = await capture(db, input({ name: "  jane   tan ", org: "Acme Capital" }), "VF");
     expect(again).toMatchObject({ outcome: "existing", name: "Jane Tan" });
   });
 
   it("an odd kind such as toString falls back to the card wording", async () => {
-    await capture(db, input({ kind: "toString" as unknown as "card" }));
+    await capture(db, input({ kind: "toString" as unknown as "card" }), "VF");
     expect(await touchSummaries()).toEqual(["Card captured in person"]);
   });
 
   it("samePerson with a different name and a different email is invalid", async () => {
-    const other = await capture(db, input({ name: "Bob Lee", org: "Acme Capital", email: "bob@acme.com" }));
+    const other = await capture(db, input({ name: "Bob Lee", org: "Acme Capital", email: "bob@acme.com" }), "VF");
     if (other.outcome !== "added") throw new Error("seed failed");
     const before = await counts();
-    const r = await capture(db, input({ email: "jane@x.com", samePerson: other.person }));
+    const r = await capture(db, input({ email: "jane@x.com", samePerson: other.person }), "VF");
     expect(r.outcome).toBe("invalid");
     expect(await counts()).toEqual(before);
   });
@@ -250,7 +251,7 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
     });
 
     it("a new person is filed under it", async () => {
-      const r = await capture(db, input({ name: "Omar Reyes", org: "Northwind Capital", role: "introducer" }));
+      const r = await capture(db, input({ name: "Omar Reyes", org: "Northwind Capital", role: "introducer" }), "VF");
       expect(r).toMatchObject({ outcome: "filed", org: "Northwind Capital", role: "investor", created: true, filled: [] });
       expect(await count("people")).toBe(1);
       expect(await count("members")).toBe(1);
@@ -263,10 +264,10 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
     });
 
     it("an existing person is filed again, with kind and notes", async () => {
-      await capture(db, input({ name: "Omar Reyes", org: "Northwind Capital" }));
+      await capture(db, input({ name: "Omar Reyes", org: "Northwind Capital" }), "VF");
       const r = await capture(
         db,
-        input({ name: "Omar Reyes", org: "Northwind Capital", kind: "badge", notes: "met at SFF", phone: "7" }),
+        input({ name: "Omar Reyes", org: "Northwind Capital", kind: "badge", notes: "met at SFF", phone: "7" }), "VF"
       );
       expect(r).toMatchObject({ outcome: "filed", created: false, filled: ["phone"] });
       expect(await count("people")).toBe(1);
@@ -286,7 +287,7 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
           [p.id],
         )
       ).rows[0];
-      const r = await capture(db, input({ name: "Omar Reyes", org: "Northwind Capital" }));
+      const r = await capture(db, input({ name: "Omar Reyes", org: "Northwind Capital" }), "VF");
       expect(r).toMatchObject({ outcome: "existing", role: "introducer" });
       expect((await db.query("SELECT member_id, summary FROM touches")).rows).toEqual([
         { member_id: own.id, summary: "Card captured in person" },
@@ -295,26 +296,26 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
 
     it("a repeat of the same captureId is a duplicate", async () => {
       const i = input({ name: "Omar Reyes", org: "Northwind Capital" });
-      expect((await capture(db, i)).outcome).toBe("filed");
-      expect((await capture(db, i)).outcome).toBe("duplicate");
+      expect((await capture(db, i, "VF")).outcome).toBe("filed");
+      expect((await capture(db, i, "VF")).outcome).toBe("duplicate");
       expect(await count("touches")).toBe(1);
     });
   });
 
   describe("different person with no company", () => {
     beforeEach(async () => {
-      await capture(db, input());
+      await capture(db, input(), "VF");
     });
 
     it("needs a company and writes nothing", async () => {
       const before = await counts();
-      const r = await capture(db, input({ samePerson: false }));
+      const r = await capture(db, input({ samePerson: false }), "VF");
       expect(r).toEqual({ outcome: "needs_company", orgs: [null] });
       expect(await counts()).toEqual(before);
     });
 
     it("with a company it creates a second person", async () => {
-      const r = await capture(db, input({ samePerson: false, org: "Borealis Partners" }));
+      const r = await capture(db, input({ samePerson: false, org: "Borealis Partners" }), "VF");
       expect(r.outcome).toBe("added");
       expect(await count("people")).toBe(2);
     });
@@ -327,13 +328,13 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
     ["card", "Card captured in person"],
     [undefined, "Card captured in person"],
   ] as const)("timeline wording for kind %s", async (kind, text) => {
-    await capture(db, input({ org: "Acme Capital", kind }));
+    await capture(db, input({ org: "Acme Capital", kind }), "VF");
     expect(await touchSummaries()).toEqual([text]);
   });
 
   it("no company, one match: reused", async () => {
-    const first = await capture(db, input({ org: "Acme Capital" }));
-    const r = await capture(db, input({ phone: "9" }));
+    const first = await capture(db, input({ org: "Acme Capital" }), "VF");
+    const r = await capture(db, input({ phone: "9" }), "VF");
     expect(r).toMatchObject({ outcome: "existing", org: "Acme Capital", filled: ["phone"] });
     expect(first.outcome).toBe("added");
     if (first.outcome === "added" && r.outcome === "existing") expect(r.person).toBe(first.person);
@@ -341,38 +342,38 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
   });
 
   it("no company, no match: orgless person added", async () => {
-    const r = await capture(db, input());
+    const r = await capture(db, input(), "VF");
     expect(r).toMatchObject({ outcome: "added", org: null });
     expect(await count("orgs")).toBe(0);
   });
 
   it("no company, several matches: ambiguous", async () => {
-    await capture(db, input({ org: "Acme Capital" }));
-    await capture(db, input({ org: "Borealis Partners", samePerson: false }));
-    const r = await capture(db, input());
+    await capture(db, input({ org: "Acme Capital" }), "VF");
+    await capture(db, input({ org: "Borealis Partners", samePerson: false }), "VF");
+    const r = await capture(db, input(), "VF");
     expect(r).toEqual({ outcome: "ambiguous", orgs: ["Acme Capital", "Borealis Partners"] });
   });
 
   it("unknown role is invalid and writes nothing", async () => {
-    const r = await capture(db, input({ role: "wizard", org: "Acme Capital" }));
+    const r = await capture(db, input({ role: "wizard", org: "Acme Capital" }), "VF");
     expect(r.outcome).toBe("invalid");
     expect(await counts()).toEqual([0, 0, 0, 0, 0]);
   });
 
   it("blank name is invalid", async () => {
-    expect((await capture(db, input({ name: "   " }))).outcome).toBe("invalid");
+    expect((await capture(db, input({ name: "   " }), "VF")).outcome).toBe("invalid");
     expect(await counts()).toEqual([0, 0, 0, 0, 0]);
   });
 
   it("captureId that is not a UUID is invalid", async () => {
-    expect((await capture(db, input({ captureId: "nope" }))).outcome).toBe("invalid");
+    expect((await capture(db, input({ captureId: "nope" }), "VF")).outcome).toBe("invalid");
     expect(await counts()).toEqual([0, 0, 0, 0, 0]);
   });
 
   it("repeat capture_id writes nothing", async () => {
     const i = input({ org: "Acme Capital" });
-    const first = await capture(db, i);
-    const second = await capture(db, i);
+    const first = await capture(db, i, "VF");
+    const second = await capture(db, i, "VF");
     expect(second.outcome).toBe("duplicate");
     expect(first.outcome).toBe("added");
     if (first.outcome === "added" && second.outcome === "duplicate") {
@@ -387,7 +388,7 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
     const other = await testDb.connect();
     extra.push(other);
     const i = input({ org: "Acme Capital" });
-    const results = await Promise.all([capture(db, i), capture(other, i)]);
+    const results = await Promise.all([capture(db, i, "VF"), capture(other, i, "VF")]);
     expect(results.map((r) => r.outcome).sort()).toEqual(["added", "duplicate"]);
     expect(await count("captures")).toBe(1);
     expect(await count("touches")).toBe(1);
@@ -395,9 +396,17 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
 
   it("a thrown error rolls everything back", async () => {
     await db.query("DELETE FROM owners WHERE key = 'VF'");
-    await expect(capture(db, input({ org: "Acme Capital" }))).rejects.toThrow();
+    await expect(capture(db, input({ org: "Acme Capital" }), "VF")).rejects.toThrow();
     expect(await count("orgs")).toBe(0);
     expect(await count("people")).toBe(0);
     expect(await count("members")).toBe(0);
+  });
+
+  it("stamps the new member and the meeting touch with the given owner key", async () => {
+    await ensureOwner(db, "AB", "Ana B");
+    const r = await capture(db, input({ org: "Acme Capital" }), "AB");
+    expect(r.outcome).toBe("added");
+    expect((await db.query("SELECT owner FROM members")).rows).toEqual([{ owner: "AB" }]);
+    expect((await db.query("SELECT by_whom FROM touches")).rows).toEqual([{ by_whom: "AB" }]);
   });
 });

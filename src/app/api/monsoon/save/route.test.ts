@@ -145,7 +145,7 @@ describe("POST /api/monsoon/save", () => {
       extracted: { raw_text: "ADA LOVELACE\nCIO", name: "Ada Lovelace" },
       newOrg: true,
       samePerson: false,
-    });
+    }, "VF");
     expect(withEstateDb.mock.calls[0][0].key).toBe("zeroone");
   });
 

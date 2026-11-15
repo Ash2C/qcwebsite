@@ -220,7 +220,7 @@ describe("POST /api/monsoon/act", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "added", message: "Done. Note added to Northwind Capital." });
     expect(addNote).toHaveBeenCalledTimes(1);
-    expect(addNote).toHaveBeenCalledWith(fakeClient, MEMBER, "my edited note");
+    expect(addNote).toHaveBeenCalledWith(fakeClient, MEMBER, "my edited note", "VF");
     expect(withEstateDb.mock.calls[0][0].key).toBe("traxo");
   });
 
@@ -241,7 +241,7 @@ describe("POST /api/monsoon/act", () => {
     const res = await POST(post(signed(stageProposal())));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status, message });
-    expect(moveStage).toHaveBeenCalledWith(fakeClient, MEMBER, "contacted", "engaged");
+    expect(moveStage).toHaveBeenCalledWith(fakeClient, MEMBER, "contacted", "engaged", "VF");
   });
 
   it("falls back to the stage key when a label is unknown", async () => {
@@ -312,7 +312,7 @@ describe("POST /api/monsoon/act", () => {
       const res = await POST(post(signed(proposal)));
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ status, message });
-      expect(applyDetails).toHaveBeenCalledWith(fakeClient, proposal);
+      expect(applyDetails).toHaveBeenCalledWith(fakeClient, proposal, "VF");
       expect(addNote).not.toHaveBeenCalled();
       expect(moveStage).not.toHaveBeenCalled();
     });
@@ -384,7 +384,7 @@ describe("apply_research", () => {
     const res = await POST(post(signed(proposal, { ticked: ["f1"], text: "  Summary.  " })));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "saved", message: "Done. Research saved for Li Wei." });
-    expect(applyResearch).toHaveBeenCalledWith(fakeClient, proposal, ["f1"], "Summary.");
+    expect(applyResearch).toHaveBeenCalledWith(fakeClient, proposal, ["f1"], "Summary.", "VF");
   });
 
   it.each([

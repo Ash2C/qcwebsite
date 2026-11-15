@@ -8,7 +8,6 @@ import { readOnly, vocabulary, type MemberKind } from "./queries";
 export type Target = { memberId?: string; personId?: string };
 export type ProposeResult = { ok: true; signed: SignedProposal } | { ok: false; reason: string };
 
-const OWNER = "VF";
 const MAX_NOTE = 2000;
 const DUPLICATE_WINDOW = "2 minutes";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -143,7 +142,7 @@ async function transaction<T>(db: ClientBase, fn: () => Promise<{ value: T; comm
   }
 }
 
-export function addNote(db: ClientBase, memberId: string, text: string): Promise<{ status: "added" | "duplicate" }> {
+export function addNote(db: ClientBase, memberId: string, text: string, owner: string): Promise<{ status: "added" | "duplicate" }> {
   return transaction<{ status: "added" | "duplicate" }>(db, async () => {
     // Serialise taps on the same member so a double tap on two connections cannot both insert.
     await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [memberId]);
@@ -152,12 +151,12 @@ export function addNote(db: ClientBase, memberId: string, text: string): Promise
         WHERE member_id = $1 AND kind = 'note' AND by_whom = $2 AND summary = $3
           AND at > clock_timestamp() - interval '${DUPLICATE_WINDOW}'
         LIMIT 1`,
-      [memberId, OWNER, text],
+      [memberId, owner, text],
     );
     if (dup.rows.length > 0) return { value: { status: "duplicate" as const }, commit: false };
     await db.query("INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'note', $2, $3)", [
       memberId,
-      OWNER,
+      owner,
       text,
     ]);
     return { value: { status: "added" as const }, commit: true };
@@ -172,6 +171,7 @@ export function moveStage(
   memberId: string,
   fromStage: string,
   toStage: string,
+  owner: string,
 ): Promise<MoveResult> {
   return transaction<MoveResult>(db, async () => {
     const found = await db.query("SELECT stage FROM members WHERE id = $1 FOR UPDATE", [memberId]);
@@ -187,7 +187,7 @@ export function moveStage(
         WHERE id = (SELECT id FROM touches
                      WHERE member_id = $1 AND kind = 'stage' AND summary = $3::text || ' -> ' || $4::text
                      ORDER BY at DESC, id DESC LIMIT 1)`,
-      [memberId, OWNER, fromStage, toStage],
+      [memberId, owner, fromStage, toStage],
     );
     return { value: { status: "moved" as const, stage: toStage }, commit: true };
   });

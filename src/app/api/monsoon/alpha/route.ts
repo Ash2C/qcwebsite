@@ -45,7 +45,7 @@ export async function POST(request: Request): Promise<Response> {
   const estate = estateByKey("zeroone");
   if (!estate) return json({ error: "Could not save your email. Try again in a moment." }, 502);
   try {
-    await withEstateDb(estate, (db) => recordAlphaSignup(db, email));
+    await withEstateDb(estate, (db) => recordAlphaSignup(db, email, "VF"));
     return json({ ok: true });
   } catch (err) {
     const e = err as { name?: unknown; code?: unknown };

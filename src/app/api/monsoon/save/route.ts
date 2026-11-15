@@ -75,7 +75,7 @@ export async function POST(request: Request) {
   };
 
   try {
-    const result = await withEstateDb(estate, (db) => capture(db, input));
+    const result = await withEstateDb(estate, (db) => capture(db, input, "VF"));
     return NextResponse.json(result, {
       status: result.outcome === "invalid" ? 400 : 200,
     });

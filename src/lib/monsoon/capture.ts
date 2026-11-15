@@ -35,7 +35,6 @@ export type CaptureResult =
   | { outcome: "invalid"; error: string };
 
 const SOURCE = "monsoon-app";
-const OWNER = "VF";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const KIND_TEXT: Record<CaptureKind, string> = {
   card: "Card captured in person",
@@ -86,7 +85,7 @@ async function fillPerson(
   return [...cols];
 }
 
-export async function capture(db: ClientBase, input: CaptureInput): Promise<CaptureResult> {
+export async function capture(db: ClientBase, input: CaptureInput, owner: string): Promise<CaptureResult> {
   const name = (input.name ?? "").trim();
   if (!name) return { outcome: "invalid", error: "name is required" };
   if (!UUID_RE.test(input.captureId ?? "")) return { outcome: "invalid", error: "captureId must be a UUID" };
@@ -228,7 +227,7 @@ export async function capture(db: ClientBase, input: CaptureInput): Promise<Capt
         await db.query(
           `INSERT INTO members (person_id, role, stage, owner, notes, source)
            VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, role`,
-          [person.id, input.role, stage, OWNER, notes ?? null, SOURCE],
+          [person.id, input.role, stage, owner, notes ?? null, SOURCE],
         )
       ).rows[0];
       memberCreated = true;
@@ -256,7 +255,7 @@ export async function capture(db: ClientBase, input: CaptureInput): Promise<Capt
     if (cardOrg) summary += ` (card shows ${cardOrg})`;
     await db.query("INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'meeting', $2, $3)", [
       member.id,
-      OWNER,
+      owner,
       summary,
     ]);
 

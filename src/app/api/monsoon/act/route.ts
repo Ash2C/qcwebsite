@@ -67,7 +67,7 @@ export async function POST(request: Request) {
     const result = await withEstateDb(estate, async (db) => {
       if (proposal.kind === "add_note") {
         try {
-          const { status } = await addNote(db, proposal.memberId, text);
+          const { status } = await addNote(db, proposal.memberId, text, "VF");
           return { status, message: `Done. Note added to ${proposal.memberName}.` };
         } catch (err) {
           // The contact was removed after the change was offered: a violation of the member foreign
@@ -80,7 +80,7 @@ export async function POST(request: Request) {
         }
       }
       if (proposal.kind === "apply_research") {
-        const done = await applyResearch(db, proposal, ticked, text);
+        const done = await applyResearch(db, proposal, ticked, text, "VF");
         const messages = {
           saved: `Done. Research saved for ${done.name}.`,
           partly: `Saved ${done.written.length > 0 ? done.written.join(", ") : "the summary"}. ${done.skipped.join(", ")} changed in the meantime and ${done.skipped.length === 1 ? "was" : "were"} left alone.`,
@@ -95,7 +95,7 @@ export async function POST(request: Request) {
         return { status: done.status, message: messages[done.status] };
       }
       if (proposal.kind === "update_details") {
-        const done = await applyDetails(db, proposal);
+        const done = await applyDetails(db, proposal, "VF");
         const labels = (fields: string[]) => fields.map((f) => DETAIL_LABELS[f as keyof typeof DETAIL_LABELS]).join(", ");
         const messages = {
           updated: `Done. ${done.name} updated.`,
@@ -110,7 +110,7 @@ export async function POST(request: Request) {
       const { stages } = await vocabulary(db);
       const label = (key: string | null) => stages.find((s) => s.key === key)?.label ?? key ?? "";
       const who = proposal.memberName;
-      const moved = await moveStage(db, proposal.memberId, proposal.fromStage, proposal.toStage);
+      const moved = await moveStage(db, proposal.memberId, proposal.fromStage, proposal.toStage, "VF");
       const messages = {
         moved: `Done. ${who} moved to ${label(proposal.toStage)}.`,
         already: `${who} is already in ${label(proposal.toStage)}; nothing changed.`,

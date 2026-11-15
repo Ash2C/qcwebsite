@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ensureOwner } from "../owners";
 import { testDb } from "../testing/db";
 import { addNote, moveStage, proposeNote, proposeStage } from "./actions";
 import { verifyProposal } from "./proposal";
@@ -205,7 +206,7 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
   describe("addNote", () => {
     it("inserts exactly one note stamped VF and changes nothing else", async () => {
       const before = await snapshot();
-      expect(await addNote(db, id.mLi, "called back")).toEqual({ status: "added" });
+      expect(await addNote(db, id.mLi, "called back", "VF")).toEqual({ status: "added" });
       const after = await snapshot();
       expect(after.orgs).toEqual(before.orgs);
       expect(after.people).toEqual(before.people);
@@ -217,28 +218,28 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
     });
 
     it("a repeated note is reported as done once", async () => {
-      expect(await addNote(db, id.mLi, "same")).toEqual({ status: "added" });
-      expect(await addNote(db, id.mLi, "same")).toEqual({ status: "duplicate" });
+      expect(await addNote(db, id.mLi, "same", "VF")).toEqual({ status: "added" });
+      expect(await addNote(db, id.mLi, "same", "VF")).toEqual({ status: "duplicate" });
       expect(await count("touches", `member_id = '${id.mLi}'`)).toBe(1);
     });
 
     it("a different text, or another member, is not a duplicate", async () => {
-      await addNote(db, id.mLi, "one");
-      expect(await addNote(db, id.mLi, "two")).toEqual({ status: "added" });
-      expect(await addNote(db, id.mNw, "one")).toEqual({ status: "added" });
+      await addNote(db, id.mLi, "one", "VF");
+      expect(await addNote(db, id.mLi, "two", "VF")).toEqual({ status: "added" });
+      expect(await addNote(db, id.mNw, "one", "VF")).toEqual({ status: "added" });
     });
 
     it("the same text after three minutes inserts a second note", async () => {
-      await addNote(db, id.mLi, "again");
+      await addNote(db, id.mLi, "again", "VF");
       await db.query("UPDATE touches SET at = now() - interval '3 minutes' WHERE member_id = $1", [id.mLi]);
-      expect(await addNote(db, id.mLi, "again")).toEqual({ status: "added" });
+      expect(await addNote(db, id.mLi, "again", "VF")).toEqual({ status: "added" });
       expect(await count("touches", `member_id = '${id.mLi}'`)).toBe(2);
     });
 
     it("two taps on two connections at once insert one note", async () => {
       const other = await testDb.connect();
       try {
-        const results = await Promise.all([addNote(db, id.mLi, "double"), addNote(other, id.mLi, "double")]);
+        const results = await Promise.all([addNote(db, id.mLi, "double", "VF"), addNote(other, id.mLi, "double", "VF")]);
         expect(results.map((r) => r.status).sort()).toEqual(["added", "duplicate"]);
         expect(await count("touches", `member_id = '${id.mLi}'`)).toBe(1);
       } finally {
@@ -247,9 +248,9 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
     });
 
     it("rejects for a missing member and leaves the connection usable", async () => {
-      await expect(addNote(db, randomUUID(), "x")).rejects.toThrow();
+      await expect(addNote(db, randomUUID(), "x", "VF")).rejects.toThrow();
       expect(await count("touches")).toBe(0);
-      expect(await addNote(db, id.mLi, "after")).toEqual({ status: "added" });
+      expect(await addNote(db, id.mLi, "after", "VF")).toEqual({ status: "added" });
     });
   });
 
@@ -257,7 +258,7 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
     it("moves the stage and leaves one stage entry stamped VF", async () => {
       await db.query("INSERT INTO owners (key, display_name) VALUES ('BM', 'Bea')");
       await db.query("UPDATE members SET owner = 'BM' WHERE id = $1", [id.mLi]);
-      expect(await moveStage(db, id.mLi, "contacted", "engaged")).toEqual({ status: "moved", stage: "engaged" });
+      expect(await moveStage(db, id.mLi, "contacted", "engaged", "VF")).toEqual({ status: "moved", stage: "engaged" });
       const m = await db.query("SELECT stage, owner FROM members WHERE id = $1", [id.mLi]);
       expect(m.rows[0]).toEqual({ stage: "engaged", owner: "BM" });
       const t = await db.query("SELECT kind, by_whom, summary FROM touches WHERE member_id = $1", [id.mLi]);
@@ -265,9 +266,9 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
     });
 
     it("stamps only the newest stage entry", async () => {
-      await moveStage(db, id.mLi, "contacted", "engaged");
+      await moveStage(db, id.mLi, "contacted", "engaged", "VF");
       await db.query("UPDATE touches SET by_whom = NULL WHERE member_id = $1", [id.mLi]);
-      await moveStage(db, id.mLi, "engaged", "client");
+      await moveStage(db, id.mLi, "engaged", "client", "VF");
       const t = await db.query("SELECT summary, by_whom FROM touches WHERE member_id = $1 ORDER BY at, id", [id.mLi]);
       expect(t.rows).toEqual([
         { summary: "contacted -> engaged", by_whom: null },
@@ -281,7 +282,7 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
          VALUES ($1, now() + interval '1 hour', 'stage', NULL, 'passed -> uncontacted')`,
         [id.mLi],
       );
-      await moveStage(db, id.mLi, "contacted", "engaged");
+      await moveStage(db, id.mLi, "contacted", "engaged", "VF");
       const t = await db.query("SELECT summary, by_whom FROM touches WHERE member_id = $1 ORDER BY summary", [id.mLi]);
       expect(t.rows).toEqual([
         { summary: "contacted -> engaged", by_whom: "VF" },
@@ -291,26 +292,26 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
 
     it("a stale from-stage writes nothing", async () => {
       const before = await snapshot();
-      expect(await moveStage(db, id.mLi, "uncontacted", "client")).toEqual({ status: "changed", stage: "contacted" });
+      expect(await moveStage(db, id.mLi, "uncontacted", "client", "VF")).toEqual({ status: "changed", stage: "contacted" });
       expect(await snapshot()).toEqual(before);
     });
 
     it("reports already when the member is in the target stage", async () => {
       const before = await snapshot();
-      expect(await moveStage(db, id.mLi, "uncontacted", "contacted")).toEqual({ status: "already", stage: "contacted" });
+      expect(await moveStage(db, id.mLi, "uncontacted", "contacted", "VF")).toEqual({ status: "already", stage: "contacted" });
       expect(await snapshot()).toEqual(before);
     });
 
     it("reports missing for an unknown member", async () => {
-      expect(await moveStage(db, randomUUID(), "a", "contacted")).toEqual({ status: "missing", stage: null });
+      expect(await moveStage(db, randomUUID(), "a", "contacted", "VF")).toEqual({ status: "missing", stage: null });
     });
 
     it("two concurrent identical moves give one moved and one already", async () => {
       const other = await testDb.connect();
       try {
         const results = await Promise.all([
-          moveStage(db, id.mLi, "contacted", "engaged"),
-          moveStage(other, id.mLi, "contacted", "engaged"),
+          moveStage(db, id.mLi, "contacted", "engaged", "VF"),
+          moveStage(other, id.mLi, "contacted", "engaged", "VF"),
         ]);
         expect(results.map((r) => r.status).sort()).toEqual(["already", "moved"]);
         expect(await count("touches", `member_id = '${id.mLi}' AND kind = 'stage'`)).toBe(1);
@@ -320,9 +321,20 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
     });
 
     it("an unknown target stage rejects and writes nothing", async () => {
-      await expect(moveStage(db, id.mLi, "contacted", "won")).rejects.toThrow();
+      await expect(moveStage(db, id.mLi, "contacted", "won", "VF")).rejects.toThrow();
       expect(await count("touches")).toBe(0);
-      expect(await moveStage(db, id.mLi, "contacted", "engaged")).toMatchObject({ status: "moved" });
+      expect(await moveStage(db, id.mLi, "contacted", "engaged", "VF")).toMatchObject({ status: "moved" });
     });
+  });
+
+  it("addNote and moveStage stamp the touch with the given owner key", async () => {
+    await ensureOwner(db, "AB", "Ana B");
+    expect(await addNote(db, id.mLi, "hello from ana", "AB")).toEqual({ status: "added" });
+    expect(await moveStage(db, id.mLi, "contacted", "engaged", "AB")).toEqual({ status: "moved", stage: "engaged" });
+    const t = await db.query("SELECT kind, by_whom FROM touches WHERE member_id = $1 ORDER BY kind", [id.mLi]);
+    expect(t.rows).toEqual([
+      { kind: "note", by_whom: "AB" },
+      { kind: "stage", by_whom: "AB" },
+    ]);
   });
 });

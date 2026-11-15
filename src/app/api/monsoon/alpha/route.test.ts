@@ -46,7 +46,7 @@ describe.skip("POST /api/monsoon/alpha (when open again)", () => {
     expect(await res.json()).toEqual({ ok: true });
     expect(withDb).toHaveBeenCalledTimes(1);
     expect(withDb.mock.calls[0][0].key).toBe("zeroone");
-    expect(record).toHaveBeenCalledWith(expect.anything(), "jane@example.com");
+    expect(record).toHaveBeenCalledWith(expect.anything(), "jane@example.com", "VF");
   });
 
   it("answers the same for someone already on file, so it never reveals who has signed up", async () => {
