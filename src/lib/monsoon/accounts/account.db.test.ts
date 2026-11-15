@@ -1,8 +1,8 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Client } from "pg";
 import { makeAccountsTestDb, makeTestDb } from "../testing/db";
-import { signLegacySession, signSession } from "../auth";
+import { signSession } from "../auth";
 import { encryptSecret } from "./crypto";
 import { clearAccountCache } from "./store";
 import { NotConnected, requireAccount, type Account } from "./account";
@@ -163,7 +163,8 @@ describe.skipIf(!accounts.available)("requireAccount", () => {
   it("refuses missing, invalid and v1 cookies", async () => {
     await expectRefused(req());
     await expectRefused(req("monsoon_session=v2.garbage"));
-    await expectRefused(req(`monsoon_session=${signLegacySession()}`));
+    const v1 = `v1.${Math.floor(Date.now() / 1000) + 3600}`;
+    await expectRefused(req(`monsoon_session=${v1}.${createHmac("sha256", "x".repeat(32)).update(v1).digest("hex")}`));
   });
 
   it("refuses unknown rows and a person of another customer", async () => {

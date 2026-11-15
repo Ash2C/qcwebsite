@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/monsoon/db", () => ({ withEstateDb: vi.fn() }));
+vi.mock("@/lib/monsoon/db", () => ({ withPipelineDb: vi.fn() }));
 vi.mock("@/lib/monsoon/alpha", () => ({ recordAlphaSignup: vi.fn() }));
 
-import { withEstateDb } from "@/lib/monsoon/db";
+import { withPipelineDb } from "@/lib/monsoon/db";
 import { recordAlphaSignup } from "@/lib/monsoon/alpha";
 import { POST } from "./route";
 
-const withDb = vi.mocked(withEstateDb);
+const withDb = vi.mocked(withPipelineDb);
+const ZEROONE_URL = "postgresql://u:p@aws-0-test.pooler.supabase.com:6543/postgres";
 const record = vi.mocked(recordAlphaSignup);
 
 function post(body: unknown, headers: Record<string, string> = {}): Request {
@@ -23,11 +24,15 @@ let errorSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   withDb.mockReset();
   record.mockReset();
-  withDb.mockImplementation(async (_estate, fn) => fn({} as never));
+  withDb.mockImplementation(async (_url, fn) => fn({} as never));
+  vi.stubEnv("ZEROONE_CRM_DATABASE_URL", ZEROONE_URL);
   record.mockResolvedValue({ status: "added" });
   errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
-afterEach(() => errorSpy.mockRestore());
+afterEach(() => {
+  errorSpy.mockRestore();
+  vi.unstubAllEnvs();
+});
 
 describe("POST /api/monsoon/alpha (paused)", () => {
   it("answers 503 and never touches the CRM", async () => {
@@ -45,7 +50,7 @@ describe.skip("POST /api/monsoon/alpha (when open again)", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
     expect(withDb).toHaveBeenCalledTimes(1);
-    expect(withDb.mock.calls[0][0].key).toBe("zeroone");
+    expect(withDb.mock.calls[0][0]).toBe(ZEROONE_URL);
     expect(record).toHaveBeenCalledWith(expect.anything(), "jane@example.com", "VF");
   });
 

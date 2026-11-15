@@ -1,6 +1,5 @@
 import { Client, type ClientConfig } from "pg";
 import { parseAllowedDbUrl } from "./accounts/address";
-import type { ESTATES } from "./estates";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
@@ -68,15 +67,6 @@ async function connectAndRun<T>(config: ClientConfig, fn: (db: Client) => Promis
       // An error while closing must not mask the original outcome.
     }
   }
-}
-
-export async function withEstateDb<T>(
-  estate: (typeof ESTATES)[number],
-  fn: (db: Client) => Promise<T>
-): Promise<T> {
-  const url = process.env[estate.dbEnv];
-  if (!url) throw new Error(`${estate.dbEnv} is not set`);
-  return connectAndRun(clientConfig(url), fn);
 }
 
 export async function withPipelineDb<T>(

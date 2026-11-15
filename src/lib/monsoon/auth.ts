@@ -53,27 +53,6 @@ export function verifySession(token: string | undefined, nowMs: number = Date.no
   }
 }
 
-// Legacy v1 tokens: still accepted by requireSession until every route uses requireAccount (Task 9).
-export function signLegacySession(nowMs: number = Date.now()): string {
-  const expiry = Math.floor(nowMs / 1000) + SESSION_SECONDS;
-  const payload = `v1.${expiry}`;
-  return `${payload}.${hmac(payload)}`;
-}
-
-export function verifyLegacySession(token: string | undefined, nowMs: number = Date.now()): boolean {
-  try {
-    if (!token || secret().length < MIN_SECRET) return false;
-    const parts = token.split(".");
-    if (parts.length !== 3) return false;
-    const [version, expiry, signature] = parts;
-    if (version !== "v1" || !/^\d+$/.test(expiry)) return false;
-    if (!signatureMatches(`${version}.${expiry}`, signature)) return false;
-    return Number(expiry) * 1000 > nowMs;
-  } catch {
-    return false;
-  }
-}
-
 export function cookieValue(request: Request, name: string): string | undefined {
   const header = request.headers.get("cookie");
   if (!header) return undefined;
@@ -85,10 +64,4 @@ export function cookieValue(request: Request, name: string): string | undefined 
     }
   }
   return undefined;
-}
-
-/** Legacy (v1 cookies); deleted in Task 9 once every route calls requireAccount. */
-export function requireSession(request: Request): Response | null {
-  if (verifyLegacySession(cookieValue(request, SESSION_COOKIE))) return null;
-  return Response.json({ error: "unauthorized" }, { status: 401 });
 }

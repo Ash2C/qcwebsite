@@ -1,7 +1,6 @@
 import { recordAlphaSignup } from "@/lib/monsoon/alpha";
 import { readJson } from "@/lib/monsoon/body";
-import { withEstateDb } from "@/lib/monsoon/db";
-import { estateByKey } from "@/lib/monsoon/estates";
+import { withPipelineDb } from "@/lib/monsoon/db";
 
 // Public route behind the quantcloud.com home page: saves a Monsoon alpha sign-up to the Zero One CRM.
 // No session (visitors are not signed in), so it is kept narrow: same-site origin only, a small body,
@@ -42,10 +41,12 @@ export async function POST(request: Request): Promise<Response> {
   const email = typeof input.email === "string" ? input.email.trim().toLowerCase() : "";
   if (email.length > 254 || !EMAIL_RE.test(email)) return json({ error: "Enter a valid email address." }, 400);
 
-  const estate = estateByKey("zeroone");
-  if (!estate) return json({ error: "Could not save your email. Try again in a moment." }, 502);
+  // Task 14 replaces this with the quantcloud/zeroone account lookup
+  const url = process.env.ZEROONE_CRM_DATABASE_URL;
+  if (!url) return json({ error: "Could not save your email. Try again in a moment." }, 502);
   try {
-    await withEstateDb(estate, (db) => recordAlphaSignup(db, email, "VF"));
+    // The Zero One CRM, owner VF.
+    await withPipelineDb(url, (db) => recordAlphaSignup(db, email, "VF"));
     return json({ ok: true });
   } catch (err) {
     const e = err as { name?: unknown; code?: unknown };

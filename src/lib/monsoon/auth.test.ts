@@ -4,10 +4,7 @@ import {
   SESSION_SECONDS,
   accountsConfigured,
   cookieValue,
-  requireSession,
-  signLegacySession,
   signSession,
-  verifyLegacySession,
   verifySession,
 } from "./auth";
 
@@ -38,7 +35,9 @@ describe("v2 session tokens", () => {
   });
 
   it("refuses a v1 token", () => {
-    expect(verifySession(signLegacySession(now), now)).toBeNull();
+    // The old single-tenant format: v1.<expiry>.<hmac>, correctly signed.
+    const payload = `v1.${Math.floor(now / 1000) + SESSION_SECONDS}`;
+    expect(verifySession(resign(payload), now)).toBeNull();
   });
 
   it("expires after the session length", () => {
@@ -93,25 +92,6 @@ describe("v2 session tokens", () => {
     expect(verifySession(token, now)).toBeNull();
     vi.stubEnv("MONSOON_SESSION_SECRET", "x".repeat(31));
     expect(verifySession(token, now)).toBeNull();
-  });
-});
-
-describe("legacy v1 tokens (until Task 9)", () => {
-  const now = 1_800_000_000_000;
-
-  it("still verify, and v2 tokens are not accepted as v1", () => {
-    expect(verifyLegacySession(signLegacySession(now), now)).toBe(true);
-    expect(verifyLegacySession(signSession(C, now), now)).toBe(false);
-  });
-
-  it("requireSession accepts a v1 cookie and refuses none", async () => {
-    const ok = new Request("http://localhost/x", {
-      headers: { cookie: `a=1; monsoon_session=${signLegacySession()}; b=2` },
-    });
-    expect(requireSession(ok)).toBeNull();
-    const res = requireSession(new Request("http://localhost/x"));
-    expect(res?.status).toBe(401);
-    expect(await res?.json()).toEqual({ error: "unauthorized" });
   });
 });
 
