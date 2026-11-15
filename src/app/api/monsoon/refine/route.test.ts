@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signSession } from "@/lib/monsoon/auth";
+import { signLegacySession } from "@/lib/monsoon/auth";
 
 const refineContact = vi.fn();
 vi.mock("@/lib/monsoon/refine", async (orig) => ({
@@ -21,7 +21,7 @@ const OUT = { fields: { ...FIELDS, title: "CIO" }, notes: "Now CIO." };
 
 function req(body: unknown, authenticated = true, raw?: string): Request {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (authenticated) headers.Cookie = `monsoon_session=${signSession()}`;
+  if (authenticated) headers.Cookie = `monsoon_session=${signLegacySession()}`;
   return new Request("http://localhost/api/monsoon/refine", {
     method: "POST",
     headers,

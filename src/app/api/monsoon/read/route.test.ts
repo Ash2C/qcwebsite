@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signSession } from "@/lib/monsoon/auth";
+import { signLegacySession } from "@/lib/monsoon/auth";
 
 const extractCards = vi.fn();
 vi.mock("@/lib/monsoon/extract", () => ({
@@ -45,7 +45,7 @@ async function post(
   if (contentLength !== null) {
     headers["Content-Length"] = contentLength ?? String(body.byteLength);
   }
-  if (authenticated) headers.Cookie = `monsoon_session=${signSession()}`;
+  if (authenticated) headers.Cookie = `monsoon_session=${signLegacySession()}`;
   return new Request("http://localhost/api/monsoon/read", {
     method: "POST",
     body,

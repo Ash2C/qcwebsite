@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signSession } from "@/lib/monsoon/auth";
+import { signLegacySession } from "@/lib/monsoon/auth";
 
 const withEstateDb = vi.fn();
 const runAsk = vi.fn();
@@ -26,7 +26,7 @@ function post(body: unknown, authenticated = true): Request {
     body: typeof body === "string" ? body : JSON.stringify(body),
     headers: {
       "Content-Type": "application/json",
-      ...(authenticated ? { Cookie: `monsoon_session=${signSession()}` } : {}),
+      ...(authenticated ? { Cookie: `monsoon_session=${signLegacySession()}` } : {}),
     },
   });
 }

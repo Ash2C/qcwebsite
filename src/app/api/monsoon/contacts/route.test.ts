@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signSession } from "@/lib/monsoon/auth";
+import { signLegacySession } from "@/lib/monsoon/auth";
 
 const withEstateDb = vi.fn();
 const searchContacts = vi.fn();
@@ -17,7 +17,7 @@ const HITS = [{ kind: "person", name: "Mia Chen" }];
 
 function get(query: string, authenticated = true): Request {
   return new Request(`http://localhost/api/monsoon/contacts${query}`, {
-    headers: authenticated ? { Cookie: `monsoon_session=${signSession()}` } : {},
+    headers: authenticated ? { Cookie: `monsoon_session=${signLegacySession()}` } : {},
   });
 }
 

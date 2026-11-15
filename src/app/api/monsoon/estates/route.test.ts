@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signSession } from "@/lib/monsoon/auth";
+import { signLegacySession } from "@/lib/monsoon/auth";
 
 const withEstateDb = vi.fn();
 vi.mock("@/lib/monsoon/db", () => ({
@@ -11,7 +11,7 @@ import { GET } from "./route";
 function request(authenticated: boolean): Request {
   return new Request("http://localhost/api/monsoon/estates", {
     headers: authenticated
-      ? { Cookie: `monsoon_session=${signSession()}` }
+      ? { Cookie: `monsoon_session=${signLegacySession()}` }
       : {},
   });
 }

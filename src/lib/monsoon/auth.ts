@@ -1,64 +1,80 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { masterKeyConfigured } from "./accounts/crypto";
 
 export const SESSION_COOKIE = "monsoon_session";
 export const SESSION_SECONDS = 15552000;
 
-const MIN_PASSCODE = 16;
 const MIN_SECRET = 32;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SESSION_NO = /^[1-9]\d{0,8}$/;
 
-function passcode(): string {
-  return process.env.MONSOON_PASSCODE ?? "";
-}
+export type SessionClaims = { customerId: string; personId: string; sessionNo: number };
 
 function secret(): string {
   return process.env.MONSOON_SESSION_SECRET ?? "";
 }
 
-export function authConfigured(): boolean {
-  return passcode().length >= MIN_PASSCODE && secret().length >= MIN_SECRET;
-}
-
-function sha256(value: string): Buffer {
-  return createHash("sha256").update(value).digest();
-}
-
-export function checkPasscode(candidate: string): boolean {
-  if (!authConfigured() || typeof candidate !== "string") return false;
-  return timingSafeEqual(sha256(candidate), sha256(passcode()));
+/** Session secret of 32+ characters, a valid master key and an accounts database URL. */
+export function accountsConfigured(): boolean {
+  return secret().length >= MIN_SECRET && masterKeyConfigured() && !!process.env.MONSOON_ACCOUNTS_DATABASE_URL;
 }
 
 function hmac(payload: string): string {
   return createHmac("sha256", secret()).update(payload).digest("hex");
 }
 
-export function signSession(nowMs: number = Date.now()): string {
+function signatureMatches(payload: string, signature: string): boolean {
+  if (!/^[0-9a-f]{64}$/.test(signature)) return false;
+  const expected = Buffer.from(hmac(payload), "hex");
+  const actual = Buffer.from(signature, "hex");
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
+/** `v2.<customer uuid>.<person uuid>.<session number>.<expiry>.<hmac>` */
+export function signSession(c: SessionClaims, nowMs: number = Date.now()): string {
+  const expiry = Math.floor(nowMs / 1000) + SESSION_SECONDS;
+  const payload = `v2.${c.customerId}.${c.personId}.${c.sessionNo}.${expiry}`;
+  return `${payload}.${hmac(payload)}`;
+}
+
+export function verifySession(token: string | undefined, nowMs: number = Date.now()): SessionClaims | null {
+  try {
+    if (!token || secret().length < MIN_SECRET) return null;
+    const parts = token.split(".");
+    if (parts.length !== 6) return null;
+    const [version, customerId, personId, sessionNo, expiry, signature] = parts;
+    if (version !== "v2" || !UUID.test(customerId) || !UUID.test(personId)) return null;
+    if (!SESSION_NO.test(sessionNo) || !/^\d{1,12}$/.test(expiry)) return null;
+    if (!signatureMatches(parts.slice(0, 5).join("."), signature)) return null;
+    if (Number(expiry) * 1000 <= nowMs) return null;
+    return { customerId, personId, sessionNo: Number(sessionNo) };
+  } catch {
+    return null;
+  }
+}
+
+// Legacy v1 tokens: still accepted by requireSession until every route uses requireAccount (Task 9).
+export function signLegacySession(nowMs: number = Date.now()): string {
   const expiry = Math.floor(nowMs / 1000) + SESSION_SECONDS;
   const payload = `v1.${expiry}`;
   return `${payload}.${hmac(payload)}`;
 }
 
-export function verifySession(
-  token: string | undefined,
-  nowMs: number = Date.now()
-): boolean {
+export function verifyLegacySession(token: string | undefined, nowMs: number = Date.now()): boolean {
   try {
     if (!token || secret().length < MIN_SECRET) return false;
     const parts = token.split(".");
     if (parts.length !== 3) return false;
     const [version, expiry, signature] = parts;
     if (version !== "v1" || !/^\d+$/.test(expiry)) return false;
-    if (!/^[0-9a-f]{64}$/.test(signature)) return false;
-    const expected = Buffer.from(hmac(`${version}.${expiry}`), "hex");
-    const actual = Buffer.from(signature, "hex");
-    if (expected.length !== actual.length) return false;
-    if (!timingSafeEqual(expected, actual)) return false;
+    if (!signatureMatches(`${version}.${expiry}`, signature)) return false;
     return Number(expiry) * 1000 > nowMs;
   } catch {
     return false;
   }
 }
 
-function cookieValue(request: Request, name: string): string | undefined {
+export function cookieValue(request: Request, name: string): string | undefined {
   const header = request.headers.get("cookie");
   if (!header) return undefined;
   for (const part of header.split(";")) {
@@ -71,7 +87,8 @@ function cookieValue(request: Request, name: string): string | undefined {
   return undefined;
 }
 
+/** Legacy (v1 cookies); deleted in Task 9 once every route calls requireAccount. */
 export function requireSession(request: Request): Response | null {
-  if (verifySession(cookieValue(request, SESSION_COOKIE))) return null;
+  if (verifyLegacySession(cookieValue(request, SESSION_COOKIE))) return null;
   return Response.json({ error: "unauthorized" }, { status: 401 });
 }
