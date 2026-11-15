@@ -101,7 +101,13 @@ const LEGACY_RULES: { name: string; re: RegExp }[] = [
   },
 ];
 
-function violations(source: string): string[] {
+// The one permitted delete: pruning old sign-in attempts. Allowed by file AND exact statement; any other
+// DELETE, in this file or anywhere else, is still flagged.
+const PRUNE_FILE = "lib/monsoon/accounts/store.ts";
+const PRUNE_STATEMENT = "DELETE FROM sign_in_attempts WHERE at < now() - interval '30 days'";
+
+function violations(source: string, file?: string): string[] {
+  if (file === PRUNE_FILE) source = source.split(PRUNE_STATEMENT).join(" ");
   // raw and comments blanked, and each again with escaped quotes (a \" inside a TypeScript
   // string) turned into plain ones, so an escaped quoted identifier is seen as one.
   const texts = [source, withoutComments(source)];
@@ -127,6 +133,7 @@ describe("never delete", () => {
   it("the matcher flags each forbidden statement", () => {
     const samples: [string, string][] = [
       ["DELETE FROM", "delete  from touches WHERE id = $1"],
+      ["DELETE FROM", "DELETE FROM customers WHERE id = $1"],
       ["TRUNCATE", "TRUNCATE touches"],
       ["DROP", "drop table members"],
       ["DROP", "DROP SCHEMA public CASCADE"],
@@ -234,6 +241,16 @@ describe("never delete", () => {
     }
   });
 
+  it("allows only the sign-in attempts prune, and only in accounts/store.ts", () => {
+    const prune = `await db.query("${PRUNE_STATEMENT}");`;
+    expect(violations(prune, PRUNE_FILE)).toEqual([]);
+    expect(violations(prune, "lib/monsoon/capture.ts")).toContain("DELETE FROM");
+    expect(violations(prune)).toContain("DELETE FROM");
+    expect(violations(prune + ' await db.query("DELETE FROM customers");', PRUNE_FILE)).toContain("DELETE FROM");
+    expect(violations('await db.query("DELETE FROM sign_in_attempts");', PRUNE_FILE)).toContain("DELETE FROM");
+    expect(violations("DELETE FROM customers WHERE id = $1", "lib/monsoon/accounts/admin.ts")).toContain("DELETE FROM");
+  });
+
   it("finds the Monsoon server files to scan", () => {
     const found = SCAN.flatMap(files).map((f) => relative(ROOT, f).split(sep).join("/"));
     expect(found).toContain("lib/monsoon/capture.ts");
@@ -296,7 +313,7 @@ describe("never delete", () => {
   it("no Monsoon server code deletes, truncates, drops or rewrites notes", () => {
     const bad: string[] = [];
     for (const file of SCAN.flatMap(files)) {
-      const hits = violations(readFileSync(file, "utf8"));
+      const hits = violations(readFileSync(file, "utf8"), relative(ROOT, file).split(sep).join("/"));
       if (hits.length) bad.push(`${relative(ROOT, file)}: ${hits.join(", ")}`);
     }
     expect(bad).toEqual([]);
