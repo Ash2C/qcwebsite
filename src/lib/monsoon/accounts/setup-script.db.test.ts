@@ -267,6 +267,59 @@ describe.skipIf(!testDb.available)("Setup script and restricted login (real Post
     }
   });
 
+  describe("public API roles", () => {
+    const PUBLIC_ROLES = ["anon", "authenticated"];
+    const ALL_PRIVS = "SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER";
+    async function ensurePublicRoles(c: Client) {
+      for (const r of PUBLIC_ROLES) {
+        try {
+          await c.query(`DO $$ BEGIN CREATE ROLE ${r} NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+        } catch (err) {
+          if ((err as { code?: string }).code !== "23505") throw err;
+        }
+      }
+    }
+    async function grantedTables(c: Client): Promise<string[]> {
+      const r = await c.query(
+        `SELECT r.role || ':' || t.name AS g
+           FROM unnest($1::text[]) AS r(role), unnest($2::text[]) AS t(name)
+          WHERE has_table_privilege(r.role, 'public.' || t.name, $3)`,
+        [PUBLIC_ROLES, ["schema_migrations", "stages", "roles", "owners", "orgs", "people", "members", "touches", "tags", "member_tags", "captures"], ALL_PRIVS],
+      );
+      return r.rows.map((x) => x.g);
+    }
+
+    it("the setup script revokes everything anon and authenticated were granted on Monsoon tables", async () => {
+      await ensurePublicRoles(admin);
+      const script = withPassword(generateSetupScript({ ...vocabulary, roleName: roleA }));
+      await admin.query(script);
+      await admin.query("GRANT ALL ON touches, orgs, people TO anon");
+      await admin.query("GRANT TRUNCATE, SELECT ON members, captures TO authenticated");
+      expect((await grantedTables(admin)).length).toBeGreaterThan(0);
+      await admin.query(script);
+      expect(await grantedTables(admin)).toEqual([]);
+    });
+
+    it("loginAndPoliciesScript does the same on an existing database, run by a non-superuser owner", async () => {
+      const a = await testDb.connect();
+      try {
+        await ensurePublicRoles(a);
+        await a.query("GRANT ALL ON touches, stages TO anon, authenticated");
+        expect((await grantedTables(a)).length).toBeGreaterThan(0);
+      } finally {
+        await a.end();
+      }
+      const o = await makeOwner(testDb, true);
+      try {
+        await o.query("GRANT ALL ON orgs TO anon");
+        await o.query(withPassword(loginAndPoliciesScript(roleB)));
+        expect(await grantedTables(o)).toEqual([]);
+      } finally {
+        await o.end();
+      }
+    });
+  });
+
   it("refuses a null password", async () => {
     const script = generateSetupScript({ ...vocabulary, roleName: roleA }).replace(`'${PLACEHOLDER}'`, "NULL");
     await expect(admin.query(script)).rejects.toThrow(/Set your own password/);

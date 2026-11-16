@@ -67,6 +67,20 @@ BEGIN
 END
 $$;
 
+-- Supabase grants new tables to its public API roles. Row security hides rows from them, but
+-- emptying a whole table bypasses it, so they get nothing on Monsoon tables. Skipped where they do not exist.
+DO $$
+DECLARE
+  r text;
+BEGIN
+  FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+      EXECUTE format('REVOKE ALL ON ${ALL_TABLES.join(", ")} FROM %I', r);
+    END IF;
+  END LOOP;
+END
+$$;
+
 GRANT USAGE ON SCHEMA public TO ${role};
 REVOKE ALL ON ${ALL_TABLES.join(", ")} FROM ${role};
 GRANT SELECT ON ${ALL_TABLES.join(", ")} TO ${role};
