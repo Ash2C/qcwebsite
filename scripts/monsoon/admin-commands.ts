@@ -25,7 +25,9 @@ const USAGE = [
   "  link <code> <pipeline key> [--replace]",
   "  script <code> <pipeline key> [--login-only]",
   "  status",
+  "  people <code>",
   "  suspend|resume <code>",
+  "  forget <code>",
 ];
 
 const MAX_PEOPLE = 50;
@@ -39,7 +41,12 @@ const fail = (msg: string): never => {
   throw new Fail(msg);
 };
 
-function parseArgs(args: string[], valueFlags: string[]): { pos: string[]; flags: Map<string, string | true> } {
+/** Any flag not listed for the command is refused, so a typo cannot silently change what it does. */
+function parseArgs(
+  args: string[],
+  valueFlags: string[] = [],
+  switches: string[] = [],
+): { pos: string[]; flags: Map<string, string | true> } {
   const pos: string[] = [];
   const flags = new Map<string, string | true>();
   for (let i = 0; i < args.length; i++) {
@@ -49,7 +56,8 @@ function parseArgs(args: string[], valueFlags: string[]): { pos: string[]; flags
         const v = args[++i];
         if (v === undefined) fail(`${a} needs a value`);
         flags.set(a, v);
-      } else flags.set(a, true);
+      } else if (switches.includes(a)) flags.set(a, true);
+      else fail(`unknown flag ${a}`);
     } else pos.push(a);
   }
   return { pos, flags };
@@ -77,6 +85,40 @@ function parseJsonArray(raw: string | true | undefined, flag: string): unknown[]
     // fall through
   }
   return fail(`${flag} must be a JSON array`);
+}
+
+const VOCAB_KEY_RE = /^[a-z0-9_]{1,40}$/;
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const goodLabel = (v: unknown): v is string => typeof v === "string" && v.trim() !== "" && v.length <= 60;
+
+/** The vocabulary the setup script writes into the customer's stages and roles tables. */
+function checkVocabulary(stages: unknown[], roles: unknown[], defaultRole: string): void {
+  if (stages.length === 0) fail("--stages must list at least one stage");
+  const keys = new Set<string>();
+  const ords = new Set<number>();
+  for (const st of stages) {
+    if (!isRecord(st)) return fail("each stage must be an object with key, ord, label, terminal");
+    const { key, ord, label, terminal } = st;
+    if (typeof key !== "string" || !VOCAB_KEY_RE.test(key)) return fail("stage keys must be 1-40 characters: a-z, 0-9, underscore");
+    if (typeof ord !== "number" || !Number.isInteger(ord)) return fail(`stage ${key}: ord must be a whole number`);
+    if (!goodLabel(label)) fail(`stage ${key}: label must be 1-60 characters`);
+    if (typeof terminal !== "boolean") fail(`stage ${key}: terminal must be true or false`);
+    if (keys.has(key)) fail(`stage ${key} is listed twice`);
+    if (ords.has(ord)) fail(`stage ord ${ord} is used twice`);
+    keys.add(key);
+    ords.add(ord);
+  }
+  if (roles.length === 0) fail("--roles must list at least one role");
+  const roleKeys = new Set<string>();
+  for (const r of roles) {
+    if (!isRecord(r)) return fail("each role must be an object with key and label");
+    const { key, label } = r;
+    if (typeof key !== "string" || !VOCAB_KEY_RE.test(key)) return fail("role keys must be 1-40 characters: a-z, 0-9, underscore");
+    if (!goodLabel(label)) fail(`role ${key}: label must be 1-60 characters`);
+    if (roleKeys.has(key)) fail(`role ${key} is listed twice`);
+    roleKeys.add(key);
+  }
+  if (!roleKeys.has(defaultRole)) fail("--default-role must be one of the keys in --roles");
 }
 
 function parseEnvFile(text: string): Map<string, string> {
@@ -117,6 +159,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
     const [cmd, sub] = argv;
     switch (cmd) {
       case "migrate": {
+        parseArgs(argv.slice(1));
         const t = await db.query("SELECT to_regclass('public.accounts_migrations') AS t");
         if (t.rows[0].t) {
           const v = await db.query("SELECT 1 FROM accounts_migrations WHERE version = 1");
@@ -144,7 +187,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         return 0;
       }
       case "person": {
-        const { pos, flags } = parseArgs(argv.slice(2), ["--passcode-from-env"]);
+        const { pos, flags } = parseArgs(argv.slice(2), sub === "add" ? ["--passcode-from-env"] : []);
         if (sub === "add") {
           need(pos, 3);
           const c = await customer(pos[0]);
@@ -211,6 +254,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         if (typeof role !== "string") fail("--default-role is required");
         const stages = parseJsonArray(flags.get("--stages"), "--stages");
         const roles = parseJsonArray(flags.get("--roles"), "--roles");
+        checkVocabulary(stages, roles, role as string);
         const r = await db.query(
           `INSERT INTO pipelines (customer_id, key, label, default_role, position, vocab)
            VALUES ($1, $2, $3, $4, (SELECT COALESCE(MAX(position), 0) + 1 FROM pipelines WHERE customer_id = $1), $5)
@@ -222,7 +266,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         return 0;
       }
       case "link": {
-        const { pos, flags } = parseArgs(argv.slice(1), []);
+        const { pos, flags } = parseArgs(argv.slice(1), [], ["--replace"]);
         need(pos, 2);
         const c = await customer(pos[0]);
         const p = await pipeline(c.id, pos[1]);
@@ -238,7 +282,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         return 0;
       }
       case "script": {
-        const { pos, flags } = parseArgs(argv.slice(1), []);
+        const { pos, flags } = parseArgs(argv.slice(1), [], ["--login-only"]);
         if (flags.has("--login-only")) {
           out(loginAndPoliciesScript());
           return 0;
@@ -260,6 +304,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         return 0;
       }
       case "status": {
+        parseArgs(argv.slice(1));
         const cs = await db.query(
           `SELECT c.id, c.code, c.status, (c.claude_key_enc IS NOT NULL) AS has_key,
                   (SELECT count(*)::int FROM people p WHERE p.customer_id = c.id) AS people
@@ -282,10 +327,61 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
       }
       case "suspend":
       case "resume": {
-        need(argv.slice(1), 1);
-        const c = await customer(argv[1]);
+        const { pos } = parseArgs(argv.slice(1));
+        need(pos, 1);
+        const c = await customer(pos[0]);
         await db.query("UPDATE customers SET status = $2 WHERE id = $1", [c.id, cmd === "suspend" ? "suspended" : "active"]);
-        out(`Customer ${argv[1]} ${cmd === "suspend" ? "suspended" : "resumed"}.`);
+        if (cmd === "suspend") {
+          const l = await db.query(
+            "UPDATE setup_links SET expires_at = now() WHERE customer_id = $1 AND used_at IS NULL AND expires_at > now()",
+            [c.id],
+          );
+          out(`Customer ${pos[0]} suspended; unused setup links expired: ${l.rowCount ?? 0}.`);
+        } else out(`Customer ${pos[0]} resumed.`);
+        return 0;
+      }
+      case "people": {
+        const { pos } = parseArgs(argv.slice(1));
+        need(pos, 1);
+        const c = await customer(pos[0]);
+        const r = await db.query(
+          "SELECT display_name, owner_key, status FROM people WHERE customer_id = $1 ORDER BY owner_key",
+          [c.id],
+        );
+        for (const p of r.rows) out(`${p.display_name} | ${p.owner_key} | ${p.status}`);
+        if (r.rowCount === 0) out(`No people for ${pos[0]}.`);
+        return 0;
+      }
+      case "forget": {
+        // Offboarding: clears every stored secret and signs everyone out. Rows stay (UPDATE only).
+        const { pos } = parseArgs(argv.slice(1));
+        need(pos, 1);
+        const c = await customer(pos[0]);
+        await db.query("BEGIN");
+        try {
+          const before = await db.query("SELECT claude_key_enc IS NOT NULL AS had_key FROM customers WHERE id = $1 FOR UPDATE", [c.id]);
+          const pipes = await db.query(
+            "SELECT key, db_url_enc IS NOT NULL AS had_address FROM pipelines WHERE customer_id = $1 ORDER BY position, key FOR UPDATE",
+            [c.id],
+          );
+          await db.query("UPDATE customers SET claude_key_enc = NULL, status = 'suspended' WHERE id = $1", [c.id]);
+          await db.query("UPDATE pipelines SET db_url_enc = NULL, connected_at = NULL WHERE customer_id = $1", [c.id]);
+          const people = await db.query("UPDATE people SET session_no = session_no + 1 WHERE customer_id = $1", [c.id]);
+          const links = await db.query(
+            "UPDATE setup_links SET expires_at = now() WHERE customer_id = $1 AND used_at IS NULL AND expires_at > now()",
+            [c.id],
+          );
+          await db.query("COMMIT");
+          out(`Customer ${pos[0]} suspended.`);
+          out(`Claude key: ${before.rows[0]?.had_key ? "cleared" : "was not set"}.`);
+          for (const row of pipes.rows as { key: string; had_address: boolean }[]) {
+            out(`Pipeline ${row.key}: database address ${row.had_address ? "cleared" : "was not set"}.`);
+          }
+          out(`People signed out: ${people.rowCount ?? 0}. Unused setup links expired: ${links.rowCount ?? 0}.`);
+        } catch (err) {
+          await db.query("ROLLBACK").catch(() => undefined);
+          throw err;
+        }
         return 0;
       }
       default:

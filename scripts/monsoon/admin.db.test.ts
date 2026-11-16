@@ -145,6 +145,133 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     expect((await client.query("SELECT status FROM customers")).rows[0].status).toBe("active");
   });
 
+  it("rejects a flag the command does not accept, with a one-line error and exit 1", async () => {
+    await run(["customer", "add", "acme", "Acme"]);
+    await run(["pipeline", "add", "acme", "main", "Main", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
+    expect(await run(["link", "acme", "main", "--replce"])).toBe(1);
+    expect(lines).toEqual(["Error: unknown flag --replce"]);
+    expect((await client.query("SELECT count(*)::int AS n FROM setup_links")).rows[0].n).toBe(0);
+    expect(await run(["customer", "add", "beta", "Beta", "--modle", "x"])).toBe(1);
+    expect(await run(["person", "reset", "acme", "AN", "--passcode-from-env", "X"])).toBe(1);
+    expect(await run(["script", "acme", "main", "--replace"])).toBe(1);
+    expect(await run(["suspend", "acme", "--now"])).toBe(1);
+    expect(await run(["status", "--all"])).toBe(1);
+    expect((await client.query("SELECT status FROM customers")).rows[0].status).toBe("active");
+    expect(await run(["link", "acme", "main", "--replace"])).toBe(0);
+  });
+
+  describe("pipeline vocabulary", () => {
+    beforeEach(async () => {
+      await run(["customer", "add", "acme", "Acme"]);
+    });
+    const add = (stages: unknown, roles: unknown, role = "investor") =>
+      run([
+        "pipeline", "add", "acme", "main", "Main", "--default-role", role,
+        "--stages", typeof stages === "string" ? stages : JSON.stringify(stages),
+        "--roles", typeof roles === "string" ? roles : JSON.stringify(roles),
+      ]);
+    const stage = (key: string, ord: number, terminal = false, label = key) => ({ key, ord, label, terminal });
+    const okRoles = [{ key: "investor", label: "Investor" }];
+
+    it.each([
+      ["empty stages", [], okRoles],
+      ["a bad stage key", [stage("New Stage", 0)], okRoles],
+      ["a stage key over 40 characters", [stage("a".repeat(41), 0)], okRoles],
+      ["a non-integer ord", [stage("new", 1.5)], okRoles],
+      ["an empty label", [stage("new", 0, false, "")], okRoles],
+      ["a label over 60 characters", [stage("new", 0, false, "x".repeat(61))], okRoles],
+      ["a non-boolean terminal", [{ key: "new", ord: 0, label: "New", terminal: "no" }], okRoles],
+      ["duplicate stage keys", [stage("new", 0), stage("new", 1)], okRoles],
+      ["duplicate ords", [stage("new", 0), stage("old", 0)], okRoles],
+      ["empty roles", [stage("new", 0)], []],
+      ["a role without a label", [stage("new", 0)], [{ key: "investor" }]],
+      ["duplicate role keys", [stage("new", 0)], [...okRoles, ...okRoles]],
+    ])("refuses %s and adds nothing", async (_label, stages, roles) => {
+      expect(await add(stages, roles)).toBe(1);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/^Error: /);
+      expect((await client.query("SELECT count(*)::int AS n FROM pipelines")).rows[0].n).toBe(0);
+    });
+
+    it("refuses a default role that is not one of the roles", async () => {
+      expect(await add([stage("new", 0)], okRoles, "lp_prospect")).toBe(1);
+      expect(text()).toMatch(/--default-role/);
+    });
+
+    it("accepts a valid vocabulary", async () => {
+      expect(await add(STAGES, ROLES)).toBe(0);
+    });
+  });
+
+  it("people lists display name, owner key and status, and no hashes", async () => {
+    await run(["customer", "add", "acme", "Acme"]);
+    await run(["person", "add", "acme", "Ann", "AN"]);
+    await run(["person", "add", "acme", "Bob", "BO"]);
+    await run(["person", "suspend", "acme", "BO"]);
+    expect(await run(["people", "acme"])).toBe(0);
+    expect(text()).toContain("Ann | AN | active");
+    expect(text()).toContain("Bob | BO | suspended");
+    expect(text()).not.toMatch(/s1\./);
+  });
+
+  it("forget clears the stored secrets, suspends and signs everyone out, without removing rows", async () => {
+    await run(["customer", "add", "acme", "Acme"]);
+    await run(["customer", "add", "other", "Other"]);
+    await run(["person", "add", "acme", "Ann", "AN"]);
+    await run(["person", "add", "other", "Oz", "OZ"]);
+    await run(["pipeline", "add", "acme", "main", "Main", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
+    await run(["pipeline", "add", "acme", "side", "Side", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
+    await run(["pipeline", "add", "other", "main", "Main", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
+    await client.query("UPDATE customers SET claude_key_enc = 'k1.aaa.bbb.ccc'");
+    await client.query("UPDATE pipelines SET db_url_enc = 'k1.ddd.eee.fff', connected_at = now()");
+
+    expect(await run(["forget", "acme"])).toBe(0);
+    expect(text()).not.toMatch(/k1\./);
+    expect(text()).toMatch(/Claude key/);
+    expect(text()).toMatch(/main/);
+    const c = await client.query("SELECT code, status, claude_key_enc FROM customers ORDER BY code");
+    expect(c.rows).toEqual([
+      { code: "acme", status: "suspended", claude_key_enc: null },
+      { code: "other", status: "active", claude_key_enc: "k1.aaa.bbb.ccc" },
+    ]);
+    const p = await client.query(
+      "SELECT c.code, p.key, p.db_url_enc, p.connected_at FROM pipelines p JOIN customers c ON c.id = p.customer_id ORDER BY c.code, p.key",
+    );
+    expect(p.rows.map((r) => [r.code, r.key, r.db_url_enc, r.connected_at === null])).toEqual([
+      ["acme", "main", null, true],
+      ["acme", "side", null, true],
+      ["other", "main", "k1.ddd.eee.fff", false],
+    ]);
+    const people = await client.query("SELECT owner_key, session_no FROM people ORDER BY owner_key");
+    expect(people.rows).toEqual([
+      { owner_key: "AN", session_no: 2 },
+      { owner_key: "OZ", session_no: 1 },
+    ]);
+  });
+
+  it("suspend also expires the customer's unused setup links", async () => {
+    await run(["customer", "add", "acme", "Acme"]);
+    await run(["customer", "add", "other", "Other"]);
+    await run(["pipeline", "add", "acme", "main", "Main", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
+    await run(["pipeline", "add", "other", "main", "Main", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
+    await run(["link", "acme", "main"]);
+    await run(["link", "acme", "main"]);
+    await run(["link", "other", "main"]);
+    await client.query(
+      "UPDATE setup_links SET used_at = now() - interval '1 day' WHERE id = (SELECT id FROM setup_links ORDER BY created_at LIMIT 1)",
+    );
+    expect(await run(["suspend", "acme"])).toBe(0);
+    const r = await client.query(
+      `SELECT c.code, l.used_at IS NOT NULL AS used, l.expires_at <= now() AS expired
+         FROM setup_links l JOIN customers c ON c.id = l.customer_id ORDER BY l.created_at`,
+    );
+    expect(r.rows).toEqual([
+      { code: "acme", used: true, expired: false },
+      { code: "acme", used: false, expired: true },
+      { code: "other", used: false, expired: false },
+    ]);
+  });
+
   it("unknown command prints usage and exits 1", async () => {
     expect(await run(["bogus"])).toBe(1);
     expect(text()).toMatch(/usage/i);
