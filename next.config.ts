@@ -14,9 +14,21 @@ const securityHeaders = [
   },
 ];
 
+// The one-time setup page carries a secret token in its address: never cached, framed or referred.
+// Listed after the site-wide entry so its X-Frame-Options and Referrer-Policy win.
+const setupHeaders = [
+  { key: "Cache-Control", value: "no-store" },
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+  { key: "Referrer-Policy", value: "no-referrer" },
+];
+
 const nextConfig: NextConfig = {
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders }];
+    return [
+      { source: "/:path*", headers: securityHeaders },
+      { source: "/monsoon/setup/:path*", headers: setupHeaders },
+    ];
   },
 };
 
