@@ -5,7 +5,7 @@ import { makeAccountsTestDb, makeTestDb } from "../testing/db";
 import { signSession } from "../auth";
 import { encryptSecret } from "./crypto";
 import { clearAccountCache } from "./store";
-import { NotConnected, requireAccount, type Account } from "./account";
+import { NotConnected, requireAccount, withCustomerPipelineDb, type Account } from "./account";
 
 const accounts = makeAccountsTestDb();
 const crm = makeTestDb("account");
@@ -206,5 +206,23 @@ describe.skipIf(!accounts.available)("requireAccount", () => {
     const r = await requireAccount(signed());
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.response.status).toBe(500);
+  });
+
+  it("withCustomerPipelineDb reaches a customer's connected pipeline by code and key, without a session", async () => {
+    const keys = await withCustomerPipelineDb("acme-co", "main", async (db) =>
+      (await db.query("SELECT key FROM owners")).rows.map((r) => r.key),
+    );
+    expect(keys).toContain("VF");
+    expect(await withCustomerPipelineDb("ACME-CO", "main", async () => 1)).toBe(1);
+  });
+
+  it("withCustomerPipelineDb refuses an unknown code, another customer's key, an unconnected pipeline and a suspended customer", async () => {
+    const fn = vi.fn(async () => 1);
+    await expect(withCustomerPipelineDb("nobody", "main", fn)).rejects.toBeInstanceOf(NotConnected);
+    await expect(withCustomerPipelineDb("acme-co", "theirs", fn)).rejects.toBeInstanceOf(NotConnected);
+    await expect(withCustomerPipelineDb("acme-co", "later", fn)).rejects.toBeInstanceOf(NotConnected);
+    await client.query("UPDATE customers SET status = 'suspended' WHERE id = $1", [cid]);
+    await expect(withCustomerPipelineDb("acme-co", "main", fn)).rejects.toBeInstanceOf(NotConnected);
+    expect(fn).not.toHaveBeenCalled();
   });
 });

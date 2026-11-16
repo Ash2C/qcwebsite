@@ -1,8 +1,8 @@
-import { recordAlphaSignup } from "@/lib/monsoon/alpha";
+import { withCustomerPipelineDb } from "@/lib/monsoon/accounts/account";
+import { SIGNUPS_OPEN, recordAlphaSignup } from "@/lib/monsoon/alpha";
 import { readJson } from "@/lib/monsoon/body";
-import { withPipelineDb } from "@/lib/monsoon/db";
 
-// Public route behind the quantcloud.com home page: saves a Monsoon alpha sign-up to the Zero One CRM.
+// Public route behind the quantcloud.com and monsooncrm.com home pages: saves a Monsoon alpha sign-up to the Zero One CRM.
 // No session (visitors are not signed in), so it is kept narrow: same-site origin only, a small body,
 // a hidden honeypot field, a strict email check, and an answer that never says whether the email was
 // already on file.
@@ -13,14 +13,11 @@ export const maxDuration = 30;
 
 const MAX_BYTES = 2_048;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-const ALLOWED_ORIGIN = /^(https:\/\/(www\.)?quantcloud\.com|http:\/\/localhost(:\d+)?)$/;
+const ALLOWED_ORIGIN = /^(https:\/\/(www\.)?quantcloud\.com|https:\/\/(www\.)?monsooncrm\.com|http:\/\/localhost(:\d+)?)$/;
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status });
 }
-
-// Paused 2026-11-13 until email and phone verification are built: nothing is saved.
-const SIGNUPS_OPEN = false;
 
 export async function POST(request: Request): Promise<Response> {
   if (!SIGNUPS_OPEN) return json({ error: "Sign-ups open soon." }, 503);
@@ -41,12 +38,9 @@ export async function POST(request: Request): Promise<Response> {
   const email = typeof input.email === "string" ? input.email.trim().toLowerCase() : "";
   if (email.length > 254 || !EMAIL_RE.test(email)) return json({ error: "Enter a valid email address." }, 400);
 
-  // Task 14 replaces this with the quantcloud/zeroone account lookup
-  const url = process.env.ZEROONE_CRM_DATABASE_URL;
-  if (!url) return json({ error: "Could not save your email. Try again in a moment." }, 502);
   try {
-    // The Zero One CRM, owner VF.
-    await withPipelineDb(url, (db) => recordAlphaSignup(db, email, "VF"));
+    // Customer quantcloud's Zero One CRM, owner VF. Fixed literals: a visitor never picks the CRM.
+    await withCustomerPipelineDb("quantcloud", "zeroone", (db) => recordAlphaSignup(db, email, "VF"));
     return json({ ok: true });
   } catch (err) {
     const e = err as { name?: unknown; code?: unknown };

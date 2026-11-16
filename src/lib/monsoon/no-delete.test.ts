@@ -6,6 +6,10 @@ import { ORG_DETAIL_COLUMNS, PERSON_DETAIL_COLUMNS, UPDATE_ORGS, UPDATE_PEOPLE }
 const ROOT = join(__dirname, "..", "..");
 const SCAN = [join(ROOT, "lib", "monsoon"), join(ROOT, "app", "api", "monsoon")];
 const TESTING = join(ROOT, "lib", "monsoon", "testing") + sep;
+// The admin tool writes to the accounts database, so it is held to the same rule.
+const SCRIPT_FILES = ["admin.ts", "admin-commands.ts"].map((f) => join(ROOT, "..", "scripts", "monsoon", f));
+const scanned = (): string[] => [...SCAN.flatMap(files), ...SCRIPT_FILES];
+const rel = (f: string): string => relative(ROOT, f).split(sep).join("/");
 
 // Each file is scanned twice, as raw text and with comments blanked, and is flagged if either pass
 // matches: blanking hides a comment that splits a statement; the raw pass hides nothing, so a `--`
@@ -265,6 +269,9 @@ describe("never delete", () => {
     expect(violations(prune + ' await db.query("DELETE FROM customers");', PRUNE_FILE)).toContain("DELETE FROM");
     expect(violations('await db.query("DELETE FROM sign_in_attempts");', PRUNE_FILE)).toContain("DELETE FROM");
     expect(violations("DELETE FROM customers WHERE id = $1", "lib/monsoon/accounts/admin.ts")).toContain("DELETE FROM");
+    expect(violations('await db.query("DELETE FROM customers WHERE id = $1");', PRUNE_FILE)).toContain("DELETE FROM");
+    expect(violations(prune, "../scripts/monsoon/admin-commands.ts")).toContain("DELETE FROM");
+    expect(violations('await db.query("DELETE FROM people WHERE id = $1");', "../scripts/monsoon/admin.ts")).toContain("DELETE FROM");
   });
 
   it("allows only the setup probe and the TRUNCATE privilege name, and only in accounts/setup-check.ts", () => {
@@ -284,8 +291,13 @@ describe("never delete", () => {
   });
 
   it("finds the Monsoon server files to scan", () => {
-    const found = SCAN.flatMap(files).map((f) => relative(ROOT, f).split(sep).join("/"));
+    const found = scanned().map(rel);
     expect(found).toContain("lib/monsoon/capture.ts");
+    expect(found).toContain("lib/monsoon/accounts/store.ts");
+    expect(found).toContain("app/api/monsoon/bootstrap/route.ts");
+    expect(found).toContain("../scripts/monsoon/admin.ts");
+    expect(found).toContain("../scripts/monsoon/admin-commands.ts");
+    for (const f of SCRIPT_FILES) expect(readFileSync(f, "utf8").length, f).toBeGreaterThan(0);
     expect(found).toContain("app/api/monsoon/save/route.ts");
     expect(found.some((f) => f.includes("/testing/"))).toBe(false);
     expect(found.some((f) => f.endsWith(".test.ts"))).toBe(false);
@@ -344,8 +356,8 @@ describe("never delete", () => {
 
   it("no Monsoon server code deletes, truncates, drops or rewrites notes", () => {
     const bad: string[] = [];
-    for (const file of SCAN.flatMap(files)) {
-      const hits = violations(readFileSync(file, "utf8"), relative(ROOT, file).split(sep).join("/"));
+    for (const file of scanned()) {
+      const hits = violations(readFileSync(file, "utf8"), rel(file));
       if (hits.length) bad.push(`${relative(ROOT, file)}: ${hits.join(", ")}`);
     }
     expect(bad).toEqual([]);

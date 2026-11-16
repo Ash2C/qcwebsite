@@ -1,14 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/monsoon/db", () => ({ withPipelineDb: vi.fn() }));
-vi.mock("@/lib/monsoon/alpha", () => ({ recordAlphaSignup: vi.fn() }));
+// SIGNUPS_OPEN is a const false in production; the getter lets a test open it.
+const gate = vi.hoisted(() => ({ open: false }));
+vi.mock("@/lib/monsoon/accounts/account", () => ({ withCustomerPipelineDb: vi.fn() }));
+vi.mock("@/lib/monsoon/alpha", () => ({
+  recordAlphaSignup: vi.fn(),
+  get SIGNUPS_OPEN() {
+    return gate.open;
+  },
+}));
 
-import { withPipelineDb } from "@/lib/monsoon/db";
+import { withCustomerPipelineDb } from "@/lib/monsoon/accounts/account";
 import { recordAlphaSignup } from "@/lib/monsoon/alpha";
 import { POST } from "./route";
 
-const withDb = vi.mocked(withPipelineDb);
-const ZEROONE_URL = "postgresql://u:p@aws-0-test.pooler.supabase.com:6543/postgres";
+const withDb = vi.mocked(withCustomerPipelineDb);
 const record = vi.mocked(recordAlphaSignup);
 
 function post(body: unknown, headers: Record<string, string> = {}): Request {
@@ -24,8 +30,8 @@ let errorSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   withDb.mockReset();
   record.mockReset();
-  withDb.mockImplementation(async (_url, fn) => fn({} as never));
-  vi.stubEnv("ZEROONE_CRM_DATABASE_URL", ZEROONE_URL);
+  withDb.mockImplementation(async (_code, _key, fn) => fn({} as never));
+  gate.open = false;
   record.mockResolvedValue({ status: "added" });
   errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
@@ -44,13 +50,17 @@ describe("POST /api/monsoon/alpha (paused)", () => {
   });
 });
 
-describe.skip("POST /api/monsoon/alpha (when open again)", () => {
+describe("POST /api/monsoon/alpha (when open again)", () => {
+  beforeEach(() => {
+    gate.open = true;
+  });
+
   it("saves a valid email to the Zero One CRM and answers ok", async () => {
     const res = await POST(post({ email: "  Jane@Example.com " }, { Origin: "https://quantcloud.com" }));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
     expect(withDb).toHaveBeenCalledTimes(1);
-    expect(withDb.mock.calls[0][0]).toBe(ZEROONE_URL);
+    expect(withDb.mock.calls[0].slice(0, 2)).toEqual(["quantcloud", "zeroone"]);
     expect(record).toHaveBeenCalledWith(expect.anything(), "jane@example.com", "VF");
   });
 
@@ -61,14 +71,19 @@ describe.skip("POST /api/monsoon/alpha (when open again)", () => {
     expect(await res.json()).toEqual({ ok: true });
   });
 
-  it("accepts www.quantcloud.com and localhost origins", async () => {
+  it("accepts quantcloud.com, monsooncrm.com (with or without www) and localhost origins", async () => {
     expect((await POST(post({ email: "a@b.co" }, { Origin: "https://www.quantcloud.com" }))).status).toBe(200);
+    expect((await POST(post({ email: "a@b.co" }, { Origin: "https://monsooncrm.com" }))).status).toBe(200);
+    expect((await POST(post({ email: "a@b.co" }, { Origin: "https://www.monsooncrm.com" }))).status).toBe(200);
     expect((await POST(post({ email: "a@b.co" }, { Origin: "http://localhost:3000" }))).status).toBe(200);
   });
 
   it("refuses another site's origin without touching the database", async () => {
     const res = await POST(post({ email: "a@b.co" }, { Origin: "https://evil.example" }));
     expect(res.status).toBe(403);
+    for (const origin of ["http://monsooncrm.com", "https://monsooncrm.com.evil.example", "https://evilmonsooncrm.com"]) {
+      expect((await POST(post({ email: "a@b.co" }, { Origin: origin }))).status, origin).toBe(403);
+    }
     expect(withDb).not.toHaveBeenCalled();
   });
 

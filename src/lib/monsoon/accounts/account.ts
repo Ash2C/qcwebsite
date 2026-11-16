@@ -9,6 +9,7 @@ import { NotConnected } from "./not-connected";
 import {
   loadAccountRows,
   recordActivity,
+  withAccountsDb,
   type ActivityAction,
   type CustomerRow,
   type PersonRow,
@@ -112,4 +113,23 @@ export async function requireAccount(
     return refuse("unauthorized", 401);
   }
   return { ok: true, account: buildAccount(rows) };
+}
+
+/**
+ * Server-internal only (no session): runs fn on customer `code`'s pipeline `key`. Refuses with
+ * NotConnected unless the customer is active and the pipeline has a stored address. Never wire this
+ * to a value a visitor chooses: callers pass fixed literals.
+ */
+export async function withCustomerPipelineDb<T>(code: string, key: string, fn: (db: Client) => Promise<T>): Promise<T> {
+  const row = await withAccountsDb(async (db) => {
+    const r = await db.query(
+      `SELECT c.id AS customer_id, p.id AS pipeline_id, p.db_url_enc
+         FROM customers c JOIN pipelines p ON p.customer_id = c.id
+        WHERE c.code = $1 AND c.status = 'active' AND p.key = $2`,
+      [code.toLowerCase(), key],
+    );
+    return r.rows[0] as { customer_id: string; pipeline_id: string; db_url_enc: string | null } | undefined;
+  });
+  if (!row || row.db_url_enc === null) throw new NotConnected("Pipeline");
+  return withPipelineDb(decryptSecret(row.db_url_enc, row.customer_id, `pipeline:${row.pipeline_id}`), fn);
 }

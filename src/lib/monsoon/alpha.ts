@@ -5,6 +5,9 @@ import { nameKey } from "./rules";
 // Only ever inserts: a person (named by their email) and a pipeline member when they are new, and
 // one timeline note. Someone already on file is reused, never duplicated, and never overwritten.
 
+// Paused 2026-11-13 until email and phone verification are built: the route saves nothing.
+export const SIGNUPS_OPEN = false;
+
 export const ALPHA_NOTE = "Signed up for the Monsoon alpha on quantcloud.com";
 const SOURCE = "monsoon-alpha";
 const ROLE = "reader";
