@@ -167,6 +167,10 @@ export async function failuresSince(
   return { pair: r.rows[0].pair, code: r.rows[0].code };
 }
 
+async function pruneAttempts(db: Client): Promise<void> {
+  await db.query("DELETE FROM sign_in_attempts WHERE at < now() - interval '30 days'");
+}
+
 export async function recordAttempt(
   db: Client,
   a: { code: string; personId: string | null; addressHash: string; ok: boolean },
@@ -177,7 +181,28 @@ export async function recordAttempt(
     a.addressHash,
     a.ok,
   ]);
-  await db.query("DELETE FROM sign_in_attempts WHERE at < now() - interval '30 days'");
+  await pruneAttempts(db);
+}
+
+/**
+ * Records a provisional failed attempt before anything is checked, so concurrent attempts each see
+ * the others when they count. Returns its id; settle it with `settleAttempt`.
+ */
+export async function beginAttempt(db: Client, a: { code: string; addressHash: string }): Promise<string> {
+  const r = await db.query(
+    "INSERT INTO sign_in_attempts (code, person_id, address_hash, ok) VALUES ($1, NULL, $2, false) RETURNING id",
+    [a.code, a.addressHash],
+  );
+  await pruneAttempts(db);
+  return String(r.rows[0].id);
+}
+
+/**
+ * Settles a provisional attempt: `true` signed in, `null` refused while locked (kept as a record but
+ * not counted, so a locked person does not extend their own lock). A failure stays `false`.
+ */
+export async function settleAttempt(db: Client, id: string, ok: true | null, personId: string | null = null): Promise<void> {
+  await db.query("UPDATE sign_in_attempts SET ok = $2, person_id = $3 WHERE id = $1", [id, ok, personId]);
 }
 
 /** Never throws; logs the error class name only. */

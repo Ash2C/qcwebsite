@@ -7,8 +7,9 @@ import {
   failuresSince,
   findCustomerByCode,
   loadAccountRows,
+  beginAttempt,
   recordActivity,
-  recordAttempt,
+  settleAttempt,
   withAccountsDb,
   type CustomerRow,
   type PersonRow,
@@ -54,8 +55,13 @@ type Outcome =
 
 async function signIn(code: string, passcode: string, addressHash: string): Promise<Outcome> {
   return withAccountsDb(async (db) => {
+    // Recorded first and counted with the others, so parallel attempts cannot all slip under a limit.
+    const attemptId = await beginAttempt(db, { code, addressHash });
     const failures = await failuresSince(db, code, addressHash, Date.now() - WINDOW_MS);
-    if (failures.pair >= PAIR_LIMIT || failures.code >= CODE_LIMIT) return { kind: "locked" };
+    if (failures.pair > PAIR_LIMIT || failures.code > CODE_LIMIT) {
+      await settleAttempt(db, attemptId, null);
+      return { kind: "locked" };
+    }
 
     const found = await findCustomerByCode(db, code);
     const people =
@@ -73,8 +79,11 @@ async function signIn(code: string, passcode: string, addressHash: string): Prom
       }
     }
 
-    await recordAttempt(db, { code, personId: match?.id ?? null, addressHash, ok: !!match });
-    return match && found ? { kind: "ok", customer: found.customer, person: match } : { kind: "wrong" };
+    if (match && found) {
+      await settleAttempt(db, attemptId, true, match.id);
+      return { kind: "ok", customer: found.customer, person: match };
+    }
+    return { kind: "wrong" };
   });
 }
 

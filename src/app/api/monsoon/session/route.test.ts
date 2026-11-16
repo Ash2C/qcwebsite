@@ -221,6 +221,25 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/session", { timeout: 20_
     expect((await POST(post({ code: "acme-co", passcode: ANN }, "198.51.100.1"))).status).toBe(200);
   });
 
+  it("ten wrong attempts in parallel from one address: at most five are checked, the rest locked", async () => {
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => POST(post({ code: "acme-co", passcode: WRONG }))),
+    );
+    const statuses = results.map((r) => r.status);
+    expect(statuses.filter((s) => s !== 429).length).toBeLessThanOrEqual(5);
+    expect(statuses.filter((s) => s === 429).length).toBeGreaterThanOrEqual(5);
+    const r = await client.query("SELECT count(*) FILTER (WHERE ok = false)::int AS failed FROM sign_in_attempts");
+    expect(r.rows[0].failed).toBeLessThanOrEqual(5);
+  });
+
+  it("a refusal while locked is recorded but does not count as a failure", async () => {
+    await failAt("203.0.113.7", 5);
+    const res = await POST(post({ code: "acme-co", passcode: WRONG }));
+    expect(res.status).toBe(429);
+    const r = await client.query("SELECT ok FROM sign_in_attempts ORDER BY id");
+    expect(r.rows.map((x) => x.ok)).toEqual([false, false, false, false, false, null]);
+  });
+
   it("does not lock a sixth address after 5 failures from five addresses", async () => {
     await Promise.all(
       ["1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5"].map((a) =>

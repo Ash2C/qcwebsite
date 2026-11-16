@@ -59,9 +59,11 @@ CREATE TABLE IF NOT EXISTS sign_in_attempts (
   code TEXT NOT NULL,
   person_id UUID NULL,
   address_hash TEXT NOT NULL,
-  ok BOOLEAN NOT NULL,
+  -- true signed in, false failed, NULL refused while locked (not counted as a failure)
+  ok BOOLEAN NULL,
   at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE sign_in_attempts ALTER COLUMN ok DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS sign_in_attempts_code_at ON sign_in_attempts (code, at);
 CREATE INDEX IF NOT EXISTS sign_in_attempts_code_address_at ON sign_in_attempts (code, address_hash, at);
 
