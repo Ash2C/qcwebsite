@@ -46,8 +46,9 @@ export async function POST(request: Request): Promise<Response> {
     return answer({ error: "Not configured" }, 409);
   }
 
-  const claudeKey = process.env.ANTHROPIC_API_KEY ?? "";
-  const urls = PIPELINES.map((p) => process.env[p.env] ?? "");
+  // Trimmed: a value pasted into a setting often carries a trailing newline.
+  const claudeKey = (process.env.ANTHROPIC_API_KEY ?? "").trim();
+  const urls = PIPELINES.map((p) => (process.env[p.env] ?? "").trim());
   if (!claudeKey || urls.some((u) => !u)) return answer({ error: "Settings missing" }, 409);
   try {
     for (const u of urls) assertAllowedDbUrl(u);

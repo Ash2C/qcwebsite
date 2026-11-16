@@ -127,6 +127,21 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/bootstrap", () => {
     expect(act).toEqual([{ customer_id: c.id, person_id: null, action: "setup" }]);
   });
 
+  it("trims trailing whitespace and newlines from the three settings before storing", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", `${CLAUDE_KEY}
+`);
+    vi.stubEnv("TRAXO_CRM_DATABASE_URL", `${traxo.url()}
+`);
+    vi.stubEnv("ZEROONE_CRM_DATABASE_URL", ` ${zeroone.url()}
+`);
+    const res = await POST(boot());
+    expect(res.status).toBe(200);
+    const { c, p } = await rows();
+    expect(decryptSecret(c.claude_key_enc, c.id, "claude_key")).toBe(CLAUDE_KEY);
+    expect(decryptSecret(p[0].db_url_enc, c.id, `pipeline:${p[0].id}`)).toBe(traxo.url());
+    expect(decryptSecret(p[1].db_url_enc, c.id, `pipeline:${p[1].id}`)).toBe(zeroone.url());
+  });
+
   it("refuses a second call with 409 and changes nothing", async () => {
     expect((await POST(boot())).status).toBe(200);
     const before = await rows();
