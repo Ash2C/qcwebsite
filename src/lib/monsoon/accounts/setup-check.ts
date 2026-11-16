@@ -11,6 +11,7 @@ export type SetupFailure =
   | "connect"
   | "tables"
   | "version"
+  | "vocabulary"
   | "can_delete"
   | "privileges"
   | "role_flags"
@@ -27,6 +28,7 @@ export const SETUP_MESSAGES: Record<SetupFailure, string> = {
   connect: "Couldn't sign in to your database as monsoon_app. Check the project reference, pooler host and password.",
   tables: NO_TABLES,
   version: NO_TABLES,
+  vocabulary: "Your Monsoon tables are missing stages or roles. Run the setup script again unchanged.",
   can_delete: TOO_MUCH,
   privileges: TOO_MUCH,
   role_flags: TOO_MUCH,
@@ -54,7 +56,7 @@ async function step<T>(failure: SetupFailure, run: () => Promise<T>): Promise<T>
 
 const TABLES = [...MONSOON_TABLES];
 
-async function checkDatabase(db: Client, roleName: string): Promise<SetupFailure | null> {
+async function checkDatabase(db: Client, roleName: string, defaultRole: string): Promise<SetupFailure | null> {
   const present = await step("tables", () =>
     db.query("SELECT count(*)::int AS n FROM unnest($1::text[]) AS t(name) WHERE to_regclass('public.' || t.name) IS NOT NULL", [
       TABLES,
@@ -64,6 +66,16 @@ async function checkDatabase(db: Client, roleName: string): Promise<SetupFailure
 
   const version = await step("version", () => db.query("SELECT max(version) AS v FROM schema_migrations"));
   if (!(Number(version.rows[0].v) >= 1)) return "version";
+
+  // A contact needs a stage to start in, and new contacts get the pipeline's default role.
+  const vocab = await step("vocabulary", () =>
+    db.query(
+      `SELECT EXISTS (SELECT 1 FROM stages WHERE NOT terminal) AS open_stage,
+              EXISTS (SELECT 1 FROM roles WHERE key = $1) AS default_role`,
+      [defaultRole],
+    ),
+  );
+  if (vocab.rows[0].open_stage !== true || vocab.rows[0].default_role !== true) return "vocabulary";
 
   // A delete that matches nothing must still be refused by privilege. Always rolled back.
   let deleteCode: string | undefined;
@@ -116,6 +128,8 @@ export async function runSetupChecks(input: {
   dbUrl: string;
   claudeKey: string | null;
   roleName: string;
+  /** The pipeline's default role: it must exist in the customer's roles table. */
+  defaultRole: string;
   tryClaude: (key: string) => Promise<boolean>;
 }): Promise<SetupCheckResult> {
   try {
@@ -126,7 +140,7 @@ export async function runSetupChecks(input: {
 
   let failure: SetupFailure | null;
   try {
-    failure = await withPipelineDb(input.dbUrl, (db) => checkDatabase(db, input.roleName));
+    failure = await withPipelineDb(input.dbUrl, (db) => checkDatabase(db, input.roleName, input.defaultRole));
   } catch (err) {
     // Anything thrown outside a named step happened while signing in.
     failure = err instanceof StepFailed ? err.failure : "connect";

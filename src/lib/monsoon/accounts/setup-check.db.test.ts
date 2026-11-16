@@ -17,9 +17,12 @@ describe.skipIf(!db.available)("runSetupChecks (real Postgres)", { timeout: 20_0
     const u = new URL(db.url());
     return `postgresql://${ROLE}:${encodeURIComponent(pw)}@${u.hostname}:${u.port}${u.pathname}`;
   };
-  const check = (opts: { claudeKey?: string | null; tryClaude?: (k: string) => Promise<boolean>; dbUrl?: string } = {}) =>
+  const check = (
+    opts: { claudeKey?: string | null; tryClaude?: (k: string) => Promise<boolean>; dbUrl?: string; defaultRole?: string } = {},
+  ) =>
     runSetupChecks({
       dbUrl: opts.dbUrl ?? urlFor(password),
+      defaultRole: opts.defaultRole ?? "investor",
       claudeKey: opts.claudeKey === undefined ? "sk-ant-test-key" : opts.claudeKey,
       roleName: ROLE,
       tryClaude: opts.tryClaude ?? (async () => true),
@@ -81,6 +84,20 @@ describe.skipIf(!db.available)("runSetupChecks (real Postgres)", { timeout: 20_0
     expect(await check()).toEqual(failure("version"));
   });
 
+  it("vocabulary: no stage a contact can sit in (all terminal)", async () => {
+    await admin.query("UPDATE stages SET terminal = true");
+    expect(await check()).toEqual(failure("vocabulary"));
+  });
+
+  it("vocabulary: no stages at all", async () => {
+    await admin.query("TRUNCATE stages CASCADE");
+    expect(await check()).toEqual(failure("vocabulary"));
+  });
+
+  it("vocabulary: the pipeline's default role is not in roles", async () => {
+    expect(await check({ defaultRole: "lp_prospect" })).toEqual(failure("vocabulary"));
+  });
+
   it("can_delete: the role was granted DELETE", async () => {
     await admin.query(`GRANT DELETE ON touches TO ${ROLE}`);
     expect(await check()).toEqual(failure("can_delete"));
@@ -130,6 +147,9 @@ describe.skipIf(!db.available)("runSetupChecks (real Postgres)", { timeout: 20_0
     );
     expect(SETUP_MESSAGES.tables).toBe("The Monsoon tables aren't there yet. Run the setup script first.");
     expect(SETUP_MESSAGES.version).toBe(SETUP_MESSAGES.tables);
+    expect(SETUP_MESSAGES.vocabulary).toBe(
+      "Your Monsoon tables are missing stages or roles. Run the setup script again unchanged.",
+    );
     const tooMuch = "The monsoon_app login has more access than Monsoon allows. Run the setup script again unchanged.";
     expect([SETUP_MESSAGES.can_delete, SETUP_MESSAGES.privileges, SETUP_MESSAGES.role_flags]).toEqual([tooMuch, tooMuch, tooMuch]);
     expect(SETUP_MESSAGES.public_policies).toBe(

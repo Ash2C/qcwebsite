@@ -199,6 +199,17 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/setup", { timeout: 30_00
     expect(again.json.error).toBe(EXPIRED);
   });
 
+  it("vocabulary: the pipeline's default role missing from the CRM's roles is refused, 422", async () => {
+    await client.query("UPDATE pipelines SET default_role = 'lp_prospect' WHERE id = $1", [pid]);
+    const r = await send(body());
+    expect(r.status).toBe(422);
+    expect(r.json).toEqual({
+      error: "Your Monsoon tables are missing stages or roles. Run the setup script again unchanged.",
+      failure: "vocabulary",
+    });
+    await expectNothingStored();
+  });
+
   it("can_delete: a role granted DELETE is refused and nothing is stored", async () => {
     await crmAdmin.query(`GRANT DELETE ON touches TO ${ROLE}`);
     const { status, json } = await send(body());

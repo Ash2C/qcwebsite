@@ -53,7 +53,14 @@ async function tryClaude(apiKey: string): Promise<boolean> {
   }
 }
 
-type Link = { id: string; customerId: string; pipelineId: string | null; pipelineKey: string | null; purpose: "connect" | "replace" };
+type Link = {
+  id: string;
+  customerId: string;
+  pipelineId: string | null;
+  pipelineKey: string | null;
+  defaultRole: string | null;
+  purpose: "connect" | "replace";
+};
 
 /** Counts this attempt first, in its own statement, so failed checks still use one up. */
 async function claimAttempt(tokenHash: string): Promise<Link | "expired" | "too_many"> {
@@ -62,7 +69,8 @@ async function claimAttempt(tokenHash: string): Promise<Link | "expired" | "too_
       `UPDATE setup_links l SET attempts = attempts + 1
         WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() AND attempts < $2
         RETURNING l.id, l.customer_id, l.pipeline_id, l.purpose,
-                  (SELECT p.key FROM pipelines p WHERE p.id = l.pipeline_id AND p.customer_id = l.customer_id) AS pipeline_key`,
+                  (SELECT p.key FROM pipelines p WHERE p.id = l.pipeline_id AND p.customer_id = l.customer_id) AS pipeline_key,
+                  (SELECT p.default_role FROM pipelines p WHERE p.id = l.pipeline_id AND p.customer_id = l.customer_id) AS default_role`,
       [tokenHash, MAX_ATTEMPTS],
     );
     if (r.rowCount === 1) {
@@ -72,6 +80,7 @@ async function claimAttempt(tokenHash: string): Promise<Link | "expired" | "too_
         customerId: row.customer_id,
         pipelineId: row.pipeline_id,
         pipelineKey: row.pipeline_key,
+        defaultRole: row.default_role,
         purpose: row.purpose,
       };
     }
@@ -172,7 +181,13 @@ export async function POST(request: Request): Promise<Response> {
       if (err instanceof AddressError && err.code === "bad_host") return failed("address");
       return failed("connect");
     }
-    const result = await runSetupChecks({ dbUrl, claudeKey, roleName: ROLE_NAME, tryClaude });
+    const result = await runSetupChecks({
+      dbUrl,
+      claudeKey,
+      roleName: ROLE_NAME,
+      defaultRole: link.defaultRole ?? "",
+      tryClaude,
+    });
     if (!result.ok) return failed(result.failure);
   } else if (claudeKey !== null && !(await tryClaude(claudeKey))) {
     return failed("claude_key");
