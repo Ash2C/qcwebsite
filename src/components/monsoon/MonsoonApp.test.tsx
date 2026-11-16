@@ -97,6 +97,7 @@ function memoryStorage() {
 beforeEach(() => {
   // Node's own experimental localStorage can shadow jsdom's; use a fixed fake.
   vi.stubGlobal("localStorage", memoryStorage());
+  localStorage.setItem("monsoon.code", "acme");
   vi.resetAllMocks();
   vi.mocked(downsizeImage).mockResolvedValue(new Blob(["x"], { type: "image/jpeg" }));
 });
@@ -116,8 +117,66 @@ describe("MonsoonApp", () => {
     signedIn();
     await user.type(field, "a-long-passcode-here");
     await user.click(screen.getByRole("button", { name: "Unlock" }));
-    expect(m.signIn).toHaveBeenCalledWith("a-long-passcode-here");
+    expect(m.signIn).toHaveBeenCalledWith("acme", "a-long-passcode-here");
     await ready();
+  });
+
+  describe("company code sign-in", () => {
+    it("prefills the code from localStorage and posts both fields; stores the code after success", async () => {
+      const user = userEvent.setup();
+      localStorage.setItem("monsoon.code", "stored");
+      m.loadEstates.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } });
+      m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+      render(<MonsoonApp />);
+      const code = await screen.findByLabelText("Company code");
+      expect(code).toHaveValue("stored");
+      expect(code).toHaveAttribute("autocapitalize", "none");
+      expect(code).toHaveAttribute("autocomplete", "organization");
+      await user.clear(code);
+      await user.type(code, "  NewCo ");
+      await user.type(screen.getByLabelText("Passcode"), "pw-123");
+      signedIn();
+      await user.click(screen.getByRole("button", { name: "Unlock" }));
+      expect(m.signIn).toHaveBeenCalledWith("newco", "pw-123");
+      await ready();
+      expect(localStorage.getItem("monsoon.code")).toBe("newco");
+    });
+
+    it("shows the server message for a 429", async () => {
+      const user = userEvent.setup();
+      m.loadEstates.mockResolvedValue({ status: 401, body: { error: "unauthorized" } });
+      m.signIn.mockResolvedValue({
+        status: 429,
+        body: { error: "Wrong company code or passcode. Try again later." },
+      });
+      render(<MonsoonApp />);
+      await user.type(await screen.findByLabelText("Passcode"), "x");
+      await user.click(screen.getByRole("button", { name: "Unlock" }));
+      expect(await screen.findByText("Wrong company code or passcode. Try again later.")).toBeInTheDocument();
+    });
+
+    it("keeps Unlock disabled until both fields are filled", async () => {
+      const user = userEvent.setup();
+      localStorage.removeItem("monsoon.code");
+      m.loadEstates.mockResolvedValue({ status: 401, body: { error: "unauthorized" } });
+      render(<MonsoonApp />);
+      const unlock = await screen.findByRole("button", { name: "Unlock" });
+      expect(unlock).toBeDisabled();
+      await user.type(screen.getByLabelText("Passcode"), "pw");
+      expect(unlock).toBeDisabled();
+      await user.type(screen.getByLabelText("Company code"), "acme");
+      expect(unlock).toBeEnabled();
+    });
+
+    it("shows the signed-in person's name in the header", async () => {
+      signedIn();
+      m.loadEstates.mockResolvedValue({
+        status: 200,
+        body: { ...ESTATES, person: { name: "Dana Lee" }, customer: { name: "Acme" } },
+      } as never);
+      render(<MonsoonApp />);
+      expect(await screen.findByText("Dana Lee")).toBeInTheDocument();
+    });
   });
 
   it('wrong passcode shows "Wrong passcode"', async () => {

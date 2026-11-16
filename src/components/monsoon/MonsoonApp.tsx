@@ -97,6 +97,8 @@ export default function MonsoonApp() {
   const [prompt, setPrompt] = useState<SavePrompt | null>(null);
   const [reading, setReading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [code, setCode] = useState("");
+  const [personName, setPersonName] = useState<string | null>(null);
   const [passcode, setPasscode] = useState("");
   const [passError, setPassError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
@@ -162,6 +164,7 @@ export default function MonsoonApp() {
           list.find((e) => e.available) ??
           list[0];
         setEstates(list);
+        setPersonName(res.body.person?.name ?? null);
         if (pick) {
           setEstateKey(pick.key);
           // A reload keeps the role the user already chose when this estate still offers it.
@@ -183,6 +186,15 @@ export default function MonsoonApp() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("monsoon.code");
+      if (saved) setCode(saved);
+    } catch {
+      // storage unavailable: the field simply starts empty
+    }
+  }, []);
 
   // The match describes the name, company and email that were read; once any changes it no longer applies.
   function dropMatch() {
@@ -495,17 +507,23 @@ export default function MonsoonApp() {
 
   async function onSignIn(event: React.FormEvent) {
     event.preventDefault();
-    if (signingIn || !passcode) return;
+    const cleanCode = code.trim().toLowerCase();
+    if (signingIn || !cleanCode || !passcode) return;
     setSigningIn(true);
     setPassError(null);
     try {
-      const res = await signIn(passcode);
+      const res = await signIn(cleanCode, passcode);
       if (res.status === 200) {
+        try {
+          window.localStorage.setItem("monsoon.code", cleanCode);
+        } catch {
+          // storage unavailable: nothing to remember
+        }
         setPasscode("");
         setPhase("loading");
         await load();
       } else {
-        setPassError((res.body as { error?: string }).error ?? "Could not sign in");
+        setPassError((res.body as { error?: string }).error ?? "Wrong company code or passcode.");
       }
     } catch {
       setPassError("Could not sign in. Check signal and try again.");
@@ -557,6 +575,20 @@ export default function MonsoonApp() {
         >
           <MonsoonLogo className="h-10" />
           <div className={card}>
+            <label htmlFor="company-code" className={fieldLabel}>
+              Company code
+            </label>
+            <input
+              id="company-code"
+              type="text"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              autoComplete="organization"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              className={fieldInput}
+            />
             <label htmlFor="passcode" className={fieldLabel}>
               Passcode
             </label>
@@ -574,7 +606,7 @@ export default function MonsoonApp() {
               {passError}
             </p>
           )}
-          <button type="submit" disabled={signingIn || !passcode} className={primaryButton}>
+          <button type="submit" disabled={signingIn || !code.trim() || !passcode} className={primaryButton}>
             {signingIn ? "Unlocking…" : "Unlock"}
           </button>
         </form>
@@ -596,6 +628,7 @@ export default function MonsoonApp() {
     <Shell>
       <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
         <MonsoonLogo className="h-8 px-1 pt-2" />
+        {personName && <p className="px-1 text-[13px] text-neutral-500 dark:text-neutral-400">{personName}</p>}
 
         <div
           role="group"

@@ -258,6 +258,7 @@ export default function BatchReview({
       fields: { ...row.fields, notes: (row.notes ?? b.note) || undefined },
       extracted: row.extracted,
       kind: row.kind,
+      batch: true,
       newOrg: row.newOrg || undefined,
       // A prompt answer wins over the match choice; nothing chosen sends nothing.
       samePerson: row.samePerson ?? row.choice,
