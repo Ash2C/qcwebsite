@@ -4,12 +4,19 @@ import type { Client } from "pg";
 import { makeAccountsTestDb, makeTestDb } from "@/lib/monsoon/testing/db";
 import { verifySession } from "@/lib/monsoon/auth";
 import { DUMMY_PASSCODE_HASH, encryptSecret, hashAddress, hashPasscode, verifyPasscode } from "@/lib/monsoon/accounts/crypto";
-import { clearAccountCache, recordAttempt } from "@/lib/monsoon/accounts/store";
-import { DELETE, POST } from "./route";
+import { clearAccountCache, loadAccountRows, recordAttempt } from "@/lib/monsoon/accounts/store";
+import { requireAccount } from "@/lib/monsoon/accounts/account";
+import { ensureOwner } from "@/lib/monsoon/owners";
+import { DELETE, POST, maxDuration } from "./route";
 
 vi.mock("@/lib/monsoon/accounts/crypto", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/monsoon/accounts/crypto")>();
   return { ...actual, verifyPasscode: vi.fn(actual.verifyPasscode) };
+});
+
+vi.mock("@/lib/monsoon/owners", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/monsoon/owners")>();
+  return { ...actual, ensureOwner: vi.fn(actual.ensureOwner) };
 });
 
 const accounts = makeAccountsTestDb();
@@ -122,6 +129,29 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/session", { timeout: 20_
     } finally {
       await c.end();
     }
+  });
+
+  it("a fresh sign-in after a passcode reset is accepted at once, despite a cached old row", async () => {
+    const before = await loadAccountRows(cid, annId);
+    expect(before?.person.sessionNo).toBe(4);
+    await client.query("UPDATE people SET session_no = 5 WHERE id = $1", [annId]);
+    const res = await POST(post({ code: "acme-co", passcode: ANN }));
+    expect(res.status).toBe(200);
+    const token = /monsoon_session=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1];
+    expect(verifySession(token)?.sessionNo).toBe(5);
+    const next = new Request("http://localhost/api/monsoon/estates", { headers: { cookie: `monsoon_session=${token}` } });
+    const resolved = await requireAccount(next);
+    expect(resolved.ok).toBe(true);
+  });
+
+  it("answers within about 2 s when a CRM hangs while adding the owner", async () => {
+    vi.mocked(ensureOwner).mockImplementationOnce(() => new Promise<void>(() => undefined));
+    const started = Date.now();
+    const res = await POST(post({ code: "acme-co", passcode: ANN }));
+    const took = Date.now() - started;
+    expect(res.status).toBe(200);
+    expect(took).toBeLessThan(4000);
+    expect(took).toBeGreaterThanOrEqual(1900);
   });
 
   it("finds the person by passcode and accepts a code in any case with spaces", async () => {
@@ -245,6 +275,12 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/session", { timeout: 20_
     const res = await POST(post(big));
     expect(res.status).toBe(413);
     expect(await res.json()).toEqual({ error: "Request too large" });
+  });
+});
+
+describe("session route config", () => {
+  it("has a 30 s maxDuration", () => {
+    expect(maxDuration).toBe(30);
   });
 });
 

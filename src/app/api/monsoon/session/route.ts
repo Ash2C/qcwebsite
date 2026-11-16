@@ -3,6 +3,7 @@ import { SESSION_COOKIE, SESSION_SECONDS, accountsConfigured, signSession } from
 import { buildAccount } from "@/lib/monsoon/accounts/account";
 import { DUMMY_PASSCODE_HASH, hashAddress, verifyPasscode } from "@/lib/monsoon/accounts/crypto";
 import {
+  evictAccount,
   failuresSince,
   findCustomerByCode,
   loadAccountRows,
@@ -17,8 +18,11 @@ import { ensureOwner } from "@/lib/monsoon/owners";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 30;
 
 const FAILURE_DELAY_MS = 1000;
+// Adding the owner key to every CRM must never hold sign-in past this (the client gives up at 15 s).
+const ENSURE_CAP_MS = 2000;
 const MAX_BODY = 4096;
 const MAX_CODE = 64;
 const WINDOW_MS = 15 * 60 * 1000;
@@ -74,6 +78,16 @@ async function signIn(code: string, passcode: string, addressHash: string): Prom
   });
 }
 
+/** Waits for `work` but never longer than `ms`; the work carries on (and logs its own errors). */
+async function capped(work: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([work, new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Best effort: a CRM (or the accounts database) that cannot be reached must not block sign-in. */
 async function ensureOwnerEverywhere(customerId: string, person: PersonRow): Promise<void> {
   const log = (err: unknown) => console.error("monsoon: ensureOwner failed", errorClass(err));
@@ -113,7 +127,9 @@ export async function POST(request: Request) {
   if (outcome.kind === "wrong") return failAfterDelay(WRONG, 401);
 
   const { customer, person } = outcome;
-  await ensureOwnerEverywhere(customer.id, person);
+  // A cached row may carry the session number from before a passcode reset or resume.
+  evictAccount(customer.id, person.id);
+  await capped(ensureOwnerEverywhere(customer.id, person), ENSURE_CAP_MS);
   await recordActivity({ customerId: customer.id, personId: person.id, pipelineKey: null, action: "sign_in" });
 
   const response = NextResponse.json({ ok: true });

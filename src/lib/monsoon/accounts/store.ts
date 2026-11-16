@@ -123,6 +123,11 @@ export function clearAccountCache(): void {
   cache.clear();
 }
 
+/** Drops one person's cached rows, so the next lookup reads the database (after a fresh sign-in). */
+export function evictAccount(customerId: string, personId: string): void {
+  cache.delete(`${customerId}:${personId}`);
+}
+
 /** Cached for 60 seconds per customer and person. The cache holds encrypted strings only. */
 export async function loadAccountRows(customerId: string, personId: string): Promise<AccountRows | null> {
   const key = `${customerId}:${personId}`;
