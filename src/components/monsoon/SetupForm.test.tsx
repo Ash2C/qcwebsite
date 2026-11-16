@@ -66,6 +66,22 @@ describe("SetupForm", () => {
     expect(screen.getByLabelText("Pooler host")).toBeInTheDocument();
   });
 
+  it("a connect link with a Claude key on file lets the key be left blank", () => {
+    render(<SetupForm token={TOKEN} purpose="connect" claudeKeyOnFile />);
+    expect(screen.getByLabelText("Claude API key")).not.toBeRequired();
+    expect(screen.getByLabelText("Claude API key")).toHaveAttribute(
+      "placeholder",
+      "Leave blank to keep the Claude key already on file",
+    );
+    expect(screen.getByText("Leave blank to keep the Claude key already on file.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Project reference")).toBeRequired();
+  });
+
+  it("a connect link without a key on file still requires it", () => {
+    render(<SetupForm token={TOKEN} purpose="connect" />);
+    expect(screen.getByLabelText("Claude API key")).toBeRequired();
+  });
+
   it("replace links make every field optional", () => {
     render(<SetupForm token={TOKEN} purpose="replace" />);
     expect(screen.getByLabelText("Claude API key")).not.toBeRequired();

@@ -18,6 +18,7 @@ import { readJson } from "@/lib/monsoon/body";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const MAX_BODY = 4096;
 const MAX_ATTEMPTS = SETUP_MAX_ATTEMPTS;
@@ -59,6 +60,7 @@ type Link = {
   pipelineId: string | null;
   pipelineKey: string | null;
   defaultRole: string | null;
+  claudeKeyOnFile: boolean;
   purpose: "connect" | "replace";
 };
 
@@ -70,7 +72,8 @@ async function claimAttempt(tokenHash: string): Promise<Link | "expired" | "too_
         WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() AND attempts < $2
         RETURNING l.id, l.customer_id, l.pipeline_id, l.purpose,
                   (SELECT p.key FROM pipelines p WHERE p.id = l.pipeline_id AND p.customer_id = l.customer_id) AS pipeline_key,
-                  (SELECT p.default_role FROM pipelines p WHERE p.id = l.pipeline_id AND p.customer_id = l.customer_id) AS default_role`,
+                  (SELECT p.default_role FROM pipelines p WHERE p.id = l.pipeline_id AND p.customer_id = l.customer_id) AS default_role,
+                  (SELECT c.claude_key_enc IS NOT NULL FROM customers c WHERE c.id = l.customer_id) AS claude_key_on_file`,
       [tokenHash, MAX_ATTEMPTS],
     );
     if (r.rowCount === 1) {
@@ -81,6 +84,7 @@ async function claimAttempt(tokenHash: string): Promise<Link | "expired" | "too_
         pipelineId: row.pipeline_id,
         pipelineKey: row.pipeline_key,
         defaultRole: row.default_role,
+        claudeKeyOnFile: row.claude_key_on_file === true,
         purpose: row.purpose,
       };
     }
@@ -166,7 +170,8 @@ export async function POST(request: Request): Promise<Response> {
   const wantsDb = input.projectRef !== "" || input.poolerHost !== "" || input.password !== "";
   const claudeKey = input.claudeKey === "" ? null : input.claudeKey;
   if (link.purpose === "connect") {
-    if (claudeKey === null) return failed("claude_key");
+    // Blank is allowed when the customer's key is already stored (a second pipeline): it is kept.
+    if (claudeKey === null && !link.claudeKeyOnFile) return failed("claude_key");
     if (!wantsDb) return failed("connect");
   } else if (!wantsDb && claudeKey === null) {
     return invalid();

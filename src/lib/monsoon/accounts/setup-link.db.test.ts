@@ -65,7 +65,21 @@ describe.skipIf(!accounts.available)("loadSetupPage", () => {
   });
 
   it("shows no script for a replace link", async () => {
-    expect(await loadSetupPage(await link({ purpose: "replace" }))).toEqual({ kind: "ok", purpose: "replace", script: null });
+    expect(await loadSetupPage(await link({ purpose: "replace" }))).toEqual({
+      kind: "ok",
+      purpose: "replace",
+      script: null,
+      claudeKeyOnFile: false,
+    });
+  });
+
+  it("says whether a Claude key is already on file", async () => {
+    const before = await loadSetupPage(await link());
+    expect(before.kind === "ok" && before.claudeKeyOnFile).toBe(false);
+    await client.query("UPDATE customers SET claude_key_enc = 'k1.a.b.c' WHERE id = $1", [cid]);
+    const after = await loadSetupPage(await link());
+    expect(after.kind === "ok" && after.claudeKeyOnFile).toBe(true);
+    expect(JSON.stringify(after)).not.toContain("k1.");
   });
 
   it("does not consume the link or count an attempt", async () => {

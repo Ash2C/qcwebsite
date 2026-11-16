@@ -56,7 +56,7 @@ export default async function SetupLinkPage({ params }: { params: Promise<{ toke
             <li>Enter the monsoon_app password you chose and your Claude API key, then test and connect.</li>
           </ol>
           {page.script && <SetupScript script={page.script} />}
-          <SetupForm token={token} purpose="connect" />
+          <SetupForm token={token} purpose="connect" claudeKeyOnFile={page.claudeKeyOnFile} />
         </>
       )}
     </main>

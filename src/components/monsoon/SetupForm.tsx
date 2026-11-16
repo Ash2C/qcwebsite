@@ -15,12 +15,24 @@ const ROWS: { key: keyof Fields; label: string; type: "text" | "password"; place
   { key: "claudeKey", label: "Claude API key", type: "password" },
 ];
 
-export default function SetupForm({ token, purpose }: { token: string; purpose: "connect" | "replace" }) {
+const KEEP_KEY = "Leave blank to keep the Claude key already on file";
+
+export default function SetupForm({
+  token,
+  purpose,
+  claudeKeyOnFile = false,
+}: {
+  token: string;
+  purpose: "connect" | "replace";
+  claudeKeyOnFile?: boolean;
+}) {
   const [fields, setFields] = useState<Fields>(EMPTY);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [done, setDone] = useState(false);
   const optional = purpose === "replace";
+  // A second pipeline's connect link: the customer's Claude key is already stored.
+  const keepKey = purpose === "connect" && claudeKeyOnFile;
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -58,6 +70,7 @@ export default function SetupForm({ token, purpose }: { token: string; purpose: 
               Leave blank to keep the current one. To change the database, fill in all three database fields.
             </p>
           )}
+          {keepKey && <p className="text-[15px] text-neutral-600 dark:text-neutral-400">{KEEP_KEY}.</p>}
           <div className={`${card} divide-y divide-black/5 dark:divide-white/10`}>
             {ROWS.map((row) => (
               <div key={row.key}>
@@ -72,8 +85,14 @@ export default function SetupForm({ token, purpose }: { token: string; purpose: 
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck={false}
-                  required={!optional}
-                  placeholder={optional ? "Leave blank to keep the current one" : row.placeholder}
+                  required={!optional && !(keepKey && row.key === "claudeKey")}
+                  placeholder={
+                    optional
+                      ? "Leave blank to keep the current one"
+                      : keepKey && row.key === "claudeKey"
+                        ? KEEP_KEY
+                        : row.placeholder
+                  }
                   value={fields[row.key]}
                   onChange={(ev) => setFields((f) => ({ ...f, [row.key]: ev.target.value }))}
                   className={fieldInput}

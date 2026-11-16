@@ -5,7 +5,7 @@ import { ensureAnonRole, makeAccountsTestDb, makeTestDb, testRoleName } from "@/
 import { decryptSecret, hashToken, newToken } from "@/lib/monsoon/accounts/crypto";
 import { loginAndPoliciesScript } from "@/lib/monsoon/accounts/setup-script";
 import { runSetupChecks } from "@/lib/monsoon/accounts/setup-check";
-import { POST } from "./route";
+import { POST, maxDuration } from "./route";
 
 const h = vi.hoisted(() => ({ create: vi.fn(), crmUrl: "" }));
 
@@ -254,6 +254,27 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/setup", { timeout: 30_00
     await expectNothingStored();
   });
 
+  it("a connect link for a customer with a Claude key on file may leave the key blank: kept, not re-checked", async () => {
+    await client.query("UPDATE customers SET claude_key_enc = 'k1.kept.on.file' WHERE id = $1", [cid]);
+    const { status, json } = await send(body({ claudeKey: "" }));
+    expect(status).toBe(200);
+    expect(json).toEqual({ ok: true, message: SUCCESS });
+    expect(h.create).not.toHaveBeenCalled();
+    const s = await stored();
+    expect(s.claudeKeyEnc).toBe("k1.kept.on.file");
+    expect(s.dbUrlEnc).toMatch(/^k1\./);
+    expect(s.usedAt).not.toBeNull();
+  });
+
+  it("a connect link with a key on file still checks and stores a new key when one is entered", async () => {
+    await client.query("UPDATE customers SET claude_key_enc = 'k1.kept.on.file' WHERE id = $1", [cid]);
+    const { status } = await send(body());
+    expect(status).toBe(200);
+    expect(h.create).toHaveBeenCalled();
+    const s = await stored();
+    expect(decryptSecret(s.claudeKeyEnc, cid, "claude_key")).toBe(KEY);
+  });
+
   it("address: a host that isn't a pooler", async () => {
     const { status, json } = await send(body({ poolerHost: "db.example.com" }));
     expect(status).toBe(422);
@@ -354,5 +375,11 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/setup", { timeout: 30_00
 
   beforeEach(() => {
     vi.mocked(runSetupChecks).mockClear();
+  });
+});
+
+describe("setup route config", () => {
+  it("has a 60 s maxDuration", () => {
+    expect(maxDuration).toBe(60);
   });
 });
