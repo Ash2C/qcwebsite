@@ -46,11 +46,19 @@ DECLARE
   -- Put your own password between the quotes on the next line (at least 16 characters).
   pw text := ${lit(PASSWORD_PLACEHOLDER)};
 BEGIN
-  IF pw LIKE 'REPLACE-%' OR length(pw) < 16 THEN
+  IF pw IS NULL OR pw LIKE 'REPLACE-%' OR length(pw) < 16 THEN
     RAISE EXCEPTION 'Set your own password for ${role} on the marked line, then run the script again.';
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ${lit(role)}) THEN
-    EXECUTE format('ALTER ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT PASSWORD %L', ${lit(role)}, pw);
+    IF EXISTS (
+      SELECT 1 FROM pg_roles r
+       WHERE r.rolname = ${lit(role)}
+         AND (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolbypassrls OR r.rolreplication OR r.rolinherit
+              OR EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.member = r.oid))
+    ) THEN
+      RAISE EXCEPTION 'The existing ${role} login has extra access. Drop it or clean it up first, then run the script again.';
+    END IF;
+    EXECUTE format('ALTER ROLE %I PASSWORD %L', ${lit(role)}, pw);
   ELSE
     EXECUTE format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT PASSWORD %L', ${lit(role)}, pw);
   END IF;
@@ -58,7 +66,7 @@ END
 $$;
 
 GRANT USAGE ON SCHEMA public TO ${role};
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO ${role};
+REVOKE ALL ON ${ALL_TABLES.join(", ")} FROM ${role};
 GRANT SELECT ON ${ALL_TABLES.join(", ")} TO ${role};
 GRANT INSERT ON ${INSERT_TABLES.join(", ")} TO ${role};
 GRANT UPDATE ON ${UPDATE_TABLES.join(", ")} TO ${role};

@@ -44,6 +44,7 @@ describe.skipIf(!testDb.available)("Setup script and restricted login (real Post
   const setupDb = makeTestDb("setup");
   const roleA = testRoleName();
   const roleB = `${testRoleName()}_b`;
+  const roleOwner = `${testRoleName()}_owner`;
   let password: string;
   let admin: Client;
 
@@ -52,9 +53,12 @@ describe.skipIf(!testDb.available)("Setup script and restricted login (real Post
     for (const db of [setupDb, testDb]) {
       const c = await db.connect();
       try {
-        for (const r of [roleA, roleB]) {
+        for (const r of [roleA, roleB, roleOwner]) {
           const found = await c.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [r]);
-          if (found.rowCount) await c.query(`DROP OWNED BY ${r}`);
+          if (found.rowCount) {
+            await c.query("ALTER SCHEMA public OWNER TO CURRENT_USER");
+            await c.query(`DROP OWNED BY ${r}`);
+          }
         }
       } finally {
         await c.end();
@@ -62,7 +66,7 @@ describe.skipIf(!testDb.available)("Setup script and restricted login (real Post
     }
     const c = await setupDb.connect();
     try {
-      for (const r of [roleA, roleB]) await c.query(`DROP ROLE IF EXISTS ${r}`);
+      for (const r of [roleA, roleB, roleOwner]) await c.query(`DROP ROLE IF EXISTS ${r}`);
     } finally {
       await c.end();
     }
@@ -89,7 +93,7 @@ describe.skipIf(!testDb.available)("Setup script and restricted login (real Post
     await dropRoles();
     // The setup script builds the schema itself, so start the setup database empty.
     const c = await setupDb.connect();
-    await c.query("DROP SCHEMA public CASCADE");
+    await c.query("DROP SCHEMA IF EXISTS public CASCADE");
     await c.query("CREATE SCHEMA public");
     await c.end();
     admin = await setupDb.connect();
@@ -210,6 +214,85 @@ describe.skipIf(!testDb.available)("Setup script and restricted login (real Post
       expect(await code(c, "UPDATE stages SET label = 'x'")).toBe("42501");
       expect(await code(c, "INSERT INTO stages (key, ord, label) VALUES ('z', 9, 'z')")).toBe("42501");
       expect(await code(c, "CREATE TABLE evil (id int)")).toBeDefined();
+    } finally {
+      await c.end();
+    }
+  });
+
+  // A role shaped like Supabase's `postgres`: not a superuser, but may create roles and bypass RLS.
+  async function makeOwner(db: typeof setupDb, ownTables: boolean): Promise<Client> {
+    const a = await db.connect();
+    try {
+      const found = await a.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [roleOwner]);
+      if (!found.rowCount) await a.query(`CREATE ROLE ${roleOwner} LOGIN NOSUPERUSER CREATEROLE CREATEDB BYPASSRLS REPLICATION PASSWORD '${password}'`);
+      // Supabase projects ship with pgcrypto installed, so the script's IF NOT EXISTS skips it.
+      await a.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+      await a.query(`ALTER SCHEMA public OWNER TO ${roleOwner}`);
+      if (ownTables) {
+        const t = await a.query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'");
+        for (const r of t.rows) await a.query(`ALTER TABLE public.${r.tablename} OWNER TO ${roleOwner}`);
+      }
+    } finally {
+      await a.end();
+    }
+    return asRole(db, roleOwner);
+  }
+
+  it("runs, and re-runs, as a non-superuser owner like Supabase's postgres", async () => {
+    const o = await makeOwner(setupDb, false);
+    try {
+      const script = withPassword(generateSetupScript({ ...vocabulary, roleName: roleA }));
+      await o.query(script);
+      await o.query(script);
+      expect(await code(await asRole(setupDb, roleA), "DELETE FROM touches")).toBe("42501");
+    } finally {
+      await o.end();
+    }
+  });
+
+  it("loginAndPoliciesScript runs, and re-runs, as a non-superuser owner", async () => {
+    const o = await makeOwner(testDb, true);
+    try {
+      const script = withPassword(loginAndPoliciesScript(roleB));
+      await o.query(script);
+      await o.query(script);
+      const c = await asRole(testDb, roleB);
+      try {
+        expect(await code(c, "DELETE FROM touches")).toBe("42501");
+      } finally {
+        await c.end();
+      }
+    } finally {
+      await o.end();
+    }
+  });
+
+  it("refuses a null password", async () => {
+    const script = generateSetupScript({ ...vocabulary, roleName: roleA }).replace(`'${PLACEHOLDER}'`, "NULL");
+    await expect(admin.query(script)).rejects.toThrow(/Set your own password/);
+  });
+
+  it("refuses a pre-existing login that is a member of another role, and changes nothing", async () => {
+    await admin.query(`CREATE ROLE ${roleA} LOGIN PASSWORD 'old-password-123456'`);
+    await admin.query(`GRANT pg_read_all_data TO ${roleA}`);
+    await expect(admin.query(withPassword(generateSetupScript({ ...vocabulary, roleName: roleA })))).rejects.toThrow(/extra access/);
+    await admin.query("ROLLBACK").catch(() => undefined);
+    expect((await admin.query("SELECT to_regclass('public.orgs') AS t")).rows[0].t).toBeNull();
+  });
+
+  it("refuses a pre-existing login with extra attributes", async () => {
+    await admin.query(`CREATE ROLE ${roleA} LOGIN REPLICATION NOINHERIT PASSWORD 'old-password-123456'`);
+    await expect(admin.query(withPassword(generateSetupScript({ ...vocabulary, roleName: roleA })))).rejects.toThrow(/extra access/);
+  });
+
+  it("a re-run removes a stale extra grant", async () => {
+    const script = withPassword(generateSetupScript({ ...vocabulary, roleName: roleA }));
+    await admin.query(script);
+    await admin.query(`GRANT DELETE ON touches TO ${roleA}`);
+    await admin.query(script);
+    const c = await asRole(setupDb, roleA);
+    try {
+      expect(await code(c, "DELETE FROM touches")).toBe("42501");
     } finally {
       await c.end();
     }
