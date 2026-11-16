@@ -13,10 +13,12 @@ export type SetupVocabulary = {
 const DEFAULT_ROLE = "monsoon_app";
 const PASSWORD_PLACEHOLDER = "REPLACE-WITH-A-PASSWORD-OF-AT-LEAST-16-CHARACTERS";
 
-const ALL_TABLES = [
+/** The eleven Monsoon CRM tables. */
+export const MONSOON_TABLES: readonly string[] = [
   "schema_migrations", "stages", "roles", "owners", "orgs", "people",
   "members", "touches", "tags", "member_tags", "captures",
 ];
+const ALL_TABLES = MONSOON_TABLES;
 const INSERT_TABLES = ["orgs", "people", "members", "touches", "captures", "owners"];
 const UPDATE_TABLES = ["orgs", "people", "members", "touches"];
 

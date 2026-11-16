@@ -40,6 +40,15 @@ export function testRoleName(): string {
   return `monsoon_app_w${POOL_ID}`;
 }
 
+/** Creates Supabase's `anon` role once per cluster; parallel workers may race, so duplicates are fine. */
+export async function ensureAnonRole(c: Client): Promise<void> {
+  try {
+    await c.query("DO $$ BEGIN CREATE ROLE anon NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$");
+  } catch (err) {
+    if ((err as { code?: string }).code !== "23505") throw err;
+  }
+}
+
 async function ensureDatabase(dbName: string): Promise<void> {
   if (!dbName.includes("test")) throw new Error("refusing to use a database whose name lacks 'test'");
   const admin = new Client({ connectionString: ADMIN_URL, connectionTimeoutMillis: 3000 });
