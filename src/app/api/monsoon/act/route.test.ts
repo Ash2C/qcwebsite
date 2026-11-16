@@ -14,6 +14,10 @@ const applyResearch = vi.fn();
 vi.mock("@/lib/monsoon/research-apply", () => ({
   applyResearch: (...args: unknown[]) => applyResearch(...args),
 }));
+const ensureOwner = vi.fn();
+vi.mock("@/lib/monsoon/owners", () => ({
+  ensureOwner: (...args: unknown[]) => ensureOwner(...args),
+}));
 vi.mock("@/lib/monsoon/accounts/account", async () =>
   (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
 );

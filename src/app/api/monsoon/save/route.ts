@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
 import { readJson } from "@/lib/monsoon/body";
 import { capture, type CaptureInput, type CaptureKind } from "@/lib/monsoon/capture";
+import { ensureOwner } from "@/lib/monsoon/owners";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -74,7 +75,11 @@ export async function POST(request: Request) {
   };
 
   try {
-    const result = await account.withDb(estate.key, (db) => capture(db, input, account.person.ownerKey));
+    const result = await account.withDb(estate.key, async (db) => {
+      // The owner key may never have reached this CRM (connected after sign-in, or that ensure failed).
+      await ensureOwner(db, account.person.ownerKey, account.person.name);
+      return capture(db, input, account.person.ownerKey);
+    });
     // Only a save that wrote something counts as activity.
     if (result.outcome === "added" || result.outcome === "existing" || result.outcome === "filed") {
       await account.record(b.batch === true ? "batch_save" : "capture", estate.key);

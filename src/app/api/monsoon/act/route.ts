@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { ensureOwner } from "@/lib/monsoon/owners";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
 import type { ActivityAction } from "@/lib/monsoon/accounts/store";
 import { addNote, moveStage } from "@/lib/monsoon/ask/actions";
@@ -79,6 +80,8 @@ export async function POST(request: Request) {
   try {
     const owner = account.person.ownerKey;
     const result = await account.withDb(estate.key, async (db) => {
+      // The owner key may never have reached this CRM (connected after sign-in, or that ensure failed).
+      await ensureOwner(db, owner, account.person.name);
       if (proposal.kind === "add_note") {
         try {
           const { status } = await addNote(db, proposal.memberId, text, owner);

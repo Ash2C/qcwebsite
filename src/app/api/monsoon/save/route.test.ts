@@ -6,6 +6,10 @@ vi.mock("@/lib/monsoon/capture", () => ({
   capture: (...args: unknown[]) => capture(...args),
 }));
 
+const ensureOwner = vi.fn();
+vi.mock("@/lib/monsoon/owners", () => ({
+  ensureOwner: (...args: unknown[]) => ensureOwner(...args),
+}));
 vi.mock("@/lib/monsoon/accounts/account", async () =>
   (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
 );
