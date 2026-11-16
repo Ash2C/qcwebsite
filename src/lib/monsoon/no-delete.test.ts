@@ -110,10 +110,14 @@ const PRUNE_STATEMENT = "DELETE FROM sign_in_attempts WHERE at < now() - interva
 const PRUNE_LITERALS = ["\"", "`"].map((q) => q + PRUNE_STATEMENT + q);
 
 // The setup check's probe: a delete that matches nothing, inside a transaction that is always rolled
-// back, run to prove the restricted login is refused (42501). Also the privilege name 'TRUNCATE' as a
-// SQL string literal passed to has_table_privilege. Allowed by file AND exact literal only.
+// back, run to prove the restricted login is refused (42501). Also the whole has_table_privilege(...)
+// call that asks whether TRUNCATE is granted. Allowed by file AND exact expression only: the bare
+// keyword is never exempt, so a statement composed from it is still flagged.
 const PROBE_FILE = "lib/monsoon/accounts/setup-check.ts";
-const PROBE_LITERALS = ['"DELETE FROM touches WHERE false"', "'TRUNCATE'"];
+const PROBE_LITERALS = [
+  '"DELETE FROM touches WHERE false"',
+  "has_table_privilege($1, 'public.' || quote_ident(t.name), 'TRUNCATE')",
+];
 
 function violations(source: string, file?: string): string[] {
   if (file === PRUNE_FILE) for (const lit of PRUNE_LITERALS) source = source.split(lit).join(" ");
@@ -265,7 +269,7 @@ describe("never delete", () => {
 
   it("allows only the setup probe and the TRUNCATE privilege name, and only in accounts/setup-check.ts", () => {
     const probe = 'await db.query("DELETE FROM touches WHERE false");';
-    const priv = "has_table_privilege($1, t, 'TRUNCATE')";
+    const priv = "has_table_privilege($1, 'public.' || quote_ident(t.name), 'TRUNCATE')";
     expect(violations(probe, PROBE_FILE)).toEqual([]);
     expect(violations(priv, PROBE_FILE)).toEqual([]);
     expect(violations(probe, "lib/monsoon/capture.ts")).toContain("DELETE FROM");
@@ -273,6 +277,9 @@ describe("never delete", () => {
     expect(violations('await db.query("DELETE FROM touches WHERE true");', PROBE_FILE)).toContain("DELETE FROM");
     expect(violations('await db.query("DELETE FROM touches WHERE false OR true");', PROBE_FILE)).toContain("DELETE FROM");
     expect(violations('await db.query("TRUNCATE touches");', PROBE_FILE)).toContain("TRUNCATE");
+    expect(violations("await db.query('TRUNCATE' + ' touches');", PROBE_FILE)).toContain("TRUNCATE");
+    expect(violations("await db.query(`${'TRUNCATE'} touches`);", PROBE_FILE)).toContain("TRUNCATE");
+    expect(violations("has_table_privilege($1, t, 'TRUNCATE')", PROBE_FILE)).toContain("TRUNCATE");
     expect(violations(probe, PRUNE_FILE)).toContain("DELETE FROM");
   });
 
