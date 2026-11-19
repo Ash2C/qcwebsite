@@ -4,7 +4,7 @@
 
 **Goal:** Turn Monsoon from Vincent's single-passcode app into a multi-customer app where each firm signs in with a company code and personal passcode, and Monsoon works against that firm's own Supabase database and Claude key, held encrypted in a separate accounts database.
 
-**Architecture:** A new accounts database (Supabase project `aiqjtpodocvzyizjsige`, us-east-1) holds customers, people, pipelines, setup links, sign-in attempts and an activity log; credentials are AES-256-GCM encrypted under `MONSOON_MASTER_KEY`. Every route resolves an `Account` (customer + person + pipelines) from a `v2` session cookie and gets its CRM connection and Claude client from that account only. Customers connect through a one-time setup link and a generated SQL script that creates a restricted `monsoon_app` login; Vincent manages customers with a `tsx` command-line tool.
+**Architecture:** A new accounts database (Supabase project `<accounts-project-ref>`, us-east-1) holds customers, people, pipelines, setup links, sign-in attempts and an activity log; credentials are AES-256-GCM encrypted under `MONSOON_MASTER_KEY`. Every route resolves an `Account` (customer + person + pipelines) from a `v2` session cookie and gets its CRM connection and Claude client from that account only. Customers connect through a one-time setup link and a generated SQL script that creates a restricted `monsoon_app` login; Vincent manages customers with a `tsx` command-line tool.
 
 **Tech Stack:** Next.js 15 (App Router, Node runtime), TypeScript, `pg`, `@anthropic-ai/sdk`, Node `crypto`, vitest + local Docker Postgres (`monsoon-test`, port 55433), `tsx` for the admin tool.
 
@@ -14,7 +14,7 @@
 
 - Work in a clean git worktree on branch `monsoon-customers` (the main checkout's untracked folders break `tsc`, `vitest` and `next build`). Run `docker start monsoon-test` before database tests.
 - Never echo a credential, connection string, note text, question or contact data in a response, log line or thrown message. Log lines carry error class name, Postgres code (5 chars) and HTTP status only — the existing pattern.
-- Accounts database: `MONSOON_ACCOUNTS_DATABASE_URL` (server); on Vincent's PC the admin tool reads `~/.quantcloud/monsoon-accounts.env` (`MONSOON_ACCOUNTS_DB_PASSWORD`, `MONSOON_ACCOUNTS_DB_REF=aiqjtpodocvzyizjsige`, `MONSOON_ACCOUNTS_DB_HOST=aws-1-us-east-1.pooler.supabase.com`, `MONSOON_ACCOUNTS_DB_PORT=6543`) and builds the URL with user `postgres.<ref>`.
+- Accounts database: `MONSOON_ACCOUNTS_DATABASE_URL` (server); on Vincent's PC the admin tool reads `~/.quantcloud/monsoon-accounts.env` (`MONSOON_ACCOUNTS_DB_PASSWORD`, `MONSOON_ACCOUNTS_DB_REF=<accounts-project-ref>`, `MONSOON_ACCOUNTS_DB_HOST=<accounts-pooler-host>`, `MONSOON_ACCOUNTS_DB_PORT=6543`) and builds the URL with user `postgres.<ref>`.
 - `MONSOON_MASTER_KEY`: 32 random bytes, base64. Exists only in Vercel settings and in test env stubs. The admin tool never reads it.
 - Session cookie: `v2.<customer uuid>.<person uuid>.<session number>.<expiry>.<hmac>`, HttpOnly, Secure, SameSite=Strict, 180 days (`SESSION_SECONDS = 15552000`). `v1` refused.
 - Sign-in limits: 5 failures / 15 min per (company code, network address) → that pair locked 15 min; 50 failures / 15 min per company code → code locked 15 min. Locked answer: `Wrong company code or passcode. Try again later.` (status 429). Wrong answer: `Wrong company code or passcode.` (401).
@@ -135,7 +135,7 @@
 - Produces: `buildPoolerUrl(input: { projectRef: string; poolerHost: string; password: string }): string` (throws `AddressError("bad_ref" | "bad_host" | "bad_password")`); `assertAllowedDbUrl(url: string): void` (throws `AddressError("not_allowed")`).
 - Produces: `withPipelineDb<T>(dbUrl: string, fn: (db: Client) => Promise<T>): Promise<T>` — calls `assertAllowedDbUrl` first, then the existing connect/end logic.
 
-- [ ] **Step 1:** Tests: accepts `aws-1-us-east-1.pooler.supabase.com:6543`; rejects `db.x.supabase.co`, `evil.com`, `pooler.supabase.com.evil.com`, `10.0.0.1`, port 5433, `localhost` (unless `MONSOON_ALLOW_LOCAL_DB=1` and `NODE_ENV=test`, and still rejected when `NODE_ENV=production`); `buildPoolerUrl` URL-encodes `p@ss:/word` and uses user `monsoon_app.<ref>`; ref `ABC` → `bad_ref`; error messages never contain the password.
+- [ ] **Step 1:** Tests: accepts `<accounts-pooler-host>:6543`; rejects `db.x.supabase.co`, `evil.com`, `pooler.supabase.com.evil.com`, `10.0.0.1`, port 5433, `localhost` (unless `MONSOON_ALLOW_LOCAL_DB=1` and `NODE_ENV=test`, and still rejected when `NODE_ENV=production`); `buildPoolerUrl` URL-encodes `p@ss:/word` and uses user `monsoon_app.<ref>`; ref `ABC` → `bad_ref`; error messages never contain the password.
 - [ ] **Step 2:** Run — FAIL.
 - [ ] **Step 3:** Implement; set `MONSOON_ALLOW_LOCAL_DB=1` in `vitest.config.ts` `test.env`.
 - [ ] **Step 4:** Run — PASS.
@@ -323,7 +323,7 @@
 
 No code; each step has a check. Vincent's sign-in is down only between steps 5 and 7 (minutes).
 
-- [ ] **Step 1:** From the worktree: `npm run monsoon:admin migrate` → accounts tables exist on `aiqjtpodocvzyizjsige`.
+- [ ] **Step 1:** From the worktree: `npm run monsoon:admin migrate` → accounts tables exist on `<accounts-project-ref>`.
 - [ ] **Step 2:** `customer add quantcloud "Quantcloud"`; `person add quantcloud "Vincent" VF --passcode-from-env MONSOON_PASSCODE`; `pipeline add quantcloud traxo "Traxo" --default-role lp_prospect ...` and `zeroone "Zero One" --default-role investor ...` (stages/roles read from each live CRM with `crm_status`). Check: `status` lists both pipelines `not connected`.
 - [ ] **Step 3:** Vercel (production, sensitive): add `MONSOON_MASTER_KEY` (generated on the spot with `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` piped straight into `vercel env add`, never written to disk), `MONSOON_ACCOUNTS_DATABASE_URL`, `MONSOON_BOOTSTRAP_TOKEN` (random, kept in `monsoon-accounts.env` until step 7).
 - [ ] **Step 3a:** Confirm `MONSOON_DB_CA_CERT` is set in Vercel production (`vercel env ls production`, name only). The accounts database connects with verified TLS too, not only the CRMs, so without it every sign-in fails after the deploy.
