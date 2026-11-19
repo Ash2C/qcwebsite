@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/monsoon/auth";
+import { requireAccount } from "@/lib/monsoon/accounts/account";
 import { readJson } from "@/lib/monsoon/body";
 import { capture, type CaptureInput, type CaptureKind } from "@/lib/monsoon/capture";
-import { withEstateDb } from "@/lib/monsoon/db";
-import { estateByKey } from "@/lib/monsoon/estates";
+import { ensureOwner } from "@/lib/monsoon/owners";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,8 +20,9 @@ function str(value: unknown): string | undefined {
 }
 
 export async function POST(request: Request) {
-  const denied = requireSession(request);
-  if (denied) return denied;
+  const auth = await requireAccount(request);
+  if (!auth.ok) return auth.response;
+  const { account } = auth;
 
   const read = await readJson(request, MAX_BODY);
   if (!read.ok) {
@@ -34,7 +34,7 @@ export async function POST(request: Request) {
   if (typeof body !== "object" || body === null) return invalid("Invalid body");
   const b = body as Record<string, unknown>;
 
-  const estate = estateByKey(b.estate);
+  const estate = account.pipeline(b.estate);
   if (!estate) return invalid("Unknown estate");
   if (typeof b.fields !== "object" || b.fields === null || Array.isArray(b.fields)) {
     return invalid("fields must be an object");
@@ -75,7 +75,15 @@ export async function POST(request: Request) {
   };
 
   try {
-    const result = await withEstateDb(estate, (db) => capture(db, input));
+    const result = await account.withDb(estate.key, async (db) => {
+      // The owner key may never have reached this CRM (connected after sign-in, or that ensure failed).
+      await ensureOwner(db, account.person.ownerKey, account.person.name);
+      return capture(db, input, account.person.ownerKey);
+    });
+    // Only a save that wrote something counts as activity.
+    if (result.outcome === "added" || result.outcome === "existing" || result.outcome === "filed") {
+      await account.record(b.batch === true ? "batch_save" : "capture", estate.key);
+    }
     return NextResponse.json(result, {
       status: result.outcome === "invalid" ? 400 : 200,
     });

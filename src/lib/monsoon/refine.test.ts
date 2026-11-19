@@ -1,18 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const create = vi.fn();
-const ctorOptions: unknown[] = [];
-vi.mock("@anthropic-ai/sdk", () => ({
-  default: class {
-    constructor(options?: unknown) {
-      ctorOptions.push(options);
-      if (!process.env.ANTHROPIC_API_KEY) throw new Error("missing api key");
-    }
-    messages = { create: (...args: unknown[]) => create(...args) };
-  },
-}));
+const client = { messages: { create: (...args: unknown[]) => create(...args) } } as unknown as Anthropic;
 
-import { refineContact, type RefineInput } from "./refine";
+import type Anthropic from "@anthropic-ai/sdk";
+import { refineContact as refine, type RefineInput } from "./refine";
+
+const refineContact = (input: RefineInput) => refine(client, "claude-haiku-5-5", input);
 
 const FIELDS = {
   name: "Jane Tan",
@@ -41,16 +35,12 @@ const model = (over: Record<string, string> = {}) => ({
 
 beforeEach(() => {
   create.mockReset();
-  vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
-  vi.stubEnv("MONSOON_MODEL", "");
 });
-afterEach(() => vi.unstubAllEnvs());
 
 describe("refineContact", () => {
   it("sends a structured-output request with no tools and the data as JSON", async () => {
     create.mockResolvedValue(reply(model()));
     await refineContact(INPUT);
-    expect(ctorOptions.at(-1)).toEqual({ timeout: 25_000, maxRetries: 0 });
     const req = create.mock.calls[0][0];
     expect(req.model).toBe("claude-haiku-5-5");
     expect(req.max_tokens).toBe(8192);
@@ -148,9 +138,4 @@ describe("refineContact", () => {
     await expect(refineContact(INPUT)).rejects.toThrow();
   });
 
-  it.each(["claude-opus-5-5", "claude-fable-5-2"])("rejects %s before calling the model", async (id) => {
-    vi.stubEnv("MONSOON_MODEL", id);
-    await expect(refineContact(INPUT)).rejects.toThrow("Opus or Fable");
-    expect(create).not.toHaveBeenCalled();
-  });
 });

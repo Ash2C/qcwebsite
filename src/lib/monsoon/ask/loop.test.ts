@@ -9,7 +9,7 @@ vi.mock("./tools", async (orig) => ({
   runTool: (...a: unknown[]) => runTool(...a),
 }));
 
-import { buildSystem, resolveAskModel, runAsk, type AskMessage, type ModelClient } from "./loop";
+import { buildSystem, runAsk, type AskMessage, type ModelClient } from "./loop";
 
 const VOCAB = {
   stages: [
@@ -21,6 +21,8 @@ const VOCAB = {
   owners: [{ key: "VF", name: "Vincent" }],
 };
 const db = {} as ClientBase;
+const ANN = { name: "Ann Lee", ownerKey: "AL" };
+const CUSTOMER = "c0000000-0000-4000-8000-00000000000a";
 const Q: AskMessage[] = [{ role: "user", content: "who is Jane?" }];
 
 type Reply = { stop_reason: string | null; content: Array<{ type: string; [k: string]: unknown }> };
@@ -51,7 +53,19 @@ function setup(
     return next;
   });
   const client: ModelClient = { create };
-  const deps = { db, estate: "traxo" as const, estateLabel: "Traxo", today: "2026-11-13", client, now: clock, startedAt: extra.startedAt };
+  const deps = {
+    db,
+    customerId: CUSTOMER,
+    estate: "traxo",
+    estateLabel: "Traxo",
+    defaultRole: "lp_prospect",
+    person: ANN,
+    model: "claude-sonnet-5-5",
+    today: "2026-11-13",
+    client,
+    now: clock,
+    startedAt: extra.startedAt,
+  };
   return { calls, create, timeouts, run: (m: AskMessage[] = Q) => runAsk(deps, m) };
 }
 
@@ -60,7 +74,6 @@ const jane = { memberId: "m1", name: "Jane Tan", company: "Acme", kind: "person"
 beforeEach(() => {
   vocabulary.mockReset().mockResolvedValue(VOCAB);
   runTool.mockReset();
-  vi.stubEnv("MONSOON_ASK_MODEL", "");
 });
 afterEach(() => vi.unstubAllEnvs());
 
@@ -70,7 +83,7 @@ describe("runAsk", () => {
     const out = await s.run();
     expect(out).toEqual({ answer: "Jane is a partner at Acme.", refs: [], proposals: [] });
     const req = s.calls[0];
-    expect(req.model).toBe("claude-haiku-5-5");
+    expect(req.model).toBe("claude-sonnet-5-5");
     expect(req.max_tokens).toBe(4096);
     expect((req.tools as { name: string }[]).length).toBe(12);
     expect(req.tool_choice).toBeUndefined();
@@ -86,6 +99,7 @@ describe("runAsk", () => {
     expect(runTool).toHaveBeenCalledTimes(1);
     expect(runTool.mock.calls[0][1]).toBe("find_contacts");
     expect(runTool.mock.calls[0][2]).toEqual({ query: "jane" });
+    expect(runTool.mock.calls[0][0]).toMatchObject({ customerId: CUSTOMER, estate: "traxo", defaultRole: "lp_prospect" });
     expect(out.answer).toBe("Found her.");
     expect(out.refs).toEqual([jane]);
     const msgs = s.calls[1].messages as { role: string; content: unknown }[];
@@ -377,7 +391,7 @@ Jane and Li are due.
   });
 
   it("tells the model to offer research only when asked and never to state facts from its own knowledge", () => {
-    const sys = buildSystem("Traxo", VOCAB, "2026-11-14");
+    const sys = buildSystem("Traxo", VOCAB, "2026-11-14", ANN);
     expect(sys).toContain("propose_research");
     expect(sys).toMatch(/only when the user asks for research/);
     expect(sys).toMatch(/Never state facts about a person from your own knowledge/);
@@ -503,24 +517,13 @@ Jane and Li are due.
   });
 });
 
-describe("resolveAskModel", () => {
-  it("defaults, overrides, and refuses Opus and Fable", () => {
-    expect(resolveAskModel()).toBe("claude-haiku-5-5");
-    vi.stubEnv("MONSOON_ASK_MODEL", "claude-sonnet-5-5");
-    expect(resolveAskModel()).toBe("claude-sonnet-5-5");
-    vi.stubEnv("MONSOON_ASK_MODEL", "claude-opus-5-5");
-    expect(() => resolveAskModel()).toThrow();
-    vi.stubEnv("MONSOON_ASK_MODEL", "Claude-Fable-5-2");
-    expect(() => resolveAskModel()).toThrow();
-  });
-});
-
 describe("buildSystem", () => {
   it("states the date, estate, owner, stages, roles and owners", () => {
-    const s = buildSystem("Traxo", VOCAB, "2026-11-13");
+    const s = buildSystem("Traxo", VOCAB, "2026-11-13", ANN);
     expect(s).toContain("2026-11-13");
     expect(s).toContain("Traxo CRM");
-    expect(s).toContain("VF");
+    expect(s).toContain("You are talking to Ann Lee, whose owner key is AL.");
+    expect(s).toContain("(owner AL) plus unassigned ones");
     for (const k of ["contacted", "engaged", "passed"]) expect(s).toContain(k);
     expect(s).toContain("passed (Passed, terminal)");
     expect(s).toContain("investor");
@@ -542,5 +545,26 @@ describe("buildSystem", () => {
     expect(s).toContain("pass an empty string");
     expect(s).toContain("ask which one before using new_company");
     expect(s.split(/\s+/).length).toBeLessThan(560);
+  });
+
+  it("names the signed-in person, never Vincent or VF for anyone else", () => {
+    // Owners in the vocabulary are data the model may see; the instructions themselves name only the person.
+    const vocab = { ...VOCAB, owners: [{ key: "AL", name: "Ann Lee" }] };
+    const s = buildSystem("Main", vocab, "2026-11-13", ANN);
+    expect(s).not.toContain("Vincent");
+    expect(s).not.toMatch(/\bVF\b/);
+    expect(s).not.toMatch(/unless he says/);
+    const v = buildSystem("Main", VOCAB, "2026-11-13", { name: "Vincent", ownerKey: "VF" });
+    expect(v).toContain("You are talking to Vincent, whose owner key is VF.");
+  });
+
+  it("runAsk sends the system prompt built for the given person", async () => {
+    vocabulary.mockResolvedValue({ ...VOCAB, owners: [{ key: "AL", name: "Ann Lee" }] });
+    const s = setup([text("Hi.")]);
+    await s.run();
+    const system = s.calls[0].system as string;
+    expect(system).toContain("Ann Lee");
+    expect(system).toContain("AL");
+    expect(system).not.toContain("Vincent");
   });
 });

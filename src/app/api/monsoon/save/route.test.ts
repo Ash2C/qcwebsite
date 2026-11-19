@@ -1,26 +1,30 @@
+import type { MockInstance } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signSession } from "@/lib/monsoon/auth";
 
-const withEstateDb = vi.fn();
 const capture = vi.fn();
-vi.mock("@/lib/monsoon/db", () => ({
-  withEstateDb: (...args: unknown[]) => withEstateDb(...args),
-}));
 vi.mock("@/lib/monsoon/capture", () => ({
   capture: (...args: unknown[]) => capture(...args),
 }));
 
+const ensureOwner = vi.fn();
+vi.mock("@/lib/monsoon/owners", () => ({
+  ensureOwner: (...args: unknown[]) => ensureOwner(...args),
+}));
+vi.mock("@/lib/monsoon/accounts/account", async () =>
+  (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
+);
+import type { Account } from "@/lib/monsoon/accounts/account";
+import { fakeAccount, signInAs, signOut } from "@/lib/monsoon/testing/account";
 import { POST } from "./route";
 
 const CAPTURE_ID = "11111111-1111-4111-8111-111111111111";
 
-function post(body: unknown, authenticated = true): Request {
+function post(body: unknown): Request {
   return new Request("http://localhost/api/monsoon/save", {
     method: "POST",
     body: typeof body === "string" ? body : JSON.stringify(body),
     headers: {
       "Content-Type": "application/json",
-      ...(authenticated ? { Cookie: `monsoon_session=${signSession()}` } : {}),
     },
   });
 }
@@ -48,13 +52,18 @@ function validBody(overrides: Record<string, unknown> = {}) {
 }
 
 const fakeClient = { fake: true };
+const PIPELINES = [
+  { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", connected: true },
+  { key: "zeroone", label: "Zero One", defaultRole: "investor", connected: true },
+];
+let account: ReturnType<typeof fakeAccount>;
+let withDb: MockInstance<Account["withDb"]>;
 
 beforeEach(() => {
-  withEstateDb.mockReset();
   capture.mockReset();
-  withEstateDb.mockImplementation(async (_estate, fn) => fn(fakeClient));
-  vi.stubEnv("MONSOON_PASSCODE", "correct-horse-battery-staple");
-  vi.stubEnv("MONSOON_SESSION_SECRET", "x".repeat(32));
+  account = fakeAccount({ pipelines: PIPELINES, db: fakeClient, person: { ownerKey: "AB" } });
+  withDb = vi.spyOn(account, "withDb");
+  signInAs(account);
 });
 
 afterEach(() => {
@@ -63,18 +72,64 @@ afterEach(() => {
 });
 
 describe("POST /api/monsoon/save", () => {
-  it("returns 401 without a session and does not capture", async () => {
-    const res = await POST(post(validBody(), false));
+  it("returns 401 when requireAccount refuses and does not capture", async () => {
+    signOut();
+    const res = await POST(post(validBody()));
     expect(res.status).toBe(401);
     expect(capture).not.toHaveBeenCalled();
-    expect(withEstateDb).not.toHaveBeenCalled();
+    expect(withDb).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for an estate that is not one of the account's pipelines", async () => {
+    signInAs(fakeAccount({ pipelines: [PIPELINES[0]], db: fakeClient }));
+    const res = await POST(post(validBody({ estate: "zeroone" })));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ outcome: "invalid", error: "Unknown estate" });
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it("returns 502 for a pipeline that is not connected", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    signInAs(fakeAccount({ pipelines: [{ ...PIPELINES[1], connected: false }], db: fakeClient }));
+    const res = await POST(post(validBody()));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "Could not reach the Zero One CRM" });
+  });
+
+  it("records a capture activity after a saved outcome", async () => {
+    capture.mockResolvedValue({ outcome: "added", person: "p1", org: "o", role: "investor", filled: [] });
+    await POST(post(validBody()));
+    expect(account.record).toHaveBeenCalledTimes(1);
+    expect(account.record).toHaveBeenCalledWith("capture", "zeroone");
+  });
+
+  it("records batch_save when the body says batch: true", async () => {
+    capture.mockResolvedValue({ outcome: "filed", person: "p1", org: "o", role: "investor", filled: [], created: false });
+    await POST(post(validBody({ batch: true })));
+    expect(account.record).toHaveBeenCalledWith("batch_save", "zeroone");
+  });
+
+  it("records no activity when nothing was saved or the save failed", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    for (const result of [
+      { outcome: "invalid", error: "x" },
+      { outcome: "duplicate", person: "p", org: null },
+      { outcome: "needs_company", orgs: [] },
+      { outcome: "org_lookalike", similar: [] },
+    ]) {
+      capture.mockResolvedValueOnce(result);
+      await POST(post(validBody()));
+    }
+    capture.mockRejectedValueOnce(new Error("boom"));
+    await POST(post(validBody()));
+    expect(account.record).not.toHaveBeenCalled();
   });
 
   it("returns 400 for an unknown estate", async () => {
     const res = await POST(post(validBody({ estate: "qforce" })));
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ outcome: "invalid", error: "Unknown estate" });
-    expect(withEstateDb).not.toHaveBeenCalled();
+    expect(withDb).not.toHaveBeenCalled();
   });
 
   it("returns 400 for malformed JSON", async () => {
@@ -92,7 +147,7 @@ describe("POST /api/monsoon/save", () => {
     const res = await POST(post(validBody(override)));
     expect(res.status).toBe(400);
     expect((await res.json()).outcome).toBe("invalid");
-    expect(withEstateDb).not.toHaveBeenCalled();
+    expect(withDb).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -102,7 +157,7 @@ describe("POST /api/monsoon/save", () => {
     const res = await POST(post(validBody({ fields: { ...validBody().fields, ...fields } })));
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ outcome: "invalid", error: "Name is required" });
-    expect(withEstateDb).not.toHaveBeenCalled();
+    expect(withDb).not.toHaveBeenCalled();
   });
 
   it.each(["name", "title", "org", "email", "phone", "linkedin"])(
@@ -111,7 +166,7 @@ describe("POST /api/monsoon/save", () => {
       const res = await POST(post(validBody({ fields: { ...validBody().fields, [key]: "x".repeat(301) } })));
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ outcome: "invalid", error: "Field too long" });
-      expect(withEstateDb).not.toHaveBeenCalled();
+      expect(withDb).not.toHaveBeenCalled();
     },
   );
 
@@ -145,8 +200,8 @@ describe("POST /api/monsoon/save", () => {
       extracted: { raw_text: "ADA LOVELACE\nCIO", name: "Ada Lovelace" },
       newOrg: true,
       samePerson: false,
-    });
-    expect(withEstateDb.mock.calls[0][0].key).toBe("zeroone");
+    }, "AB");
+    expect(withDb.mock.calls[0][0]).toBe("zeroone");
   });
 
   it("passes samePerson only as a string or false, newOrg only as true", async () => {
@@ -204,9 +259,8 @@ describe("POST /api/monsoon/save", () => {
 
   it("returns 502 without leaking details when the database call throws", async () => {
     const secretUrl = "postgresql://user:hunter2@db.internal.example:5432/x";
-    vi.stubEnv("ZEROONE_CRM_DATABASE_URL", secretUrl);
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    withEstateDb.mockRejectedValue(new Error(`boom ${secretUrl}`));
+    withDb.mockRejectedValue(new Error(`boom ${secretUrl}`));
     const res = await POST(post(validBody()));
     expect(res.status).toBe(502);
     const text = await res.text();
@@ -222,8 +276,9 @@ describe("POST /api/monsoon/save", () => {
     const res = await POST(post(big));
     expect(res.status).toBe(413);
     expect(await res.json()).toEqual({ outcome: "invalid", error: "Request too large" });
-    expect((await POST(post(big, false))).status).toBe(401);
+    signOut();
+    expect((await POST(post(big))).status).toBe(401);
     expect(capture).not.toHaveBeenCalled();
-    expect(withEstateDb).not.toHaveBeenCalled();
+    expect(withDb).not.toHaveBeenCalled();
   });
 });

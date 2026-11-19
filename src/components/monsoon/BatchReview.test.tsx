@@ -138,6 +138,16 @@ describe("BatchReview", () => {
     expect(m.saveCard.mock.calls[1][0]).toMatchObject({ role: "lp_prospect", fields: { notes: "met at demo day" } });
   });
 
+  it("sends batch: true with every saved card", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue(added);
+    show([JANE, BOB]);
+    await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+    await screen.findByText("2 saved to Traxo.");
+    expect(m.saveCard.mock.calls[0][0]).toMatchObject({ batch: true });
+    expect(m.saveCard.mock.calls[1][0]).toMatchObject({ batch: true });
+  });
+
   it("a lookalike on one card does not block the rest", async () => {
     const user = userEvent.setup();
     m.saveCard

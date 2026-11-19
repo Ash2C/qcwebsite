@@ -1,42 +1,46 @@
 import { NextResponse } from "next/server";
-import { requireSession } from "@/lib/monsoon/auth";
-import { withEstateDb } from "@/lib/monsoon/db";
-import { ESTATES } from "@/lib/monsoon/estates";
+import { CRM_SCHEMA_VERSION, requireAccount } from "@/lib/monsoon/accounts/account";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 type Role = { key: string; label: string };
+type Reason = "not_connected" | "unreachable" | "needs_update";
 
 export async function GET(request: Request) {
-  const denied = requireSession(request);
-  if (denied) return denied;
+  const auth = await requireAccount(request);
+  if (!auth.ok) return auth.response;
+  const { account } = auth;
 
   const estates = await Promise.all(
-    ESTATES.map(async (estate) => {
-      const base = {
-        key: estate.key,
-        label: estate.label,
-        defaultRole: estate.defaultRole,
-      };
+    account.pipelines.map(async (pipeline) => {
+      const base = { key: pipeline.key, label: pipeline.label, defaultRole: pipeline.defaultRole };
+      const down = (reason: Reason) => ({ ...base, available: false, reason, roles: [] as Role[] });
+      if (!pipeline.connected) return down("not_connected");
       try {
-        const roles = await withEstateDb(estate, async (db) => {
+        const { roles, version } = await account.withDb(pipeline.key, async (db) => {
           const r = await db.query("SELECT key, label FROM roles ORDER BY key");
-          return r.rows as Role[];
+          const v = await db.query("SELECT max(version) AS max FROM schema_migrations");
+          return { roles: r.rows as Role[], version: Number(v.rows[0]?.max ?? 0) };
         });
+        if (!(version >= CRM_SCHEMA_VERSION)) return down("needs_update");
         return { ...base, available: true, roles };
       } catch (err) {
         // Name and code only: the message can carry connection details.
         console.error(
-          `monsoon: could not list roles for ${estate.key}`,
+          `monsoon: could not list roles for ${pipeline.key}`,
           err instanceof Error ? err.name : "error",
-          (err as { code?: string })?.code ?? ""
+          (err as { code?: string })?.code ?? "",
         );
-        return { ...base, available: false, roles: [] as Role[] };
+        return down("unreachable");
       }
-    })
+    }),
   );
 
-  return NextResponse.json({ estates });
+  return NextResponse.json({
+    estates,
+    person: { name: account.person.name },
+    customer: { name: account.customer.name },
+  });
 }

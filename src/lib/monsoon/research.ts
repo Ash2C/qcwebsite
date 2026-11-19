@@ -392,14 +392,6 @@ const SCHEMA = {
   additionalProperties: false,
 };
 
-export function resolveResearchModel(): string {
-  const model = process.env.MONSOON_RESEARCH_MODEL || "claude-haiku-5-5";
-  if (/opus|fable/i.test(model)) {
-    throw new Error("MONSOON_RESEARCH_MODEL must not be an Opus or Fable model");
-  }
-  return model;
-}
-
 export type ResearchRun = { vetted: Vetted } | { failed: "timeout" | "refused" | "malformed" };
 
 function userMessage(s: ResearchSubject): string {
@@ -445,11 +437,10 @@ type Block = { type: string; text?: string; content?: unknown };
 
 export async function runResearch(
   client: Anthropic,
+  model: string,
   subject: ResearchSubject,
   opts?: { timeoutMs?: number }
 ): Promise<ResearchRun> {
-  // Resolved per call so a bad MONSOON_RESEARCH_MODEL fails the run, not the build.
-  const model = resolveResearchModel();
 
   // The installed SDK types may not know output_config or blocked_domains; cast narrowly.
   const params = {

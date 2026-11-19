@@ -4,9 +4,8 @@
 // never from a proposal.
 import type { ClientBase } from "pg";
 import type { ProposeResult } from "./ask/actions";
-import { PROPOSAL_TTL_MS, signProposal, type DetailChange, type DetailField, type Proposal } from "./ask/proposal";
+import { PROPOSAL_TTL_MS, signProposal, type Binding, type DetailChange, type DetailField, type Proposal } from "./ask/proposal";
 import { readOnly } from "./ask/queries";
-import type { EstateKey } from "./estates";
 import { nameKey, similarOrgNames } from "./rules";
 
 export const DETAIL_LABELS: Record<DetailField, string> = {
@@ -44,7 +43,6 @@ export type ApplyResult = {
 type DetailsProposal = Extract<Proposal, { kind: "update_details" }>;
 
 const SOURCE = "monsoon-app";
-const OWNER = "VF";
 const MAX_VALUE = 300;
 // The most a signed proposal carries as a stored `from` value (see proposal.ts).
 const MAX_FROM = 2000;
@@ -165,7 +163,7 @@ export async function logMemberFor(db: ClientBase, row: { type: string; id: stri
 
 export async function proposeDetails(
   db: ClientBase,
-  estate: EstateKey,
+  bind: Binding,
   target: Target,
   input: DetailInput,
   opts: { nowMs: number; defaultRole: string; newCompany?: boolean },
@@ -241,7 +239,8 @@ export async function proposeDetails(
 
     const proposal: DetailsProposal = {
       kind: "update_details",
-      estate,
+      customer: bind.customer,
+      estate: bind.estate,
       target: { type: row.type, id: row.id },
       targetName: row.name,
       company: row.company,
@@ -275,12 +274,12 @@ const display = (v: string | null) => v ?? "(empty)";
  * concurrent capture added them first (a unique violation on members), it runs once more in a fresh
  * transaction, which finds the member and does not insert; a second violation is rethrown.
  */
-export async function applyDetails(db: ClientBase, proposal: DetailsProposal): Promise<ApplyResult> {
+export async function applyDetails(db: ClientBase, proposal: DetailsProposal, owner: string): Promise<ApplyResult> {
   try {
-    return await applyOnce(db, proposal);
+    return await applyOnce(db, proposal, owner);
   } catch (err) {
     if (isUniqueOn(err, "members", "members_pkey") && proposal.addsToPipeline !== null) {
-      return applyOnce(db, proposal);
+      return applyOnce(db, proposal, owner);
     }
     throw err;
   }
@@ -344,18 +343,18 @@ export async function applyRowChanges(
 }
 
 /** Adds a person to the pipeline at the first open stage; returns the new member id. */
-export async function addToPipeline(db: ClientBase, personId: string, role: string): Promise<string> {
+export async function addToPipeline(db: ClientBase, personId: string, role: string, owner: string): Promise<string> {
   const stage = (await db.query("SELECT key FROM stages WHERE NOT terminal ORDER BY ord LIMIT 1")).rows[0]?.key;
   return (
     await db.query(
       `INSERT INTO members (person_id, role, stage, owner, source)
        VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [personId, role, stage, OWNER, SOURCE],
+      [personId, role, stage, owner, SOURCE],
     )
   ).rows[0].id;
 }
 
-function applyOnce(db: ClientBase, proposal: DetailsProposal): Promise<ApplyResult> {
+function applyOnce(db: ClientBase, proposal: DetailsProposal, owner: string): Promise<ApplyResult> {
   return transaction<ApplyResult>(db, async () => {
     const { target, changes } = proposal;
     const result = (status: ApplyResult["status"], written: DetailField[], skipped: DetailField[], name: string, commit = false) => ({
@@ -374,7 +373,7 @@ function applyOnce(db: ClientBase, proposal: DetailsProposal): Promise<ApplyResu
       let logMember = await logMemberFor(db, { type: target.type, id: target.id, orgId: done.orgId });
       if (target.type === "company" && logMember === null) return result("unlogged", [], [], proposal.targetName);
       if (target.type === "person" && logMember === null && proposal.addsToPipeline !== null) {
-        logMember = await addToPipeline(db, target.id, proposal.addsToPipeline);
+        logMember = await addToPipeline(db, target.id, proposal.addsToPipeline, owner);
       }
       if (logMember === null) return result("unlogged", [], [], proposal.targetName);
       const summary = `Details updated: ${done.written
@@ -382,7 +381,7 @@ function applyOnce(db: ClientBase, proposal: DetailsProposal): Promise<ApplyResu
         .join("; ")}`;
       await db.query("INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'system', $2, $3)", [
         logMember,
-        OWNER,
+        owner,
         summary,
       ]);
       return result(skipped.length > 0 ? "partly" : "updated", done.written.map((c) => c.field), skipped, done.name, true);

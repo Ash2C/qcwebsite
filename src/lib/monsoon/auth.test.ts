@@ -1,18 +1,19 @@
+import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SESSION_SECONDS,
-  authConfigured,
-  checkPasscode,
-  requireSession,
+  accountsConfigured,
+  cookieValue,
   signSession,
   verifySession,
 } from "./auth";
 
-const PASSCODE = "correct-horse-battery-staple";
 const SECRET = "x".repeat(32);
+const CUSTOMER = "0b9d2a47-6a3e-4c1f-9d55-2f7a3c1e8b10";
+const PERSON = "7c3e1f2a-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+const C = { customerId: CUSTOMER, personId: PERSON, sessionNo: 3 };
 
 beforeEach(() => {
-  vi.stubEnv("MONSOON_PASSCODE", PASSCODE);
   vi.stubEnv("MONSOON_SESSION_SECRET", SECRET);
 });
 
@@ -20,93 +21,107 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe("session tokens", () => {
+function resign(payload: string): string {
+  return `${payload}.${createHmac("sha256", SECRET).update(payload).digest("hex")}`;
+}
+
+describe("v2 session tokens", () => {
   const now = 1_800_000_000_000;
 
-  it("verifies a fresh token", () => {
-    expect(verifySession(signSession(now), now)).toBe(true);
+  it("round-trips customer, person and session number", () => {
+    const token = signSession(C, now);
+    expect(token.startsWith(`v2.${CUSTOMER}.${PERSON}.3.`)).toBe(true);
+    expect(verifySession(token, now)).toEqual(C);
+  });
+
+  it("refuses a v1 token", () => {
+    // The old single-tenant format: v1.<expiry>.<hmac>, correctly signed.
+    const payload = `v1.${Math.floor(now / 1000) + SESSION_SECONDS}`;
+    expect(verifySession(resign(payload), now)).toBeNull();
   });
 
   it("expires after the session length", () => {
-    const token = signSession(now);
-    expect(verifySession(token, now + SESSION_SECONDS * 1000 + 1000)).toBe(
-      false
-    );
+    const token = signSession(C, now);
+    expect(verifySession(token, now + SESSION_SECONDS * 1000 - 1000)).toEqual(C);
+    expect(verifySession(token, now + SESSION_SECONDS * 1000 + 1000)).toBeNull();
   });
 
-  it("rejects a token with a changed signature character", () => {
-    const token = signSession(now);
+  it("refuses a changed signature character", () => {
+    const token = signSession(C, now);
     const last = token.slice(-1);
-    const tampered = token.slice(0, -1) + (last === "0" ? "1" : "0");
-    expect(verifySession(tampered, now)).toBe(false);
+    expect(verifySession(token.slice(0, -1) + (last === "0" ? "1" : "0"), now)).toBeNull();
   });
 
-  it("rejects a token whose expiry was edited upward", () => {
-    const [v, expiry, sig] = signSession(now).split(".");
-    const edited = [v, String(Number(expiry) + 1000), sig].join(".");
-    expect(verifySession(edited, now)).toBe(false);
+  it("refuses an edited field under the old signature", () => {
+    const parts = signSession(C, now).split(".");
+    for (const [i, v] of [
+      [1, PERSON],
+      [2, CUSTOMER],
+      [3, "4"],
+      [4, String(Number(parts[4]) + 1000)],
+    ] as const) {
+      const edited = [...parts];
+      edited[i] = v;
+      expect(verifySession(edited.join("."), now)).toBeNull();
+    }
   });
 
-  it("rejects missing and malformed tokens without throwing", () => {
-    expect(verifySession(undefined, now)).toBe(false);
-    expect(verifySession("", now)).toBe(false);
-    expect(verifySession("v1.abc", now)).toBe(false);
-    expect(verifySession("v1.123.zz", now)).toBe(false);
-    expect(verifySession("v1.123.abcd", now)).toBe(false);
-  });
-
-  it("rejects a token signed under a different secret", () => {
-    const token = signSession(now);
-    vi.stubEnv("MONSOON_SESSION_SECRET", "y".repeat(32));
-    expect(verifySession(token, now)).toBe(false);
-  });
-});
-
-describe("checkPasscode", () => {
-  it("accepts only the exact passcode", () => {
-    expect(checkPasscode(PASSCODE)).toBe(true);
-    expect(checkPasscode(PASSCODE.slice(0, -1))).toBe(false);
-    expect(checkPasscode(PASSCODE + "x")).toBe(false);
-    expect(checkPasscode("")).toBe(false);
-  });
-});
-
-describe("authConfigured", () => {
-  it("is true with a 16-char passcode and 32-char secret", () => {
-    expect(authConfigured()).toBe(true);
-  });
-
-  it("is false with a 15-char passcode", () => {
-    vi.stubEnv("MONSOON_PASSCODE", "a".repeat(15));
-    expect(authConfigured()).toBe(false);
-  });
-
-  it("is false with a 31-char secret", () => {
-    vi.stubEnv("MONSOON_SESSION_SECRET", "x".repeat(31));
-    expect(authConfigured()).toBe(false);
-  });
-});
-
-describe("requireSession", () => {
-  function withCookie(cookie?: string): Request {
-    return new Request("http://localhost/api/monsoon/x", {
-      headers: cookie ? { cookie } : {},
+  it("refuses non-UUID ids and bad session numbers even when correctly signed", () => {
+    const exp = Math.floor(now / 1000) + 100;
+    expect(verifySession(resign(`v2.not-a-uuid.${PERSON}.1.${exp}`), now)).toBeNull();
+    expect(verifySession(resign(`v2.${CUSTOMER}.${PERSON.toUpperCase()}x.1.${exp}`), now)).toBeNull();
+    expect(verifySession(resign(`v2.${CUSTOMER}.${PERSON}.0.${exp}`), now)).toBeNull();
+    expect(verifySession(resign(`v2.${CUSTOMER}.${PERSON}.-1.${exp}`), now)).toBeNull();
+    expect(verifySession(resign(`v2.${CUSTOMER}.${PERSON}.1x.${exp}`), now)).toBeNull();
+    expect(verifySession(resign(`v2.${CUSTOMER}.${PERSON}.1.${exp}`), now)).toEqual({
+      customerId: CUSTOMER,
+      personId: PERSON,
+      sessionNo: 1,
     });
-  }
-
-  it("returns null for a valid cookie among other cookies", () => {
-    const cookie = `a=1; monsoon_session=${signSession()}; b=2`;
-    expect(requireSession(withCookie(cookie))).toBeNull();
   });
 
-  it("returns 401 without a cookie", async () => {
-    const res = requireSession(withCookie());
-    expect(res?.status).toBe(401);
-    expect(await res?.json()).toEqual({ error: "unauthorized" });
+  it("refuses missing and malformed tokens without throwing", () => {
+    for (const t of [undefined, "", "v2", "v2.a.b.c.d.e", "v2.....",`v2.${CUSTOMER}.${PERSON}.1.1.zz`]) {
+      expect(verifySession(t, now)).toBeNull();
+    }
   });
 
-  it("returns 401 for an invalid cookie", () => {
-    const res = requireSession(withCookie("monsoon_session=v1.1.deadbeef"));
-    expect(res?.status).toBe(401);
+  it("refuses a token signed under a different secret, and everything with a short secret", () => {
+    const token = signSession(C, now);
+    vi.stubEnv("MONSOON_SESSION_SECRET", "y".repeat(32));
+    expect(verifySession(token, now)).toBeNull();
+    vi.stubEnv("MONSOON_SESSION_SECRET", "x".repeat(31));
+    expect(verifySession(token, now)).toBeNull();
+  });
+});
+
+describe("cookieValue", () => {
+  it("finds a named cookie among others", () => {
+    const req = new Request("http://localhost/x", { headers: { cookie: "a=1; monsoon_session=abc; b=2" } });
+    expect(cookieValue(req, "monsoon_session")).toBe("abc");
+    expect(cookieValue(req, "missing")).toBeUndefined();
+    expect(cookieValue(new Request("http://localhost/x"), "a")).toBeUndefined();
+  });
+});
+
+describe("accountsConfigured", () => {
+  beforeEach(() => {
+    vi.stubEnv("MONSOON_MASTER_KEY", Buffer.alloc(32, 7).toString("base64"));
+    vi.stubEnv("MONSOON_ACCOUNTS_DATABASE_URL", "postgresql://u:p@127.0.0.1:5432/accounts_test");
+  });
+
+  it("is true with a 32-char secret, a master key and an accounts URL", () => {
+    expect(accountsConfigured()).toBe(true);
+  });
+
+  it("is false when any one is missing or short", () => {
+    vi.stubEnv("MONSOON_SESSION_SECRET", "x".repeat(31));
+    expect(accountsConfigured()).toBe(false);
+    vi.stubEnv("MONSOON_SESSION_SECRET", SECRET);
+    vi.stubEnv("MONSOON_MASTER_KEY", "");
+    expect(accountsConfigured()).toBe(false);
+    vi.stubEnv("MONSOON_MASTER_KEY", Buffer.alloc(32, 7).toString("base64"));
+    vi.stubEnv("MONSOON_ACCOUNTS_DATABASE_URL", "");
+    expect(accountsConfigured()).toBe(false);
   });
 });

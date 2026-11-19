@@ -6,6 +6,10 @@ import { ORG_DETAIL_COLUMNS, PERSON_DETAIL_COLUMNS, UPDATE_ORGS, UPDATE_PEOPLE }
 const ROOT = join(__dirname, "..", "..");
 const SCAN = [join(ROOT, "lib", "monsoon"), join(ROOT, "app", "api", "monsoon")];
 const TESTING = join(ROOT, "lib", "monsoon", "testing") + sep;
+// The admin tool writes to the accounts database, so it is held to the same rule.
+const SCRIPT_FILES = ["admin.ts", "admin-commands.ts"].map((f) => join(ROOT, "..", "scripts", "monsoon", f));
+const scanned = (): string[] => [...SCAN.flatMap(files), ...SCRIPT_FILES];
+const rel = (f: string): string => relative(ROOT, f).split(sep).join("/");
 
 // Each file is scanned twice, as raw text and with comments blanked, and is flagged if either pass
 // matches: blanking hides a comment that splits a statement; the raw pass hides nothing, so a `--`
@@ -101,7 +105,27 @@ const LEGACY_RULES: { name: string; re: RegExp }[] = [
   },
 ];
 
-function violations(source: string): string[] {
+// The one permitted delete: pruning old sign-in attempts. Allowed by file AND exact statement; any other
+// DELETE, in this file or anywhere else, is still flagged.
+const PRUNE_FILE = "lib/monsoon/accounts/store.ts";
+const PRUNE_STATEMENT = "DELETE FROM sign_in_attempts WHERE at < now() - interval '30 days'";
+
+// Only the statement as a complete string literal (same quote character on both sides) is exempt.
+const PRUNE_LITERALS = ["\"", "`"].map((q) => q + PRUNE_STATEMENT + q);
+
+// The setup check's probe: a delete that matches nothing, inside a transaction that is always rolled
+// back, run to prove the restricted login is refused (42501). Also the whole has_table_privilege(...)
+// call that asks whether TRUNCATE is granted. Allowed by file AND exact expression only: the bare
+// keyword is never exempt, so a statement composed from it is still flagged.
+const PROBE_FILE = "lib/monsoon/accounts/setup-check.ts";
+const PROBE_LITERALS = [
+  '"DELETE FROM touches WHERE false"',
+  "has_table_privilege($1, 'public.' || quote_ident(t.name), 'TRUNCATE')",
+];
+
+function violations(source: string, file?: string): string[] {
+  if (file === PRUNE_FILE) for (const lit of PRUNE_LITERALS) source = source.split(lit).join(" ");
+  if (file === PROBE_FILE) for (const lit of PROBE_LITERALS) source = source.split(lit).join(" ");
   // raw and comments blanked, and each again with escaped quotes (a \" inside a TypeScript
   // string) turned into plain ones, so an escaped quoted identifier is seen as one.
   const texts = [source, withoutComments(source)];
@@ -127,6 +151,7 @@ describe("never delete", () => {
   it("the matcher flags each forbidden statement", () => {
     const samples: [string, string][] = [
       ["DELETE FROM", "delete  from touches WHERE id = $1"],
+      ["DELETE FROM", "DELETE FROM customers WHERE id = $1"],
       ["TRUNCATE", "TRUNCATE touches"],
       ["DROP", "drop table members"],
       ["DROP", "DROP SCHEMA public CASCADE"],
@@ -234,9 +259,45 @@ describe("never delete", () => {
     }
   });
 
+  it("allows only the sign-in attempts prune, and only in accounts/store.ts", () => {
+    const prune = `await db.query("${PRUNE_STATEMENT}");`;
+    expect(violations(prune, PRUNE_FILE)).toEqual([]);
+    expect(violations(prune, "lib/monsoon/capture.ts")).toContain("DELETE FROM");
+    expect(violations(prune)).toContain("DELETE FROM");
+    expect(violations(`await db.query("${PRUNE_STATEMENT} OR true");`, PRUNE_FILE)).toContain("DELETE FROM");
+    expect(violations(`// ${PRUNE_STATEMENT}`, PRUNE_FILE)).toContain("DELETE FROM");
+    expect(violations(prune + ' await db.query("DELETE FROM customers");', PRUNE_FILE)).toContain("DELETE FROM");
+    expect(violations('await db.query("DELETE FROM sign_in_attempts");', PRUNE_FILE)).toContain("DELETE FROM");
+    expect(violations("DELETE FROM customers WHERE id = $1", "lib/monsoon/accounts/admin.ts")).toContain("DELETE FROM");
+    expect(violations('await db.query("DELETE FROM customers WHERE id = $1");', PRUNE_FILE)).toContain("DELETE FROM");
+    expect(violations(prune, "../scripts/monsoon/admin-commands.ts")).toContain("DELETE FROM");
+    expect(violations('await db.query("DELETE FROM people WHERE id = $1");', "../scripts/monsoon/admin.ts")).toContain("DELETE FROM");
+  });
+
+  it("allows only the setup probe and the TRUNCATE privilege name, and only in accounts/setup-check.ts", () => {
+    const probe = 'await db.query("DELETE FROM touches WHERE false");';
+    const priv = "has_table_privilege($1, 'public.' || quote_ident(t.name), 'TRUNCATE')";
+    expect(violations(probe, PROBE_FILE)).toEqual([]);
+    expect(violations(priv, PROBE_FILE)).toEqual([]);
+    expect(violations(probe, "lib/monsoon/capture.ts")).toContain("DELETE FROM");
+    expect(violations(priv, "lib/monsoon/capture.ts")).toContain("TRUNCATE");
+    expect(violations('await db.query("DELETE FROM touches WHERE true");', PROBE_FILE)).toContain("DELETE FROM");
+    expect(violations('await db.query("DELETE FROM touches WHERE false OR true");', PROBE_FILE)).toContain("DELETE FROM");
+    expect(violations('await db.query("TRUNCATE touches");', PROBE_FILE)).toContain("TRUNCATE");
+    expect(violations("await db.query('TRUNCATE' + ' touches');", PROBE_FILE)).toContain("TRUNCATE");
+    expect(violations("await db.query(`${'TRUNCATE'} touches`);", PROBE_FILE)).toContain("TRUNCATE");
+    expect(violations("has_table_privilege($1, t, 'TRUNCATE')", PROBE_FILE)).toContain("TRUNCATE");
+    expect(violations(probe, PRUNE_FILE)).toContain("DELETE FROM");
+  });
+
   it("finds the Monsoon server files to scan", () => {
-    const found = SCAN.flatMap(files).map((f) => relative(ROOT, f).split(sep).join("/"));
+    const found = scanned().map(rel);
     expect(found).toContain("lib/monsoon/capture.ts");
+    expect(found).toContain("lib/monsoon/accounts/store.ts");
+    expect(found).toContain("app/api/monsoon/bootstrap/route.ts");
+    expect(found).toContain("../scripts/monsoon/admin.ts");
+    expect(found).toContain("../scripts/monsoon/admin-commands.ts");
+    for (const f of SCRIPT_FILES) expect(readFileSync(f, "utf8").length, f).toBeGreaterThan(0);
     expect(found).toContain("app/api/monsoon/save/route.ts");
     expect(found.some((f) => f.includes("/testing/"))).toBe(false);
     expect(found.some((f) => f.endsWith(".test.ts"))).toBe(false);
@@ -295,8 +356,8 @@ describe("never delete", () => {
 
   it("no Monsoon server code deletes, truncates, drops or rewrites notes", () => {
     const bad: string[] = [];
-    for (const file of SCAN.flatMap(files)) {
-      const hits = violations(readFileSync(file, "utf8"));
+    for (const file of scanned()) {
+      const hits = violations(readFileSync(file, "utf8"), rel(file));
       if (hits.length) bad.push(`${relative(ROOT, file)}: ${hits.join(", ")}`);
     }
     expect(bad).toEqual([]);

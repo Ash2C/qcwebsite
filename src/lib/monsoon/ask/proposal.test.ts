@@ -3,9 +3,12 @@ import { PROPOSAL_TTL_MS, signProposal, verifyProposal, type Proposal, type Sign
 
 const NOW = 1_800_000_000_000;
 const MEMBER = "11111111-1111-4111-8111-111111111111";
+const CUSTOMER = "c0000000-0000-4000-8000-00000000000a";
+const OTHER_CUSTOMER = "c0000000-0000-4000-8000-00000000000b";
 
 const note: Proposal = {
   kind: "add_note",
+  customer: CUSTOMER,
   estate: "zeroone",
   memberId: MEMBER,
   memberKind: "company",
@@ -16,6 +19,7 @@ const note: Proposal = {
 };
 const stage: Proposal = {
   kind: "move_stage",
+  customer: CUSTOMER,
   estate: "traxo",
   memberId: MEMBER,
   memberKind: "person",
@@ -48,6 +52,7 @@ describe("proposal signing", () => {
     const sig = signProposal(stage);
     const changes: Record<string, unknown> = {
       kind: "add_note",
+      customer: OTHER_CUSTOMER,
       estate: "zeroone",
       memberId: "22222222-2222-4222-8222-222222222222",
       memberKind: "company",
@@ -100,8 +105,18 @@ describe("proposal signing", () => {
     expect(verifyProposal(wrongKind, signProposal(wrongKind), NOW)).toBe(false);
     const unknownKind = { ...note, kind: "delete" } as unknown as Proposal;
     expect(verifyProposal(unknownKind, signProposal(unknownKind), NOW)).toBe(false);
-    const badEstate = { ...note, estate: "qforce" } as unknown as Proposal;
-    expect(verifyProposal(badEstate, signProposal(badEstate), NOW)).toBe(false);
+    for (const estate of ["Main", "a", "x".repeat(33), "has space", "main/x", 5, null]) {
+      const badEstate = { ...note, estate } as unknown as Proposal;
+      expect(verifyProposal(badEstate, signProposal(badEstate), NOW), String(estate)).toBe(false);
+    }
+    const anyKey = { ...note, estate: "qforce-2" } as Proposal;
+    expect(verifyProposal(anyKey, signProposal(anyKey), NOW)).toBe(true);
+    for (const customer of ["not-a-uuid", "", 5, null]) {
+      const badCustomer = { ...note, customer } as unknown as Proposal;
+      expect(verifyProposal(badCustomer, signProposal(badCustomer), NOW), String(customer)).toBe(false);
+    }
+    const { customer: _c, ...noCustomer } = note;
+    expect(verifyProposal(noCustomer, signProposal(noCustomer as unknown as Proposal), NOW)).toBe(false);
     const badType = { ...note, expires: "soon" } as unknown as Proposal;
     expect(verifyProposal(badType, signProposal(badType), NOW)).toBe(false);
     const badKind = { ...note, memberKind: "robot" } as unknown as Proposal;
@@ -131,11 +146,12 @@ describe("proposal signing", () => {
   });
 });
 
-// Computed with the code before update_details existed (note fixture, secret "s" x 32).
+// Computed with the code before proposals named their customer (note fixture minus customer, secret "s" x 32).
 const OLD_NOTE_SIGNATURE = "7767d47b8f67253396e481193753bda1d68dbf95f4afed1c380c20cda292b160";
 const PERSON = "33333333-3333-4333-8333-333333333333";
 const details = {
   kind: "update_details",
+  customer: CUSTOMER,
   estate: "zeroone",
   target: { type: "person", id: PERSON },
   targetName: "Li Wei",
@@ -174,6 +190,7 @@ describe("update_details proposals", () => {
       { ...d, changes: [...d.changes, { field: "country", from: null, to: "SG" }] },
       { ...d, target: { type: "person", id: "44444444-4444-4444-8444-444444444444" } },
       { ...d, estate: "traxo" },
+      { ...d, customer: OTHER_CUSTOMER },
       { ...d, sneaky: 1 },
     ];
     for (const v of variants) expect(verifyProposal(v, sig, NOW)).toBe(false);
@@ -219,8 +236,10 @@ describe("update_details proposals", () => {
     expect(ok(stage)).toBe(true);
   });
 
-  it("verifies a note proposal signed before update_details existed", () => {
-    expect(verifyProposal(note, OLD_NOTE_SIGNATURE, NOW)).toBe(true);
+  it("refuses a proposal signed before proposals named their customer", () => {
+    const { customer: _c, ...old } = note;
+    expect(verifyProposal(old, OLD_NOTE_SIGNATURE, NOW)).toBe(false);
+    expect(verifyProposal(note, OLD_NOTE_SIGNATURE, NOW)).toBe(false);
   });
 });
 
@@ -239,6 +258,7 @@ describe("apply_research proposals", () => {
   const research = (over: Record<string, unknown> = {}): Proposal =>
     ({
       kind: "apply_research",
+      customer: CUSTOMER,
       estate: "zeroone",
       person: { id: PERSON, name: "Jane Tan" },
       company: { id: COMPANY, name: "Northwind Capital" },
@@ -294,7 +314,7 @@ describe("apply_research proposals", () => {
     expect(refused(research({ findings: [], summarySources: ["https://e.com/a"] }))).toBe(true);
   });
 
-  it("refuses tampering, expiry and an unknown estate", () => {
+  it("refuses tampering, expiry, another customer and a malformed estate", () => {
     const p = research();
     const sig = signProposal(p);
     const changed = research({ findings: [finding({ to: "CEO" })] });
@@ -302,6 +322,7 @@ describe("apply_research proposals", () => {
     const added = research({ findings: [finding(), finding({ id: "f2", field: "country", from: null, to: "Singapore" })] });
     expect(verifyProposal(added, sig, NOW)).toBe(false);
     expect(verifyProposal(p, sig, p.expires)).toBe(false);
-    expect(refused(research({ estate: "nowhere" }))).toBe(false);
+    expect(refused(research({ estate: "Nowhere" }))).toBe(false);
+    expect(verifyProposal(research({ customer: OTHER_CUSTOMER }), sig, NOW)).toBe(false);
   });
 });

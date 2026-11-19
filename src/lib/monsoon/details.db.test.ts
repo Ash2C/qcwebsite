@@ -3,9 +3,11 @@ import type { Client } from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { verifyProposal, type Proposal } from "./ask/proposal";
 import { applyDetails, proposeDetails, type DetailInput } from "./details";
+import { ensureOwner } from "./owners";
 import { testDb } from "./testing/db";
 
 const NOW = 1_800_000_000_000;
+const CUSTOMER = "c0000000-0000-4000-8000-00000000000a";
 type Details = Extract<Proposal, { kind: "update_details" }>;
 
 describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
@@ -33,7 +35,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
     return out;
   }
   async function propose(target: Parameters<typeof proposeDetails>[2], input: DetailInput, opts: { newCompany?: boolean } = {}) {
-    return proposeDetails(db, "zeroone", target, input, { nowMs: NOW, defaultRole: "investor", ...opts });
+    return proposeDetails(db, { customer: CUSTOMER, estate: "zeroone" }, target, input, { nowMs: NOW, defaultRole: "investor", ...opts });
   }
   async function proposed(target: Parameters<typeof proposeDetails>[2], input: DetailInput, opts: { newCompany?: boolean } = {}): Promise<Details> {
     const r = await propose(target, input, opts);
@@ -81,6 +83,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
       if (!r.ok) return;
       expect(r.signed.proposal).toEqual({
         kind: "update_details",
+        customer: CUSTOMER,
         estate: "zeroone",
         target: { type: "person", id: id.liwei },
         targetName: "Li Wei",
@@ -213,7 +216,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
   describe("applyDetails", () => {
     it("writes the fields and exactly one system touch with the exact summary", async () => {
       const p = await proposed({ personId: id.liwei }, { title: "Director", phone: "", country: "Singapore" });
-      const r = await applyDetails(db, p);
+      const r = await applyDetails(db, p, "VF");
       expect(r).toEqual({ status: "updated", written: ["title", "phone", "country"], skipped: [], name: "Li Wei" });
       const row = (await db.query("SELECT title, phone, country FROM people WHERE id = $1", [id.liwei])).rows[0];
       expect(row).toEqual({ title: "Director", phone: null, country: "Singapore" });
@@ -229,7 +232,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
     });
 
     it("updates name_key with the name", async () => {
-      const r = await applyDetails(db, await proposed({ personId: id.liwei }, { name: "  Li Wei Chen " }));
+      const r = await applyDetails(db, await proposed({ personId: id.liwei }, { name: "  Li Wei Chen " }), "VF");
       expect(r.status).toBe("updated");
       const row = (await db.query("SELECT name, name_key FROM people WHERE id = $1", [id.liwei])).rows[0];
       expect(row).toEqual({ name: "Li Wei Chen", name_key: "li wei chen" });
@@ -237,7 +240,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
     });
 
     it("edits a company's website and logs to its member", async () => {
-      const r = await applyDetails(db, await proposed({ orgId: id.nw }, { website: "https://nw.example", country: "UK" }));
+      const r = await applyDetails(db, await proposed({ orgId: id.nw }, { website: "https://nw.example", country: "UK" }), "VF");
       expect(r.status).toBe("updated");
       expect((await db.query("SELECT website, country FROM orgs WHERE id = $1", [id.nw])).rows[0]).toEqual({
         website: "https://nw.example",
@@ -251,19 +254,19 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
 
     it("sets a company, creating the org once and linking it", async () => {
       const p = await proposed({ personId: id.pat }, { company: "Brand New Ltd" });
-      expect((await applyDetails(db, p)).status).toBe("updated");
+      expect((await applyDetails(db, p, "VF")).status).toBe("updated");
       expect(await count("orgs", "name_key = 'brand new ltd' AND source = 'monsoon-app'")).toBe(1);
       const orgId = (await db.query("SELECT id FROM orgs WHERE name_key = 'brand new ltd'")).rows[0].id;
       expect((await db.query("SELECT org_id FROM people WHERE id = $1", [id.pat])).rows[0].org_id).toBe(orgId);
       // a second person moved to the same company reuses the org
       const q = await proposed({ personId: id.patty }, { company: "Brand New Ltd" });
-      expect((await applyDetails(db, q)).status).toBe("updated");
+      expect((await applyDetails(db, q, "VF")).status).toBe("updated");
       expect(await count("orgs", "name_key = 'brand new ltd'")).toBe(1);
     });
 
     it("clearing the company sets org_id to null", async () => {
       const p = await proposed({ personId: id.liwei }, { company: "" });
-      expect((await applyDetails(db, p)).status).toBe("updated");
+      expect((await applyDetails(db, p, "VF")).status).toBe("updated");
       expect((await db.query("SELECT org_id FROM people WHERE id = $1", [id.liwei])).rows[0].org_id).toBeNull();
       // logged on the member found from the state before the change
       expect((await db.query("SELECT member_id, summary FROM touches")).rows).toEqual([
@@ -275,14 +278,14 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
       // Jane Tan (Northwind) has no member of her own: the log goes to Northwind's member, not Acme's.
       const p = await proposed({ personId: id.jane }, { company: "Orphan Co" });
       expect(p.logMemberId).toBe(id.mNw);
-      expect((await applyDetails(db, p)).status).toBe("updated");
+      expect((await applyDetails(db, p, "VF")).status).toBe("updated");
       expect((await db.query("SELECT member_id FROM touches")).rows).toEqual([{ member_id: id.mNw }]);
     });
 
     it("a stale field is skipped and reported", async () => {
       const p = await proposed({ personId: id.jane }, { title: "Director", phone: "+65 9999 0000" });
       await db.query("UPDATE people SET title = 'Partner' WHERE id = $1", [id.jane]);
-      const r = await applyDetails(db, p);
+      const r = await applyDetails(db, p, "VF");
       expect(r).toEqual({ status: "partly", written: ["phone"], skipped: ["title"], name: "Jane Tan" });
       const row = (await db.query("SELECT title, phone FROM people WHERE id = $1", [id.jane])).rows[0];
       expect(row).toEqual({ title: "Partner", phone: "+65 9999 0000" });
@@ -295,14 +298,14 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
       const p = await proposed({ personId: id.jane }, { title: "Director" });
       await db.query("UPDATE people SET title = 'Partner' WHERE id = $1", [id.jane]);
       const before = await snapshot();
-      expect(await applyDetails(db, p)).toEqual({ status: "unchanged", written: [], skipped: ["title"], name: "Jane Tan" });
+      expect(await applyDetails(db, p, "VF")).toEqual({ status: "unchanged", written: [], skipped: ["title"], name: "Jane Tan" });
       expect(await snapshot()).toEqual(before);
     });
 
     it("confirming twice writes once", async () => {
       const p = await proposed({ personId: id.liwei }, { title: "Director" });
-      expect((await applyDetails(db, p)).status).toBe("updated");
-      expect((await applyDetails(db, p)).status).toBe("unchanged");
+      expect((await applyDetails(db, p, "VF")).status).toBe("updated");
+      expect((await applyDetails(db, p, "VF")).status).toBe("unchanged");
       expect(await count("touches")).toBe(1);
     });
 
@@ -310,7 +313,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
       const other = await testDb.connect();
       try {
         const p = await proposed({ personId: id.liwei }, { title: "Director" });
-        const [a, b] = await Promise.all([applyDetails(db, p), applyDetails(other, p)]);
+        const [a, b] = await Promise.all([applyDetails(db, p, "VF"), applyDetails(other, p, "VF")]);
         expect([a.status, b.status].sort()).toEqual(["unchanged", "updated"]);
         expect(await count("touches")).toBe(1);
       } finally {
@@ -321,7 +324,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
     it("addsToPipeline creates the member and logs to it", async () => {
       const p = await proposed({ personId: id.sam }, { title: "Associate" });
       expect(p.addsToPipeline).toBe("investor");
-      expect((await applyDetails(db, p)).status).toBe("updated");
+      expect((await applyDetails(db, p, "VF")).status).toBe("updated");
       const m = (await db.query("SELECT id, role, stage, owner, source FROM members WHERE person_id = $1", [id.sam])).rows;
       expect(m).toHaveLength(1);
       expect(m[0]).toMatchObject({ role: "investor", owner: "VF", source: "monsoon-app" });
@@ -358,7 +361,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
           };
         },
       });
-      expect((await applyDetails(racing, p)).status).toBe("updated");
+      expect((await applyDetails(racing, p, "VF")).status).toBe("updated");
       const m = (await db.query("SELECT id, source FROM members WHERE person_id = $1", [id.sam])).rows;
       expect(m).toHaveLength(1);
       expect(m[0].source).toBe("test");
@@ -389,7 +392,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
           };
         },
       });
-      expect(await applyDetails(renamed, p)).toEqual({ status: "collision", written: [], skipped: [], name: "Li Wei" });
+      expect(await applyDetails(renamed, p, "VF")).toEqual({ status: "collision", written: [], skipped: [], name: "Li Wei" });
       expect(await snapshot()).toEqual(before);
     });
 
@@ -415,7 +418,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
           };
         },
       });
-      expect((await applyDetails(renamed, p)).status).toBe("updated");
+      expect((await applyDetails(renamed, p, "VF")).status).toBe("updated");
       expect(await count("members", `person_id = '${id.sam}'`)).toBe(1);
       expect(await count("touches", "kind = 'system'")).toBe(1);
     });
@@ -434,7 +437,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
           };
         },
       });
-      await expect(applyDetails(failing, p)).rejects.toThrow("duplicate");
+      await expect(applyDetails(failing, p, "VF")).rejects.toThrow("duplicate");
       expect(await snapshot()).toEqual(before);
     });
 
@@ -452,13 +455,13 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
           };
         },
       });
-      expect(await applyDetails(clash, p)).toEqual({ status: "collision", written: [], skipped: [], name: "Li Wei Zed" });
+      expect(await applyDetails(clash, p, "VF")).toEqual({ status: "collision", written: [], skipped: [], name: "Li Wei Zed" });
     });
 
     it("adds no member when nothing is written", async () => {
       const p = await proposed({ personId: id.sam }, { title: "Associate" });
       await db.query("UPDATE people SET title = 'Other' WHERE id = $1", [id.sam]);
-      expect((await applyDetails(db, p)).status).toBe("unchanged");
+      expect((await applyDetails(db, p, "VF")).status).toBe("unchanged");
       expect(await count("members", "person_id IS NOT NULL")).toBe(1);
     });
 
@@ -469,7 +472,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
         [id.acme],
       );
       const before = await snapshot();
-      const r = await applyDetails(db, p);
+      const r = await applyDetails(db, p, "VF");
       expect(r).toEqual({ status: "collision", written: [], skipped: [], name: "Li Wei Chen" });
       expect(await snapshot()).toEqual(before);
     });
@@ -480,17 +483,17 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
       const org = (await db.query("INSERT INTO orgs (name, name_key, source) VALUES ('Fresh Ltd', 'fresh ltd', 'test') RETURNING id")).rows[0].id;
       await db.query("INSERT INTO people (org_id, name, name_key, source) VALUES ($1, 'Pat Lee', 'pat lee', 'test')", [org]);
       const before = await snapshot();
-      expect((await applyDetails(db, p)).status).toBe("collision");
+      expect((await applyDetails(db, p, "VF")).status).toBe("collision");
       expect(await snapshot()).toEqual(before);
     });
 
     it("reports a missing person or company", async () => {
       const p = await proposed({ personId: id.sam }, { title: "Associate" });
       await db.query("DELETE FROM people WHERE id = $1", [id.sam]); // test setup only
-      expect(await applyDetails(db, p)).toEqual({ status: "missing", written: [], skipped: [], name: "Sam Ortiz" });
+      expect(await applyDetails(db, p, "VF")).toEqual({ status: "missing", written: [], skipped: [], name: "Sam Ortiz" });
       const c = await proposed({ orgId: id.nw }, { country: "UK" });
       await db.query("DELETE FROM orgs WHERE id = $1", [id.nw]);
-      expect((await applyDetails(db, c)).status).toBe("missing");
+      expect((await applyDetails(db, c, "VF")).status).toBe("missing");
     });
 
     it("two concurrent company changes for a company-less person write exactly one", async () => {
@@ -498,7 +501,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
       try {
         const a = await proposed({ personId: id.pat }, { company: "Alpha Ltd" });
         const b = await proposed({ personId: id.pat }, { company: "Beta Ltd" });
-        const [ra, rb] = await Promise.all([applyDetails(db, a), applyDetails(other, b)]);
+        const [ra, rb] = await Promise.all([applyDetails(db, a, "VF"), applyDetails(other, b, "VF")]);
         const statuses = [ra.status, rb.status].sort();
         expect(statuses[1]).toBe("updated");
         expect(["unchanged", "partly"]).toContain(statuses[0]);
@@ -532,7 +535,7 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
           };
         },
       });
-      await expect(applyDetails(failing, p)).rejects.toThrow("duplicate");
+      await expect(applyDetails(failing, p, "VF")).rejects.toThrow("duplicate");
       expect(await snapshot()).toEqual(before);
     });
 
@@ -540,11 +543,11 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
       const p = await proposed({ personId: id.liwei }, { title: "Director" });
       await db.query("DELETE FROM members WHERE id = $1", [id.mLi]); // test setup only
       const before = await snapshot();
-      expect(await applyDetails(db, p)).toEqual({ status: "unlogged", written: [], skipped: [], name: "Li Wei" });
+      expect(await applyDetails(db, p, "VF")).toEqual({ status: "unlogged", written: [], skipped: [], name: "Li Wei" });
       expect(await snapshot()).toEqual(before);
       const c = await proposed({ orgId: id.nw }, { country: "UK" });
       await db.query("DELETE FROM members WHERE id = $1", [id.mNw]); // test setup only
-      expect((await applyDetails(db, c)).status).toBe("unlogged");
+      expect((await applyDetails(db, c, "VF")).status).toBe("unlogged");
       expect((await db.query("SELECT country FROM orgs WHERE id = $1", [id.nw])).rows[0].country).toBeNull();
     });
 
@@ -554,9 +557,9 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
       await db.query("UPDATE members SET notes = 'and me' WHERE id = $1", [id.mLi]);
       await db.query("INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'note', 'VF', 'old note')", [id.mLi]);
       const before = (await snapshot()) as Record<string, { id: string; notes?: unknown; summary?: unknown }[]>;
-      await applyDetails(db, await proposed({ personId: id.liwei }, { title: "Director", company: "Brand New Ltd" }, { newCompany: true }));
-      await applyDetails(db, await proposed({ orgId: id.nw }, { website: "https://x.example" }));
-      await applyDetails(db, await proposed({ personId: id.sam }, { name: "Samuel Ortiz" }));
+      await applyDetails(db, await proposed({ personId: id.liwei }, { title: "Director", company: "Brand New Ltd" }, { newCompany: true }), "VF");
+      await applyDetails(db, await proposed({ orgId: id.nw }, { website: "https://x.example" }), "VF");
+      await applyDetails(db, await proposed({ personId: id.sam }, { name: "Samuel Ortiz" }), "VF");
       const after = (await snapshot()) as typeof before;
       for (const t of ["orgs", "people", "members", "touches"]) {
         for (const row of before[t]) {
@@ -567,5 +570,13 @@ describe.skipIf(!testDb.available)("Editing details (real Postgres)", () => {
         }
       }
     });
+  });
+
+  it("stamps the added member and the log touch with the given owner key", async () => {
+    await ensureOwner(db, "AB", "Ana B");
+    const p = await proposed({ personId: id.sam }, { title: "Associate" });
+    expect((await applyDetails(db, p, "AB")).status).toBe("updated");
+    expect((await db.query("SELECT owner FROM members WHERE person_id = $1", [id.sam])).rows).toEqual([{ owner: "AB" }]);
+    expect((await db.query("SELECT by_whom FROM touches")).rows).toEqual([{ by_whom: "AB" }]);
   });
 });

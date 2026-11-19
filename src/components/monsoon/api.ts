@@ -34,6 +34,7 @@ export type SaveBody = {
   newOrg?: boolean;
   samePerson?: string | false;
   kind?: CardKind;
+  batch?: boolean;
 };
 
 export type ApiResult<T> = { status: number; body: T };
@@ -78,19 +79,22 @@ async function parse<T>(response: Response): Promise<ApiResult<T>> {
 }
 
 export async function signIn(
+  code: string,
   passcode: string,
 ): Promise<ApiResult<{ ok: true } | { error: string }>> {
   return parse(
     await request(
       "/api/monsoon/session",
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode }) },
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, passcode }) },
       TIMEOUT_MS.quick,
     ),
   );
 }
 
 export async function loadEstates(): Promise<
-  ApiResult<{ estates: EstateInfo[] } | { error: string }>
+  ApiResult<
+    { estates: EstateInfo[]; person?: { name: string }; customer?: { name: string } } | { error: string }
+  >
 > {
   return parse(await request("/api/monsoon/estates", { cache: "no-store" }, TIMEOUT_MS.quick));
 }

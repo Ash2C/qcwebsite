@@ -1,10 +1,7 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
+import { requireAccount } from "@/lib/monsoon/accounts/account";
 import { PROPOSAL_TTL_MS, signProposal, verifyProposal, type Proposal, type SignedProposal } from "@/lib/monsoon/ask/proposal";
-import { requireSession } from "@/lib/monsoon/auth";
 import { readJson } from "@/lib/monsoon/body";
-import { withEstateDb } from "@/lib/monsoon/db";
-import { estateByKey } from "@/lib/monsoon/estates";
 import { hasAnchor, runResearch, type ResearchRun } from "@/lib/monsoon/research";
 import { readSubject, type SubjectRead } from "@/lib/monsoon/research-subject";
 
@@ -36,15 +33,16 @@ function none(outcome: string, message: string) {
 }
 
 export async function POST(request: Request) {
-  const denied = requireSession(request);
-  if (denied) return denied;
+  const auth = await requireAccount(request);
+  if (!auth.ok) return auth.response;
+  const { account } = auth;
 
   const read = await readJson(request, MAX_BODY);
   if (!read.ok) return read.response;
   if (!isObj(read.body)) return bad("Invalid body");
   const b = read.body;
 
-  const estate = estateByKey(b.estate);
+  const estate = account.pipeline(b.estate);
   if (!estate) return bad("Unknown estate");
   const target: { memberId?: string; personId?: string } = {};
   for (const key of ["memberId", "personId"] as const) {
@@ -58,7 +56,7 @@ export async function POST(request: Request) {
   // The connection is used for this read only and is closed before the model is called.
   let subjectRead: SubjectRead;
   try {
-    subjectRead = await withEstateDb(estate, (db) => readSubject(db, target));
+    subjectRead = await account.withDb(estate.key, (db) => readSubject(db, target));
   } catch (err) {
     const code = (err as { code?: unknown })?.code;
     console.error(
@@ -77,8 +75,9 @@ export async function POST(request: Request) {
 
   let run: ResearchRun;
   try {
-    const client = new Anthropic({ timeout: RESEARCH_TIMEOUT_MS, maxRetries: 0 });
-    run = await runResearch(client, subject, { timeoutMs: RESEARCH_TIMEOUT_MS });
+    // The customer's own key and model (NotConnected without a key, refused model: both 502 here).
+    const client = account.anthropic({ timeout: RESEARCH_TIMEOUT_MS });
+    run = await runResearch(client, account.model(), subject, { timeoutMs: RESEARCH_TIMEOUT_MS });
   } catch (err) {
     // Class name and status only: the message can carry the query or contact data.
     const status = (err as { status?: unknown })?.status;
@@ -86,17 +85,20 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Could not run research. Check signal and try again." }, { status: 502 });
   }
 
+  // The model answered: from here every outcome but a 5xx counts as a research run.
+  const ran = (outcome: string, message: string) => account.record("research", estate.key).then(() => none(outcome, message));
   if ("failed" in run) {
-    if (run.failed === "timeout") return none("timeout", MSG.timeout);
-    return none(run.failed, MSG.nothing);
+    if (run.failed === "timeout") return ran("timeout", MSG.timeout);
+    return ran(run.failed, MSG.nothing);
   }
   const v = run.vetted;
-  if (v.outcome === "not_identified") return none("not_identified", MSG.notIdentified);
-  if (v.outcome === "nothing") return none("nothing", MSG.nothing);
+  if (v.outcome === "not_identified") return ran("not_identified", MSG.notIdentified);
+  if (v.outcome === "nothing") return ran("nothing", MSG.nothing);
 
   const nowMs = Date.now();
   const proposal: ResearchProposal = {
     kind: "apply_research",
+    customer: account.customer.id,
     estate: estate.key,
     person,
     company,
@@ -117,9 +119,10 @@ export async function POST(request: Request) {
   // Never return what the confirm route would refuse.
   if (!verifyProposal(signed.proposal, signed.signature, nowMs)) {
     console.error("monsoon: research unusable");
-    return none("unusable", MSG.nothing);
+    return ran("unusable", MSG.nothing);
   }
 
+  await account.record("research", estate.key);
   console.log("monsoon: research findings");
   return NextResponse.json({ status: "findings", signed, summary: v.summary });
 }

@@ -1,11 +1,8 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
+import { requireAccount } from "@/lib/monsoon/accounts/account";
 import { runAsk, type AskMessage, type ModelClient } from "@/lib/monsoon/ask/loop";
 import type { Ref } from "@/lib/monsoon/ask/tools";
-import { requireSession } from "@/lib/monsoon/auth";
 import { readJson } from "@/lib/monsoon/body";
-import { withEstateDb } from "@/lib/monsoon/db";
-import { estateByKey } from "@/lib/monsoon/estates";
 import { resolveToday } from "@/lib/monsoon/today";
 
 export const runtime = "nodejs";
@@ -79,28 +76,44 @@ function parseMessages(value: unknown): AskMessage[] | string {
 
 export async function POST(request: Request) {
   const startedAt = Date.now(); // the loop's deadline counts from here, database connection included
-  const denied = requireSession(request);
-  if (denied) return denied;
+  const auth = await requireAccount(request);
+  if (!auth.ok) return auth.response;
+  const { account } = auth;
 
   const read = await readJson(request, MAX_BODY);
   if (!read.ok) return read.response;
   if (!isObj(read.body)) return bad("Invalid body");
   const b = read.body;
 
-  const estate = estateByKey(b.estate);
+  const estate = account.pipeline(b.estate);
   if (!estate) return bad("Unknown estate");
   const messages = parseMessages(b.messages);
   if (typeof messages === "string") return bad(messages);
   const today = resolveToday(b.today, startedAt);
 
   try {
-    const result = await withEstateDb(estate, async (db) => {
-      const client = new Anthropic({ timeout: 20_000, maxRetries: 0 }).messages as unknown as ModelClient;
-      return runAsk(
-        { db, estate: estate.key, estateLabel: estate.label, today, client, now: () => Date.now(), startedAt },
+    // The customer's own key and model; the customer id comes from the session, never the body.
+    const client = account.anthropic({ timeout: 20_000 }).messages as unknown as ModelClient;
+    const model = account.model();
+    const result = await account.withDb(estate.key, (db) =>
+      runAsk(
+        {
+          db,
+          customerId: account.customer.id,
+          estate: estate.key,
+          estateLabel: estate.label,
+          defaultRole: estate.defaultRole,
+          person: { name: account.person.name, ownerKey: account.person.ownerKey },
+          model,
+          today,
+          client,
+          now: () => Date.now(),
+          startedAt,
+        },
         messages,
-      );
-    });
+      ),
+    );
+    await account.record("ask", estate.key);
     return NextResponse.json(result);
   } catch (err) {
     // Name and status only: messages can carry questions, contact data or connection details.

@@ -1,32 +1,39 @@
+import type { MockInstance } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signSession } from "@/lib/monsoon/auth";
 
-const withEstateDb = vi.fn();
 const searchContacts = vi.fn();
 const recentContacts = vi.fn();
-vi.mock("@/lib/monsoon/db", () => ({ withEstateDb: (...a: unknown[]) => withEstateDb(...a) }));
 vi.mock("@/lib/monsoon/contacts", () => ({
   searchContacts: (...a: unknown[]) => searchContacts(...a),
   recentContacts: (...a: unknown[]) => recentContacts(...a),
 }));
 
+vi.mock("@/lib/monsoon/accounts/account", async () =>
+  (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
+);
+import type { Account } from "@/lib/monsoon/accounts/account";
+import { fakeAccount, signInAs, signOut } from "@/lib/monsoon/testing/account";
 import { GET } from "./route";
 
 const fakeDb = { fake: true };
+const PIPELINES = [
+  { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", connected: true },
+  { key: "zeroone", label: "Zero One", defaultRole: "investor", connected: true },
+];
+let account: ReturnType<typeof fakeAccount>;
+let withDb: MockInstance<Account["withDb"]>;
 const HITS = [{ kind: "person", name: "Mia Chen" }];
 
-function get(query: string, authenticated = true): Request {
-  return new Request(`http://localhost/api/monsoon/contacts${query}`, {
-    headers: authenticated ? { Cookie: `monsoon_session=${signSession()}` } : {},
-  });
+function get(query: string): Request {
+  return new Request(`http://localhost/api/monsoon/contacts${query}`);
 }
 
 beforeEach(() => {
-  withEstateDb.mockReset().mockImplementation(async (_e, fn) => fn(fakeDb));
+  account = fakeAccount({ pipelines: PIPELINES, db: fakeDb });
+  withDb = vi.spyOn(account, "withDb");
+  signInAs(account);
   searchContacts.mockReset().mockResolvedValue(HITS);
   recentContacts.mockReset().mockResolvedValue(HITS);
-  vi.stubEnv("MONSOON_PASSCODE", "correct-horse-battery-staple");
-  vi.stubEnv("MONSOON_SESSION_SECRET", "x".repeat(32));
 });
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -34,12 +41,20 @@ afterEach(() => {
 });
 
 describe("GET /api/monsoon/contacts", () => {
-  it("answers 401 without a session and calls nothing", async () => {
-    const res = await GET(get("?estate=traxo&q=mia", false));
+  it("answers 401 when requireAccount refuses and calls nothing", async () => {
+    signOut();
+    const res = await GET(get("?estate=traxo&q=mia"));
     expect(res.status).toBe(401);
-    expect(withEstateDb).not.toHaveBeenCalled();
+    expect(withDb).not.toHaveBeenCalled();
     expect(searchContacts).not.toHaveBeenCalled();
     expect(recentContacts).not.toHaveBeenCalled();
+  });
+
+  it("answers 400 for an estate that is not one of the account's pipelines", async () => {
+    signInAs(fakeAccount({ pipelines: [PIPELINES[0]], db: fakeDb }));
+    const res = await GET(get("?estate=zeroone&q=mia"));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Unknown estate" });
   });
 
   it("answers 400 for an unknown or missing estate", async () => {
@@ -48,7 +63,7 @@ describe("GET /api/monsoon/contacts", () => {
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ error: "Unknown estate" });
     }
-    expect(withEstateDb).not.toHaveBeenCalled();
+    expect(withDb).not.toHaveBeenCalled();
   });
 
   it("cuts a q longer than 100 characters to 100", async () => {
@@ -65,7 +80,7 @@ describe("GET /api/monsoon/contacts", () => {
     expect(searchContacts.mock.calls[0][0]).toBe(fakeDb);
     expect(searchContacts.mock.calls[0][1]).toBe("mia");
     expect(recentContacts).not.toHaveBeenCalled();
-    expect(withEstateDb.mock.calls[0][0]).toMatchObject({ key: "traxo" });
+    expect(withDb.mock.calls[0][0]).toBe("traxo");
   });
 
   it("lists recent contacts when q is absent, empty or a single character", async () => {
@@ -92,5 +107,13 @@ describe("GET /api/monsoon/contacts", () => {
     const logged = JSON.stringify(log.mock.calls);
     for (const leak of ["hunter2", "boom", "Mia Chen", "mia"]) expect(logged).not.toContain(leak);
     expect(logged).toContain("57014");
+  });
+
+  it("answers 502 with the label when the pipeline is not connected", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    signInAs(fakeAccount({ pipelines: [{ ...PIPELINES[0], connected: false }], db: fakeDb }));
+    const res = await GET(get("?estate=traxo&q=mia"));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "Could not reach the Traxo CRM" });
   });
 });

@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signSession } from "@/lib/monsoon/auth";
 
 const refineContact = vi.fn();
 vi.mock("@/lib/monsoon/refine", async (orig) => ({
@@ -7,7 +6,14 @@ vi.mock("@/lib/monsoon/refine", async (orig) => ({
   refineContact: (...args: unknown[]) => refineContact(...args),
 }));
 
+vi.mock("@/lib/monsoon/accounts/account", async () =>
+  (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
+);
+import { fakeAccount, signInAs, signOut } from "@/lib/monsoon/testing/account";
 import { POST } from "./route";
+
+const FAKE_CLAUDE = { fake: "claude" };
+let account: ReturnType<typeof fakeAccount>;
 
 const FIELDS = {
   name: "Jane Tan",
@@ -19,9 +25,8 @@ const FIELDS = {
 };
 const OUT = { fields: { ...FIELDS, title: "CIO" }, notes: "Now CIO." };
 
-function req(body: unknown, authenticated = true, raw?: string): Request {
+function req(body: unknown, raw?: string): Request {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (authenticated) headers.Cookie = `monsoon_session=${signSession()}`;
   return new Request("http://localhost/api/monsoon/refine", {
     method: "POST",
     headers,
@@ -37,24 +42,24 @@ const valid = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   refineContact.mockReset();
-  vi.stubEnv("MONSOON_PASSCODE", "correct-horse-battery-staple");
-  vi.stubEnv("MONSOON_SESSION_SECRET", "x".repeat(32));
+  account = fakeAccount({ claude: FAKE_CLAUDE, model: "claude-test-1" });
+  signInAs(account);
 });
 afterEach(() => {
-  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
 describe("POST /api/monsoon/refine", () => {
-  it("answers 401 without a session and does not call the model", async () => {
-    const res = await POST(req(valid(), false));
+  it("answers 401 when requireAccount refuses and does not call the model", async () => {
+    signOut();
+    const res = await POST(req(valid()));
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: "unauthorized" });
     expect(refineContact).not.toHaveBeenCalled();
   });
 
   it("400 on malformed JSON", async () => {
-    const res = await POST(req(null, true, "{nope"));
+    const res = await POST(req(null, "{nope"));
     expect(res.status).toBe(400);
     expect(refineContact).not.toHaveBeenCalled();
   });
@@ -95,11 +100,28 @@ describe("POST /api/monsoon/refine", () => {
     const res = await POST(req(valid({ extra: "ignored" })));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(OUT);
-    expect(refineContact).toHaveBeenCalledWith({
+    expect(refineContact).toHaveBeenCalledWith(FAKE_CLAUDE, "claude-test-1", {
       fields: FIELDS,
       notes: "met at demo",
       spoken: "she is CIO now",
     });
+    expect(account.record).toHaveBeenCalledWith("tidy");
+  });
+
+  it("records no activity when tidying fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    refineContact.mockRejectedValue(new Error("x"));
+    await POST(req(valid()));
+    expect(account.record).not.toHaveBeenCalled();
+  });
+
+  it("502 with the generic body when the customer has no Claude key", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    signInAs(fakeAccount());
+    const res = await POST(req(valid()));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "Could not tidy the notes" });
+    expect(refineContact).not.toHaveBeenCalled();
   });
 
   it("502 with a generic body, and the thrown message never reaches the log", async () => {
@@ -116,10 +138,11 @@ describe("POST /api/monsoon/refine", () => {
 
   it("413 to an over-cap body after a valid session, 401 first without one", async () => {
     const big = JSON.stringify(valid({ pad: "x".repeat(32_768) }));
-    const res = await POST(req(null, true, big));
+    const res = await POST(req(null, big));
     expect(res.status).toBe(413);
     expect(await res.json()).toEqual({ error: "Request too large" });
-    expect((await POST(req(null, false, big))).status).toBe(401);
+    signOut();
+    expect((await POST(req(null, big))).status).toBe(401);
     expect(refineContact).not.toHaveBeenCalled();
   });
 });

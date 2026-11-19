@@ -1,0 +1,400 @@
+// Command logic for the Monsoon admin tool. Takes its database and output as dependencies so tests can drive it.
+// Never reads the master key, so it can never decrypt or print a stored credential.
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { ClientBase } from "pg";
+import { generatePasscode, hashPasscode, hashToken, newToken } from "../../src/lib/monsoon/accounts/crypto";
+import { generateSetupScript, loginAndPoliciesScript } from "../../src/lib/monsoon/accounts/setup-script";
+
+export interface AdminDeps {
+  db: ClientBase;
+  out: (line: string) => void;
+  env?: Record<string, string | undefined>;
+  readFile?: (path: string) => string;
+  now?: () => Date;
+}
+
+const USAGE = [
+  "Usage:",
+  "  migrate",
+  '  customer add <code> "<name>" [--model <id>]',
+  '  person add <code> "<display name>" <OWNER> [--passcode-from-env MONSOON_PASSCODE]',
+  "  person reset|suspend|resume <code> <OWNER>",
+  '  pipeline add <code> <key> "<label>" --default-role <role> --stages <json> --roles <json>',
+  "  link <code> <pipeline key> [--replace]",
+  "  script <code> <pipeline key> [--login-only]",
+  "  status",
+  "  people <code>",
+  "  suspend|resume <code>",
+  "  forget <code>",
+];
+
+const MAX_PEOPLE = 50;
+const LINK_DAYS = 7;
+const CODE_RE = /^[a-z0-9-]{3,32}$/;
+const KEY_RE = /^[a-z0-9-]{2,32}$/;
+const OWNER_RE = /^[A-Z]{2,4}$/;
+
+class Fail extends Error {}
+const fail = (msg: string): never => {
+  throw new Fail(msg);
+};
+
+/** Any flag not listed for the command is refused, so a typo cannot silently change what it does. */
+function parseArgs(
+  args: string[],
+  valueFlags: string[] = [],
+  switches: string[] = [],
+): { pos: string[]; flags: Map<string, string | true> } {
+  const pos: string[] = [];
+  const flags = new Map<string, string | true>();
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith("--")) {
+      if (valueFlags.includes(a)) {
+        const v = args[++i];
+        if (v === undefined) fail(`${a} needs a value`);
+        flags.set(a, v);
+      } else if (switches.includes(a)) flags.set(a, true);
+      else fail(`unknown flag ${a}`);
+    } else pos.push(a);
+  }
+  return { pos, flags };
+}
+
+function need(pos: string[], n: number): void {
+  if (pos.length < n) fail("missing arguments");
+}
+
+function checkCode(code: string): string {
+  if (!CODE_RE.test(code)) fail("company code must be 3-32 characters: a-z, 0-9, hyphen");
+  return code;
+}
+function checkOwner(key: string): string {
+  if (!OWNER_RE.test(key)) fail("owner key must be 2-4 capital letters");
+  return key;
+}
+
+function parseJsonArray(raw: string | true | undefined, flag: string): unknown[] {
+  if (typeof raw !== "string") return fail(`${flag} is required`);
+  try {
+    const v = JSON.parse(raw);
+    if (Array.isArray(v)) return v;
+  } catch {
+    // fall through
+  }
+  return fail(`${flag} must be a JSON array`);
+}
+
+const VOCAB_KEY_RE = /^[a-z0-9_]{1,40}$/;
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const goodLabel = (v: unknown): v is string => typeof v === "string" && v.trim() !== "" && v.length <= 60;
+
+/** The vocabulary the setup script writes into the customer's stages and roles tables. */
+function checkVocabulary(stages: unknown[], roles: unknown[], defaultRole: string): void {
+  if (stages.length === 0) fail("--stages must list at least one stage");
+  const keys = new Set<string>();
+  const ords = new Set<number>();
+  for (const st of stages) {
+    if (!isRecord(st)) return fail("each stage must be an object with key, ord, label, terminal");
+    const { key, ord, label, terminal } = st;
+    if (typeof key !== "string" || !VOCAB_KEY_RE.test(key)) return fail("stage keys must be 1-40 characters: a-z, 0-9, underscore");
+    if (typeof ord !== "number" || !Number.isInteger(ord)) return fail(`stage ${key}: ord must be a whole number`);
+    if (!goodLabel(label)) fail(`stage ${key}: label must be 1-60 characters`);
+    if (typeof terminal !== "boolean") fail(`stage ${key}: terminal must be true or false`);
+    if (keys.has(key)) fail(`stage ${key} is listed twice`);
+    if (ords.has(ord)) fail(`stage ord ${ord} is used twice`);
+    keys.add(key);
+    ords.add(ord);
+  }
+  if (roles.length === 0) fail("--roles must list at least one role");
+  const roleKeys = new Set<string>();
+  for (const r of roles) {
+    if (!isRecord(r)) return fail("each role must be an object with key and label");
+    const { key, label } = r;
+    if (typeof key !== "string" || !VOCAB_KEY_RE.test(key)) return fail("role keys must be 1-40 characters: a-z, 0-9, underscore");
+    if (!goodLabel(label)) fail(`role ${key}: label must be 1-60 characters`);
+    if (roleKeys.has(key)) fail(`role ${key} is listed twice`);
+    roleKeys.add(key);
+  }
+  if (!roleKeys.has(defaultRole)) fail("--default-role must be one of the keys in --roles");
+}
+
+function parseEnvFile(text: string): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
+    const eq = t.indexOf("=");
+    if (eq < 1) continue;
+    let v = t.slice(eq + 1).trim();
+    if (/^(".*"|'.*')$/.test(v)) v = v.slice(1, -1);
+    m.set(t.slice(0, eq).trim(), v);
+  }
+  return m;
+}
+
+function usage(out: (line: string) => void): number {
+  for (const l of USAGE) out(l);
+  return 1;
+}
+
+export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number> {
+  const { db, out } = deps;
+  const env = deps.env ?? process.env;
+  const readFile = deps.readFile ?? ((p: string) => readFileSync(p, "utf8"));
+  const now = deps.now ?? (() => new Date());
+
+  async function customer(code: string): Promise<{ id: string; name: string }> {
+    const r = await db.query("SELECT id, name FROM customers WHERE code = $1", [checkCode(code)]);
+    return r.rows[0] ?? fail(`no customer with code ${code}`);
+  }
+  async function pipeline(customerId: string, key: string) {
+    const r = await db.query("SELECT id, vocab, label FROM pipelines WHERE customer_id = $1 AND key = $2", [customerId, key]);
+    return r.rows[0] ?? fail(`no pipeline ${key}`);
+  }
+
+  try {
+    const [cmd, sub] = argv;
+    switch (cmd) {
+      case "migrate": {
+        parseArgs(argv.slice(1));
+        const t = await db.query("SELECT to_regclass('public.accounts_migrations') AS t");
+        if (t.rows[0].t) {
+          const v = await db.query("SELECT 1 FROM accounts_migrations WHERE version = 1");
+          if (v.rowCount) {
+            out("Schema already applied (version 1).");
+            return 0;
+          }
+        }
+        await db.query(readFile(join(process.cwd(), "src", "lib", "monsoon", "accounts", "schema.sql")));
+        out("Schema applied (version 1).");
+        return 0;
+      }
+      case "customer": {
+        if (sub !== "add") return usage(out);
+        const { pos, flags } = parseArgs(argv.slice(2), ["--model"]);
+        need(pos, 2);
+        const code = checkCode(pos[0]);
+        const model = typeof flags.get("--model") === "string" ? (flags.get("--model") as string) : null;
+        if (code === "quantcloud" && model && /opus|fable/i.test(model)) fail("that model is not allowed for quantcloud");
+        const r = model
+          ? await db.query("INSERT INTO customers (code, name, model) VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING RETURNING id", [code, pos[1], model])
+          : await db.query("INSERT INTO customers (code, name) VALUES ($1, $2) ON CONFLICT (code) DO NOTHING RETURNING id", [code, pos[1]]);
+        if (!r.rowCount) fail(`customer ${code} already exists`);
+        out(`Customer ${code} added.`);
+        return 0;
+      }
+      case "person": {
+        const { pos, flags } = parseArgs(argv.slice(2), sub === "add" ? ["--passcode-from-env"] : []);
+        if (sub === "add") {
+          need(pos, 3);
+          const c = await customer(pos[0]);
+          const owner = checkOwner(pos[2]);
+          const count = await db.query("SELECT count(*)::int AS n FROM people WHERE customer_id = $1", [c.id]);
+          if (count.rows[0].n >= MAX_PEOPLE) fail(`a customer can have at most ${MAX_PEOPLE} people`);
+          let passcode: string;
+          const fromEnv = flags.get("--passcode-from-env");
+          if (typeof fromEnv === "string") {
+            const file = parseEnvFile(readFile(join(homedir(), ".quantcloud", "monsoon.env")));
+            passcode = file.get(fromEnv) ?? fail(`${fromEnv} not found in monsoon.env`);
+          } else passcode = generatePasscode();
+          const hash = await hashPasscode(passcode);
+          const r = await db.query(
+            "INSERT INTO people (customer_id, display_name, owner_key, passcode_hash) VALUES ($1, $2, $3, $4) ON CONFLICT (customer_id, owner_key) DO NOTHING RETURNING id",
+            [c.id, pos[1], owner, hash],
+          );
+          if (!r.rowCount) fail(`${owner} already exists for ${pos[0]}`);
+          out(`Person ${owner} added.`);
+          if (typeof fromEnv === "string") out(`Passcode set from ${fromEnv}`);
+          else {
+            out(passcode);
+            out("Send this passcode to the person now. It cannot be shown again.");
+          }
+          return 0;
+        }
+        if (sub === "reset" || sub === "suspend" || sub === "resume") {
+          need(pos, 2);
+          const c = await customer(pos[0]);
+          const owner = checkOwner(pos[1]);
+          let r;
+          if (sub === "reset") {
+            const passcode = generatePasscode();
+            r = await db.query(
+              "UPDATE people SET passcode_hash = $3, session_no = session_no + 1 WHERE customer_id = $1 AND owner_key = $2 RETURNING id",
+              [c.id, owner, await hashPasscode(passcode)],
+            );
+            if (r.rowCount) {
+              out(passcode);
+              out("Send this passcode to the person now. It cannot be shown again.");
+            }
+          } else if (sub === "suspend") {
+            r = await db.query(
+              "UPDATE people SET status = 'suspended', session_no = session_no + 1 WHERE customer_id = $1 AND owner_key = $2 RETURNING id",
+              [c.id, owner],
+            );
+            if (r.rowCount) out(`Person ${owner} suspended.`);
+          } else {
+            r = await db.query("UPDATE people SET status = 'active' WHERE customer_id = $1 AND owner_key = $2 RETURNING id", [c.id, owner]);
+            if (r.rowCount) out(`Person ${owner} resumed.`);
+          }
+          if (!r.rowCount) fail(`no person ${owner} for ${pos[0]}`);
+          return 0;
+        }
+        return usage(out);
+      }
+      case "pipeline": {
+        if (sub !== "add") return usage(out);
+        const { pos, flags } = parseArgs(argv.slice(2), ["--default-role", "--stages", "--roles"]);
+        need(pos, 3);
+        const c = await customer(pos[0]);
+        if (!KEY_RE.test(pos[1])) fail("pipeline key must be 2-32 characters: a-z, 0-9, hyphen");
+        const role = flags.get("--default-role");
+        if (typeof role !== "string") fail("--default-role is required");
+        const stages = parseJsonArray(flags.get("--stages"), "--stages");
+        const roles = parseJsonArray(flags.get("--roles"), "--roles");
+        checkVocabulary(stages, roles, role as string);
+        const r = await db.query(
+          `INSERT INTO pipelines (customer_id, key, label, default_role, position, vocab)
+           VALUES ($1, $2, $3, $4, (SELECT COALESCE(MAX(position), 0) + 1 FROM pipelines WHERE customer_id = $1), $5)
+           ON CONFLICT (customer_id, key) DO NOTHING RETURNING id`,
+          [c.id, pos[1], pos[2], role, JSON.stringify({ stages, roles })],
+        );
+        if (!r.rowCount) fail(`pipeline ${pos[1]} already exists`);
+        out(`Pipeline ${pos[1]} added.`);
+        return 0;
+      }
+      case "link": {
+        const { pos, flags } = parseArgs(argv.slice(1), [], ["--replace"]);
+        need(pos, 2);
+        const c = await customer(pos[0]);
+        const p = await pipeline(c.id, pos[1]);
+        const token = newToken();
+        const expires = new Date(now().getTime() + LINK_DAYS * 86400_000);
+        await db.query(
+          "INSERT INTO setup_links (customer_id, pipeline_id, token_hash, purpose, expires_at) VALUES ($1, $2, $3, $4, $5)",
+          [c.id, p.id, hashToken(token), flags.has("--replace") ? "replace" : "connect", expires],
+        );
+        const base = (env.MONSOON_PUBLIC_URL || "https://quantcloud.com").replace(/\/+$/, "");
+        out(`${base}/monsoon/setup/${token}`);
+        out(`Valid ${LINK_DAYS} days, single use. It cannot be shown again.`);
+        return 0;
+      }
+      case "script": {
+        const { pos, flags } = parseArgs(argv.slice(1), [], ["--login-only"]);
+        if (flags.has("--login-only")) {
+          out(loginAndPoliciesScript());
+          return 0;
+        }
+        need(pos, 2);
+        const c = await customer(pos[0]);
+        const p = await pipeline(c.id, pos[1]);
+        const people = await db.query(
+          "SELECT owner_key, display_name FROM people WHERE customer_id = $1 AND status = 'active' ORDER BY owner_key",
+          [c.id],
+        );
+        out(
+          generateSetupScript({
+            stages: p.vocab?.stages ?? [],
+            roles: p.vocab?.roles ?? [],
+            owners: people.rows.map((r: { owner_key: string; display_name: string }) => ({ key: r.owner_key, name: r.display_name })),
+          }),
+        );
+        return 0;
+      }
+      case "status": {
+        parseArgs(argv.slice(1));
+        const cs = await db.query(
+          `SELECT c.id, c.code, c.status, (c.claude_key_enc IS NOT NULL) AS has_key,
+                  (SELECT count(*)::int FROM people p WHERE p.customer_id = c.id) AS people
+           FROM customers c ORDER BY c.code`,
+        );
+        for (const c of cs.rows) {
+          const ps = await db.query(
+            "SELECT key, (db_url_enc IS NOT NULL) AS connected, connected_at FROM pipelines WHERE customer_id = $1 ORDER BY position",
+            [c.id],
+          );
+          const pipes = ps.rows
+            .map((p: { key: string; connected: boolean; connected_at: Date | null }) =>
+              p.connected && p.connected_at ? `${p.key} connected ${p.connected_at.toISOString().slice(0, 10)}` : `${p.key} not connected`,
+            )
+            .join(", ");
+          out(`${c.code} | ${c.status} | ${c.people} people | ${pipes || "no pipelines"} | Claude key ${c.has_key ? "set" : "missing"}`);
+        }
+        if (cs.rowCount === 0) out("No customers.");
+        return 0;
+      }
+      case "suspend":
+      case "resume": {
+        const { pos } = parseArgs(argv.slice(1));
+        need(pos, 1);
+        const c = await customer(pos[0]);
+        await db.query("UPDATE customers SET status = $2 WHERE id = $1", [c.id, cmd === "suspend" ? "suspended" : "active"]);
+        if (cmd === "suspend") {
+          const l = await db.query(
+            "UPDATE setup_links SET expires_at = now() WHERE customer_id = $1 AND used_at IS NULL AND expires_at > now()",
+            [c.id],
+          );
+          out(`Customer ${pos[0]} suspended; unused setup links expired: ${l.rowCount ?? 0}.`);
+        } else out(`Customer ${pos[0]} resumed.`);
+        return 0;
+      }
+      case "people": {
+        const { pos } = parseArgs(argv.slice(1));
+        need(pos, 1);
+        const c = await customer(pos[0]);
+        const r = await db.query(
+          "SELECT display_name, owner_key, status FROM people WHERE customer_id = $1 ORDER BY owner_key",
+          [c.id],
+        );
+        for (const p of r.rows) out(`${p.display_name} | ${p.owner_key} | ${p.status}`);
+        if (r.rowCount === 0) out(`No people for ${pos[0]}.`);
+        return 0;
+      }
+      case "forget": {
+        // Offboarding: clears every stored secret and signs everyone out. Rows stay (UPDATE only).
+        const { pos } = parseArgs(argv.slice(1));
+        need(pos, 1);
+        const c = await customer(pos[0]);
+        await db.query("BEGIN");
+        try {
+          const before = await db.query("SELECT claude_key_enc IS NOT NULL AS had_key FROM customers WHERE id = $1 FOR UPDATE", [c.id]);
+          const pipes = await db.query(
+            "SELECT key, db_url_enc IS NOT NULL AS had_address FROM pipelines WHERE customer_id = $1 ORDER BY position, key FOR UPDATE",
+            [c.id],
+          );
+          await db.query("UPDATE customers SET claude_key_enc = NULL, status = 'suspended' WHERE id = $1", [c.id]);
+          await db.query("UPDATE pipelines SET db_url_enc = NULL, connected_at = NULL WHERE customer_id = $1", [c.id]);
+          const people = await db.query("UPDATE people SET session_no = session_no + 1 WHERE customer_id = $1", [c.id]);
+          const links = await db.query(
+            "UPDATE setup_links SET expires_at = now() WHERE customer_id = $1 AND used_at IS NULL AND expires_at > now()",
+            [c.id],
+          );
+          await db.query("COMMIT");
+          out(`Customer ${pos[0]} suspended.`);
+          out(`Claude key: ${before.rows[0]?.had_key ? "cleared" : "was not set"}.`);
+          for (const row of pipes.rows as { key: string; had_address: boolean }[]) {
+            out(`Pipeline ${row.key}: database address ${row.had_address ? "cleared" : "was not set"}.`);
+          }
+          out(`People signed out: ${people.rowCount ?? 0}. Unused setup links expired: ${links.rowCount ?? 0}.`);
+        } catch (err) {
+          await db.query("ROLLBACK").catch(() => undefined);
+          throw err;
+        }
+        return 0;
+      }
+      default:
+        return usage(out);
+    }
+  } catch (err) {
+    if (err instanceof Fail) {
+      out(`Error: ${err.message}`);
+      return 1;
+    }
+    // Never echo driver messages: they can carry connection details.
+    const code = (err as { code?: string }).code;
+    out(`Error: ${(err as Error).name}${typeof code === "string" && code.length === 5 ? ` (${code})` : ""}`);
+    return 1;
+  }
+}

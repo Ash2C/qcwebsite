@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clientConfig, withEstateDb } from "./db";
-import { ESTATES } from "./estates";
+import { clientConfig, withPipelineDb, pipelineClientConfig } from "./db";
 import { testDb } from "./testing/db";
 
 afterEach(() => {
@@ -57,30 +56,61 @@ describe("clientConfig", () => {
   });
 });
 
-describe("withEstateDb", () => {
-  it("rejects when the env var is empty", async () => {
-    vi.stubEnv("TRAXO_CRM_DATABASE_URL", "");
-    await expect(withEstateDb(ESTATES[0], async () => 1)).rejects.toThrow(
-      "TRAXO_CRM_DATABASE_URL is not set"
-    );
+describe("withPipelineDb", () => {
+  it("rejects with the connect error and never runs fn when connect fails", async () => {
+    const fn = vi.fn();
+    await expect(withPipelineDb("postgresql://u:p@127.0.0.1:1/x", fn)).rejects.toThrow();
+    expect(fn).not.toHaveBeenCalled();
   });
 
-  it.skipIf(!testDb.available)("runs fn against a connected client and ends it", async () => {
-    vi.stubEnv(
-      "TRAXO_CRM_DATABASE_URL",
-      "postgresql://postgres:test@127.0.0.1:55433/postgres"
+  it("refuses a disallowed address before connecting", async () => {
+    const fn = vi.fn();
+    await expect(
+      withPipelineDb("postgresql://u:p@evil.com:6543/postgres", fn)
+    ).rejects.toMatchObject({ code: "not_allowed" });
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(!testDb.available)("runs fn against a local allowed database", async () => {
+    const result = await withPipelineDb(
+      "postgresql://postgres:test@127.0.0.1:55433/postgres",
+      async (db) => (await db.query("SELECT 1 AS one")).rows[0].one
     );
-    const result = await withEstateDb(ESTATES[0], async (db) => {
-      const r = await db.query("SELECT 1 AS one");
-      return r.rows[0].one;
-    });
     expect(result).toBe(1);
   });
 
   it("rejects with the connect error and never runs fn when connect fails", async () => {
-    vi.stubEnv("TRAXO_CRM_DATABASE_URL", "postgresql://u:p@127.0.0.1:1/x");
     const fn = vi.fn();
-    await expect(withEstateDb(ESTATES[0], fn)).rejects.toThrow();
+    await expect(withPipelineDb("postgresql://u:p@127.0.0.1:1/x", fn)).rejects.toThrow();
     expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe("pipelineClientConfig", () => {
+  it("uses explicit fields from the validated URL and no connectionString", () => {
+    vi.stubEnv("MONSOON_DB_CA_CERT", "CA");
+    const c = pipelineClientConfig(
+      "postgresql://monsoon_app.abc:p%40ss%3A%2F@aws-1-us-east-1.pooler.supabase.com:6543/postgres"
+    );
+    expect("connectionString" in c).toBe(false);
+    expect(c.host).toBe("aws-1-us-east-1.pooler.supabase.com");
+    expect(c.port).toBe(6543);
+    expect(c.user).toBe("monsoon_app.abc");
+    expect(c.password).toBe("p@ss:/");
+    expect(c.database).toBe("postgres");
+    expect(c.ssl).toEqual({ rejectUnauthorized: true, ca: "CA" });
+    expect(c.connectionTimeoutMillis).toBe(8000);
+    expect(c.query_timeout).toBe(10000);
+  });
+
+  it("refuses query-string overrides", () => {
+    expect(() =>
+      pipelineClientConfig("postgresql://u:p@x.pooler.supabase.com:6543/postgres?host=169.254.169.254&port=80")
+    ).toThrow();
+  });
+
+  it("uses no ssl for allowed local hosts", () => {
+    expect(pipelineClientConfig("postgresql://u:p@[::1]:5432/x").ssl).toBeUndefined();
+    expect(pipelineClientConfig("postgresql://u:p@[::1]:5432/x").host).toBe("::1");
   });
 });

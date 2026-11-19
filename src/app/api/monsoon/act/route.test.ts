@@ -1,8 +1,7 @@
+import type { MockInstance } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signSession } from "@/lib/monsoon/auth";
 import { signProposal, type Proposal } from "@/lib/monsoon/ask/proposal";
 
-const withEstateDb = vi.fn();
 const addNote = vi.fn();
 const moveStage = vi.fn();
 const vocabulary = vi.fn();
@@ -15,9 +14,13 @@ const applyResearch = vi.fn();
 vi.mock("@/lib/monsoon/research-apply", () => ({
   applyResearch: (...args: unknown[]) => applyResearch(...args),
 }));
-vi.mock("@/lib/monsoon/db", () => ({
-  withEstateDb: (...args: unknown[]) => withEstateDb(...args),
+const ensureOwner = vi.fn();
+vi.mock("@/lib/monsoon/owners", () => ({
+  ensureOwner: (...args: unknown[]) => ensureOwner(...args),
 }));
+vi.mock("@/lib/monsoon/accounts/account", async () =>
+  (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
+);
 vi.mock("@/lib/monsoon/ask/actions", () => ({
   addNote: (...args: unknown[]) => addNote(...args),
   moveStage: (...args: unknown[]) => moveStage(...args),
@@ -26,14 +29,25 @@ vi.mock("@/lib/monsoon/ask/queries", () => ({
   vocabulary: (...args: unknown[]) => vocabulary(...args),
 }));
 
+import type { Account } from "@/lib/monsoon/accounts/account";
+import { fakeAccount, signInAs, signOut } from "@/lib/monsoon/testing/account";
 import { POST } from "./route";
 
 const MEMBER = "11111111-1111-4111-8111-111111111111";
+const CUSTOMER = "c0000000-0000-4000-8000-00000000000a";
+const OTHER_CUSTOMER = "c0000000-0000-4000-8000-00000000000b";
+const PIPELINES = [
+  { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", connected: true },
+  { key: "zeroone", label: "Zero One", defaultRole: "investor", connected: true },
+];
 const fakeClient = { fake: true };
+let account: Account;
+let withDb: MockInstance<Account["withDb"]>;
 
 function noteProposal(over: Partial<Proposal> = {}): Proposal {
   return {
     kind: "add_note",
+    customer: CUSTOMER,
     estate: "traxo",
     memberId: MEMBER,
     memberKind: "company",
@@ -47,6 +61,7 @@ function noteProposal(over: Partial<Proposal> = {}): Proposal {
 function stageProposal(over: Record<string, unknown> = {}): Proposal {
   return {
     kind: "move_stage",
+    customer: CUSTOMER,
     estate: "traxo",
     memberId: MEMBER,
     memberKind: "person",
@@ -63,6 +78,7 @@ function stageProposal(over: Record<string, unknown> = {}): Proposal {
 function detailsProposal(over: Record<string, unknown> = {}): Proposal {
   return {
     kind: "update_details",
+    customer: CUSTOMER,
     estate: "traxo",
     target: { type: "person", id: MEMBER },
     targetName: "Li Wei",
@@ -79,13 +95,11 @@ function detailsProposal(over: Record<string, unknown> = {}): Proposal {
 }
 
 function post(body: unknown, authenticated = true): Request {
+  if (!authenticated) signOut();
   return new Request("http://localhost/api/monsoon/act", {
     method: "POST",
     body: typeof body === "string" ? body : JSON.stringify(body),
-    headers: {
-      "Content-Type": "application/json",
-      ...(authenticated ? { Cookie: `monsoon_session=${signSession()}` } : {}),
-    },
+    headers: { "Content-Type": "application/json" },
   });
 }
 function signed(proposal: Proposal, extra: Record<string, unknown> = {}) {
@@ -93,13 +107,14 @@ function signed(proposal: Proposal, extra: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  withEstateDb.mockReset();
+  account = fakeAccount({ customer: { id: CUSTOMER }, person: { ownerKey: "AB" }, pipelines: PIPELINES, db: fakeClient });
+  withDb = vi.spyOn(account, "withDb");
+  signInAs(account);
   addNote.mockReset();
   moveStage.mockReset();
   vocabulary.mockReset();
   applyDetails.mockReset();
   applyResearch.mockReset();
-  withEstateDb.mockImplementation(async (_estate, fn) => fn(fakeClient));
   vocabulary.mockResolvedValue({
     stages: [
       { key: "contacted", label: "Contacted", ord: 1, terminal: false },
@@ -109,7 +124,6 @@ beforeEach(() => {
     roles: [],
     owners: [],
   });
-  vi.stubEnv("MONSOON_PASSCODE", "correct-horse-battery-staple");
   vi.stubEnv("MONSOON_SESSION_SECRET", "x".repeat(32));
 });
 afterEach(() => {
@@ -118,7 +132,8 @@ afterEach(() => {
 });
 
 function nothingCalled() {
-  expect(withEstateDb).not.toHaveBeenCalled();
+  expect(withDb).not.toHaveBeenCalled();
+  expect(account.record).not.toHaveBeenCalled();
   expect(addNote).not.toHaveBeenCalled();
   expect(moveStage).not.toHaveBeenCalled();
   expect(applyDetails).not.toHaveBeenCalled();
@@ -178,6 +193,23 @@ describe("POST /api/monsoon/act", () => {
     nothingCalled();
   });
 
+  it("refuses a proposal signed for another customer, even for the same pipeline key", async () => {
+    const res = await POST(post(signed(noteProposal({ customer: OTHER_CUSTOMER } as Partial<Proposal>), { text: "hi" })));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "This change has expired. Ask again." });
+    nothingCalled();
+  });
+
+  it("refuses a proposal for a pipeline the account does not have", async () => {
+    signInAs(account);
+    const elsewhere = noteProposal({ estate: "qforce" } as Partial<Proposal>);
+    const res = await POST(post({ ...signed(elsewhere, { text: "hi" }), estate: "traxo" }));
+    expect(res.status).toBe(403);
+    // The body's own estate must be one of the account's pipelines.
+    expect((await POST(post(signed(elsewhere, { text: "hi" })))).status).toBe(400);
+    nothingCalled();
+  });
+
   it("refuses a bad body shape", async () => {
     const cases: [unknown, number][] = [
       [null, 400],
@@ -220,8 +252,10 @@ describe("POST /api/monsoon/act", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "added", message: "Done. Note added to Northwind Capital." });
     expect(addNote).toHaveBeenCalledTimes(1);
-    expect(addNote).toHaveBeenCalledWith(fakeClient, MEMBER, "my edited note");
-    expect(withEstateDb.mock.calls[0][0].key).toBe("traxo");
+    expect(addNote).toHaveBeenCalledWith(fakeClient, MEMBER, "my edited note", "AB");
+    expect(withDb.mock.calls[0][0]).toBe("traxo");
+    expect(account.record).toHaveBeenCalledTimes(1);
+    expect(account.record).toHaveBeenCalledWith("act_note", "traxo");
   });
 
   it("reports a duplicate note as done", async () => {
@@ -241,7 +275,8 @@ describe("POST /api/monsoon/act", () => {
     const res = await POST(post(signed(stageProposal())));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status, message });
-    expect(moveStage).toHaveBeenCalledWith(fakeClient, MEMBER, "contacted", "engaged");
+    expect(moveStage).toHaveBeenCalledWith(fakeClient, MEMBER, "contacted", "engaged", "AB");
+    expect(account.record).toHaveBeenCalledWith("act_stage", "traxo");
   });
 
   it("falls back to the stage key when a label is unknown", async () => {
@@ -287,12 +322,13 @@ describe("POST /api/monsoon/act", () => {
   it("answers 502 without leaking details when the database call throws", async () => {
     const secretUrl = "postgresql://user:hunter2@db.internal.example:5432/x";
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    withEstateDb.mockRejectedValue(new Error(`boom ${secretUrl} secret note`));
+    withDb.mockRejectedValue(new Error(`boom ${secretUrl} secret note`));
     const res = await POST(post(signed(noteProposal(), { text: "secret note" })));
     expect(res.status).toBe(502);
     const text = await res.text();
     expect(JSON.parse(text)).toEqual({ error: "Could not reach the Traxo CRM" });
     expect(text).not.toContain("hunter2");
+    expect(account.record).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledTimes(1);
     const logged = JSON.stringify(log.mock.calls);
     for (const leak of ["hunter2", "boom", "secret note", "Northwind"]) expect(logged).not.toContain(leak);
@@ -312,7 +348,8 @@ describe("POST /api/monsoon/act", () => {
       const res = await POST(post(signed(proposal)));
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ status, message });
-      expect(applyDetails).toHaveBeenCalledWith(fakeClient, proposal);
+      expect(applyDetails).toHaveBeenCalledWith(fakeClient, proposal, "AB");
+      expect(account.record).toHaveBeenCalledWith("act_details", "traxo");
       expect(addNote).not.toHaveBeenCalled();
       expect(moveStage).not.toHaveBeenCalled();
     });
@@ -361,6 +398,7 @@ describe("POST /api/monsoon/act", () => {
 function researchProposal(over: Record<string, unknown> = {}): Proposal {
   return {
     kind: "apply_research",
+    customer: CUSTOMER,
     estate: "traxo",
     person: { id: MEMBER, name: "Li Wei" },
     company: { id: "33333333-3333-4333-8333-333333333333", name: "Acme Capital" },
@@ -384,7 +422,8 @@ describe("apply_research", () => {
     const res = await POST(post(signed(proposal, { ticked: ["f1"], text: "  Summary.  " })));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "saved", message: "Done. Research saved for Li Wei." });
-    expect(applyResearch).toHaveBeenCalledWith(fakeClient, proposal, ["f1"], "Summary.");
+    expect(applyResearch).toHaveBeenCalledWith(fakeClient, proposal, ["f1"], "Summary.", "AB");
+    expect(account.record).toHaveBeenCalledWith("act_research", "traxo");
   });
 
   it.each([

@@ -38,7 +38,18 @@ describe.skipIf(!testDb.available)("Ask loop follow-up about a person filed unde
     };
     return { c, requests };
   }
-  const deps = (c: ModelClient) => ({ db, estate: "traxo" as const, estateLabel: "Traxo", today: "2026-11-13", client: c, now: () => Date.now() });
+  const deps = (c: ModelClient) => ({
+    db,
+    customerId: "c0000000-0000-4000-8000-00000000000a",
+    estate: "traxo",
+    estateLabel: "Traxo",
+    defaultRole: "lp_prospect",
+    person: { name: "Vincent", ownerKey: "VF" },
+    model: "claude-haiku-5-5",
+    today: "2026-11-13",
+    client: c,
+    now: () => Date.now(),
+  });
 
   it("lists two people at one company as two refs, and a follow-up with person_id proposes a note about the person", async () => {
     const found = client([

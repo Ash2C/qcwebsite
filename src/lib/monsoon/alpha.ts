@@ -5,27 +5,29 @@ import { nameKey } from "./rules";
 // Only ever inserts: a person (named by their email) and a pipeline member when they are new, and
 // one timeline note. Someone already on file is reused, never duplicated, and never overwritten.
 
+// Paused 2026-11-13 until email and phone verification are built: the route saves nothing.
+export const SIGNUPS_OPEN = false;
+
 export const ALPHA_NOTE = "Signed up for the Monsoon alpha on quantcloud.com";
 const SOURCE = "monsoon-alpha";
 const ROLE = "reader";
-const OWNER = "VF";
 
 export type AlphaResult = { status: "added" | "existing" | "repeat" };
 
-async function addMember(db: ClientBase, personId: string): Promise<string> {
+async function addMember(db: ClientBase, personId: string, owner: string): Promise<string> {
   const stage = (await db.query("SELECT key FROM stages WHERE NOT terminal ORDER BY ord LIMIT 1")).rows[0]?.key;
   const role = (await db.query("SELECT key FROM roles WHERE key = $1", [ROLE])).rows[0]?.key;
   if (!stage || !role) throw new Error("The CRM is missing its first stage or the reader role");
   const row = (
     await db.query(
       `INSERT INTO members (person_id, role, stage, owner, source) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [personId, role, stage, OWNER, SOURCE],
+      [personId, role, stage, owner, SOURCE],
     )
   ).rows[0];
   return row.id as string;
 }
 
-export async function recordAlphaSignup(db: ClientBase, email: string): Promise<AlphaResult> {
+export async function recordAlphaSignup(db: ClientBase, email: string, owner: string): Promise<AlphaResult> {
   const clean = email.trim().toLowerCase();
   await db.query("BEGIN ISOLATION LEVEL READ COMMITTED");
   try {
@@ -50,7 +52,7 @@ export async function recordAlphaSignup(db: ClientBase, email: string): Promise<
     let status: AlphaResult["status"];
     if (person) {
       status = "existing";
-      memberId = person.own_member ?? person.org_member ?? (await addMember(db, person.id));
+      memberId = person.own_member ?? person.org_member ?? (await addMember(db, person.id, owner));
     } else {
       const created = (
         await db.query(
@@ -58,7 +60,7 @@ export async function recordAlphaSignup(db: ClientBase, email: string): Promise<
           [clean, nameKey(clean), SOURCE],
         )
       ).rows[0];
-      memberId = await addMember(db, created.id as string);
+      memberId = await addMember(db, created.id as string, owner);
       status = "added";
     }
 
@@ -72,7 +74,7 @@ export async function recordAlphaSignup(db: ClientBase, email: string): Promise<
     }
     await db.query(`INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'note', $2, $3)`, [
       memberId,
-      OWNER,
+      owner,
       ALPHA_NOTE,
     ]);
     await db.query("COMMIT");

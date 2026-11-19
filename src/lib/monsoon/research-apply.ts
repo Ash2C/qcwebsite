@@ -13,7 +13,6 @@ export type ResearchApplyResult = {
   name: string;
 };
 
-const OWNER = "VF";
 const display = (v: string | null) => v ?? "(empty)";
 const change = (f: ResearchFinding): DetailChange => ({ field: f.field, from: f.from, to: f.to });
 
@@ -26,18 +25,19 @@ export async function applyResearch(
   proposal: ResearchProposal,
   ticked: string[],
   summary: string,
+  owner: string,
 ): Promise<ResearchApplyResult> {
   try {
-    return await applyOnce(db, proposal, ticked, summary);
+    return await applyOnce(db, proposal, ticked, summary, owner);
   } catch (err) {
     if (isUniqueOn(err, "members", "members_pkey") && proposal.addsToPipeline !== null) {
-      return applyOnce(db, proposal, ticked, summary);
+      return applyOnce(db, proposal, ticked, summary, owner);
     }
     throw err;
   }
 }
 
-function applyOnce(db: ClientBase, proposal: ResearchProposal, ticked: string[], summary: string): Promise<ResearchApplyResult> {
+function applyOnce(db: ClientBase, proposal: ResearchProposal, ticked: string[], summary: string, owner: string): Promise<ResearchApplyResult> {
   return transaction<ResearchApplyResult>(db, async () => {
     const out = (status: ResearchApplyResult["status"], written: string[], skipped: string[], name: string, commit = false) => ({
       value: { status, written, skipped, name },
@@ -77,7 +77,7 @@ function applyOnce(db: ClientBase, proposal: ResearchProposal, ticked: string[],
 
     const logMember =
       (await logMemberFor(db, { type: "person", id: proposal.person.id, orgId: person.orgId })) ??
-      (proposal.addsToPipeline !== null ? await addToPipeline(db, proposal.person.id, proposal.addsToPipeline) : null);
+      (proposal.addsToPipeline !== null ? await addToPipeline(db, proposal.person.id, proposal.addsToPipeline, owner) : null);
     if (logMember === null) return out("unlogged", [], [], proposal.person.name);
 
     const sources = [...new Set([...writtenFindings.map((f) => f.source), ...(summary !== "" ? proposal.summarySources : [])])];
@@ -87,7 +87,7 @@ function applyOnce(db: ClientBase, proposal: ResearchProposal, ticked: string[],
     if (sources.length > 0) lines.push(`Sources: ${sources.join(", ")}`);
     await db.query("INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'system', $2, $3)", [
       logMember,
-      OWNER,
+      owner,
       lines.join("\n\n"),
     ]);
     return out(skippedLabels.length > 0 ? "partly" : "saved", written, skippedLabels, person.name, true);

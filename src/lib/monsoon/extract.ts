@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import type Anthropic from "@anthropic-ai/sdk";
 
 // Upper bound on cards kept from one photo.
 export const MAX_CARDS = 12;
@@ -31,22 +31,14 @@ const KEYS: Exclude<keyof CardFields, "kind">[] = [
 const SYSTEM_PROMPT =
   "You are given one image. It may be a business card, a conference badge, a name tag on clothing, a screenshot of a website, a LinkedIn profile, an email signature, a slide, an attendee or team list, or anything else that shows people's names. Return one entry in `cards` for each person you can identify by a visible name, in reading order: top to bottom, then left to right. Never merge two people into one entry and never split one person into two. For each person, copy only the details that are visibly attached to that person, exactly as shown: `name` is the person's name only; `title` their job title; `org` their company or organisation; `email`, `phone` and `linkedin` only if shown for that person. If a detail is not shown for that person, leave that field as an empty string; never guess, infer, or borrow a detail from another person or from elsewhere in the image. A company logo or page header may be used as `org` only when the image is clearly about that one company (a card, a badge, a company's own team page). `raw_text` is the text belonging to that person, line by line. `kind` is `card` for a business card, `badge` for a badge or name tag, `screen` for a screenshot, slide or other image of a screen or document, and `other` for anything else. If the image names no person, or nothing is legible, return an empty `cards` list.";
 
-export function resolveModel(): string {
-  const model = process.env.MONSOON_MODEL || "claude-haiku-5-5";
-  if (/opus|fable/i.test(model)) {
-    throw new Error("MONSOON_MODEL must not be an Opus or Fable model");
-  }
-  return model;
-}
-
-export async function extractCards(image: {
-  base64: string;
-  mediaType: "image/jpeg" | "image/png" | "image/webp";
-}): Promise<CardFields[]> {
-  // Resolved per call so a bad MONSOON_MODEL fails the read, not the build.
-  const model = resolveModel();
-  const client = new Anthropic({ timeout: 25_000, maxRetries: 0 });
-
+export async function extractCards(
+  client: Anthropic,
+  model: string,
+  image: {
+    base64: string;
+    mediaType: "image/jpeg" | "image/png" | "image/webp";
+  },
+): Promise<CardFields[]> {
   const response = await client.messages.create({
     model,
     // Thinking tokens count against max_tokens on these models; leave room.

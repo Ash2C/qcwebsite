@@ -1,7 +1,6 @@
 // The assistant loop: the model asks for tools, the server runs them, the results go back, and
 // the model's final text is the answer. Proposals are collected; nothing here writes anything.
 import type { ClientBase } from "pg";
-import type { EstateKey } from "../estates";
 import type { SignedProposal } from "./proposal";
 import { vocabulary, type Vocabulary } from "./queries";
 import { refKey, runTool, TOOLS, type Ref, type ResearchOffer } from "./tools";
@@ -40,13 +39,10 @@ const OUT_OF_TIME = "Out of time.";
 const TOO_BIG_RESULT = "Too much to show. Narrow the question.";
 const ENOUGH = "Enough has been looked up. Answer from what you have.";
 
-export function resolveAskModel(): string {
-  const model = process.env.MONSOON_ASK_MODEL || "claude-haiku-5-5";
-  if (/opus|fable/i.test(model)) throw new Error("MONSOON_ASK_MODEL must not be an Opus or Fable model");
-  return model;
-}
+/** The signed-in person the assistant is talking to. */
+export type AskPerson = { name: string; ownerKey: string };
 
-export function buildSystem(estateLabel: string, vocab: Vocabulary, today: string): string {
+export function buildSystem(estateLabel: string, vocab: Vocabulary, today: string, person: AskPerson): string {
   const stages = vocab.stages
     .slice()
     .sort((a, b) => a.ord - b.ord)
@@ -54,7 +50,7 @@ export function buildSystem(estateLabel: string, vocab: Vocabulary, today: strin
     .join(", ");
   const roles = vocab.roles.map((r) => `${r.key} (${r.label})`).join(", ");
   const owners = vocab.owners.map((o) => `${o.key} (${o.name})`).join(", ");
-  return `You are the assistant inside Monsoon, a small CRM tool. You are talking to Vincent, whose owner key is VF. This is the ${estateLabel} CRM. Today is ${today}.
+  return `You are the assistant inside Monsoon, a small CRM tool. You are talking to ${person.name}, whose owner key is ${person.ownerKey}. This is the ${estateLabel} CRM. Today is ${today}.
 
 Stages, in order: ${stages}. Terminal stages end a relationship.
 Roles: ${roles}.
@@ -76,7 +72,7 @@ Rules:
 - Plain text only. No asterisks, no Markdown of any kind, no tables, no headings. Write lists as lines starting with "- ".
 - Keep answers short.
 - Never describe how the data is stored: no "member", "member record", "linked to a company member", "standalone person", and no ids. Say "on the pipeline" or "filed under <company>".
-- "Who should I chase" means the user's own contacts (owner VF) plus unassigned ones, unless he says the whole team. Say so: "yours and unassigned".
+- "Who should I chase" means the user's own contacts (owner ${person.ownerKey}) plus unassigned ones, unless the user says the whole team. Say so: "yours and unassigned".
 - A person filed under a company is changed through that company's entry. Say so when it applies.
 - For a change about a person filed under a company, call the propose tool with person_id, never the company's member_id. If you do not have the person id, look the person up again first.
 - Use the ids from earlier tool results; never invent an id.
@@ -130,8 +126,16 @@ function pushRefs(all: Map<string, Ref>, refs: Ref[]) {
 export async function runAsk(
   deps: {
     db: ClientBase;
-    estate: EstateKey;
+    /** The signed-in customer's id; every proposal is bound to it. */
+    customerId: string;
+    /** The pipeline key. */
+    estate: string;
     estateLabel: string;
+    /** The pipeline's default role, for a details change that adds a person to the pipeline. */
+    defaultRole: string;
+    person: AskPerson;
+    /** The customer's model (account.model()). */
+    model: string;
     today: string;
     client: ModelClient;
     now: () => number;
@@ -140,13 +144,12 @@ export async function runAsk(
   },
   messages: AskMessage[],
 ): Promise<AskResult> {
-  const { db, estate, estateLabel, today, client, now } = deps;
+  const { db, customerId, estate, estateLabel, defaultRole, person, model, today, client, now } = deps;
   const start = deps.startedAt ?? now();
   const remaining = () => DEADLINE_MS - (now() - start);
   const opts = () => ({ timeout: Math.min(CALL_TIMEOUT_MS, remaining() - 1_000) });
   const vocab = await vocabulary(db);
-  const system = buildSystem(estateLabel, vocab, today);
-  const model = resolveAskModel();
+  const system = buildSystem(estateLabel, vocab, today, person);
   const convo = toModelMessages(messages);
 
   const refs = new Map<string, Ref>();
@@ -202,7 +205,11 @@ export async function runAsk(
       else if (remaining() < MIN_TOOL_MS) result = { error: OUT_OF_TIME };
       else if (sentChars > MAX_TOTAL_RESULT_CHARS) result = { error: ENOUGH };
       else if (!(name.startsWith("propose_") && proposals.length >= MAX_PROPOSALS)) {
-        const out = await runTool({ db, estate, today, nowMs: now(), remainingMs: remaining }, name, use.input);
+        const out = await runTool(
+          { db, customerId, estate, defaultRole, today, nowMs: now(), remainingMs: remaining },
+          name,
+          use.input,
+        );
         result = out.result;
         if (out.proposal) proposals.push(out.proposal);
         if (out.research) research = out.research;

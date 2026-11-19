@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
+import { ensureOwner } from "@/lib/monsoon/owners";
+import { requireAccount } from "@/lib/monsoon/accounts/account";
+import type { ActivityAction } from "@/lib/monsoon/accounts/store";
 import { addNote, moveStage } from "@/lib/monsoon/ask/actions";
-import { verifyProposal } from "@/lib/monsoon/ask/proposal";
+import { verifyProposal, type Proposal } from "@/lib/monsoon/ask/proposal";
 import { vocabulary } from "@/lib/monsoon/ask/queries";
-import { requireSession } from "@/lib/monsoon/auth";
 import { readJson } from "@/lib/monsoon/body";
-import { withEstateDb } from "@/lib/monsoon/db";
 import { applyDetails, DETAIL_LABELS } from "@/lib/monsoon/details";
-import { estateByKey } from "@/lib/monsoon/estates";
 import { applyResearch } from "@/lib/monsoon/research-apply";
 
 export const runtime = "nodejs";
@@ -20,13 +20,21 @@ const MAX_SUMMARY = 2000;
 // any other constraint, such as the by_whom owner reference, is not a missing contact.
 const MEMBER_FK = "touches_member_id_fkey";
 
+const ACTIVITY: Record<Proposal["kind"], ActivityAction> = {
+  add_note: "act_note",
+  move_stage: "act_stage",
+  update_details: "act_details",
+  apply_research: "act_research",
+};
+
 function bad(error: string) {
   return NextResponse.json({ error }, { status: 400 });
 }
 
 export async function POST(request: Request) {
-  const denied = requireSession(request);
-  if (denied) return denied;
+  const auth = await requireAccount(request);
+  if (!auth.ok) return auth.response;
+  const { account } = auth;
 
   const read = await readJson(request, MAX_BODY);
   if (!read.ok) return read.response;
@@ -34,11 +42,17 @@ export async function POST(request: Request) {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return bad("Invalid body");
   const b = body as Record<string, unknown>;
 
-  const estate = estateByKey(b.estate);
+  const estate = account.pipeline(b.estate);
   if (!estate) return bad("Unknown estate");
 
+  // Only a change offered to this customer, for one of its pipelines, and for the pipeline named here.
   const proposal = b.proposal;
-  if (!verifyProposal(proposal, b.signature, Date.now()) || proposal.estate !== estate.key) {
+  if (
+    !verifyProposal(proposal, b.signature, Date.now()) ||
+    proposal.customer !== account.customer.id ||
+    !account.pipeline(proposal.estate) ||
+    proposal.estate !== estate.key
+  ) {
     return NextResponse.json({ error: "This change has expired. Ask again." }, { status: 403 });
   }
   let text = "";
@@ -64,10 +78,13 @@ export async function POST(request: Request) {
   }
 
   try {
-    const result = await withEstateDb(estate, async (db) => {
+    const owner = account.person.ownerKey;
+    const result = await account.withDb(estate.key, async (db) => {
+      // The owner key may never have reached this CRM (connected after sign-in, or that ensure failed).
+      await ensureOwner(db, owner, account.person.name);
       if (proposal.kind === "add_note") {
         try {
-          const { status } = await addNote(db, proposal.memberId, text);
+          const { status } = await addNote(db, proposal.memberId, text, owner);
           return { status, message: `Done. Note added to ${proposal.memberName}.` };
         } catch (err) {
           // The contact was removed after the change was offered: a violation of the member foreign
@@ -80,7 +97,7 @@ export async function POST(request: Request) {
         }
       }
       if (proposal.kind === "apply_research") {
-        const done = await applyResearch(db, proposal, ticked, text);
+        const done = await applyResearch(db, proposal, ticked, text, owner);
         const messages = {
           saved: `Done. Research saved for ${done.name}.`,
           partly: `Saved ${done.written.length > 0 ? done.written.join(", ") : "the summary"}. ${done.skipped.join(", ")} changed in the meantime and ${done.skipped.length === 1 ? "was" : "were"} left alone.`,
@@ -95,7 +112,7 @@ export async function POST(request: Request) {
         return { status: done.status, message: messages[done.status] };
       }
       if (proposal.kind === "update_details") {
-        const done = await applyDetails(db, proposal);
+        const done = await applyDetails(db, proposal, owner);
         const labels = (fields: string[]) => fields.map((f) => DETAIL_LABELS[f as keyof typeof DETAIL_LABELS]).join(", ");
         const messages = {
           updated: `Done. ${done.name} updated.`,
@@ -110,7 +127,7 @@ export async function POST(request: Request) {
       const { stages } = await vocabulary(db);
       const label = (key: string | null) => stages.find((s) => s.key === key)?.label ?? key ?? "";
       const who = proposal.memberName;
-      const moved = await moveStage(db, proposal.memberId, proposal.fromStage, proposal.toStage);
+      const moved = await moveStage(db, proposal.memberId, proposal.fromStage, proposal.toStage, owner);
       const messages = {
         moved: `Done. ${who} moved to ${label(proposal.toStage)}.`,
         already: `${who} is already in ${label(proposal.toStage)}; nothing changed.`,
@@ -119,6 +136,7 @@ export async function POST(request: Request) {
       };
       return { status: moved.status, message: messages[moved.status] };
     });
+    await account.record(ACTIVITY[proposal.kind], estate.key);
     return NextResponse.json(result);
   } catch (err) {
     // Name and code only: the message can carry connection details or note text.
