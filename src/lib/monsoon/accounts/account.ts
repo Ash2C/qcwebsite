@@ -7,6 +7,7 @@ import { withPipelineDb } from "../db";
 import { decryptSecret } from "./crypto";
 import { NotConnected } from "./not-connected";
 import {
+  evictAccount,
   loadAccountRows,
   recordActivity,
   withAccountsDb,
@@ -92,9 +93,21 @@ export async function requireAccount(
   const claims = verifySession(cookieValue(request, SESSION_COOKIE));
   if (!claims) return refuse("unauthorized", 401);
 
+  const matches = (r: Awaited<ReturnType<typeof loadAccountRows>>): r is NonNullable<typeof r> =>
+    r !== null &&
+    r.customer.status === "active" &&
+    r.person.status === "active" &&
+    r.person.sessionNo === claims.sessionNo;
+
   let rows: Awaited<ReturnType<typeof loadAccountRows>>;
   try {
     rows = await loadAccountRows(claims.customerId, claims.personId);
+    if (!matches(rows)) {
+      // The cached row may predate a reset or reinstatement made on another server instance.
+      // Evict and read the database once; refuse only if the fresh row still does not match.
+      evictAccount(claims.customerId, claims.personId);
+      rows = await loadAccountRows(claims.customerId, claims.personId);
+    }
   } catch (err) {
     // Name and code only: the message can carry connection details.
     console.error(
@@ -104,14 +117,7 @@ export async function requireAccount(
     );
     return refuse("Could not reach the accounts database", 502);
   }
-  if (
-    !rows ||
-    rows.customer.status !== "active" ||
-    rows.person.status !== "active" ||
-    rows.person.sessionNo !== claims.sessionNo
-  ) {
-    return refuse("unauthorized", 401);
-  }
+  if (!matches(rows)) return refuse("unauthorized", 401);
   return { ok: true, account: buildAccount(rows) };
 }
 

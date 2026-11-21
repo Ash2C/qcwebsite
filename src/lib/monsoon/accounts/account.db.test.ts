@@ -1,6 +1,6 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Client } from "pg";
+import { Client } from "pg";
 import { makeAccountsTestDb, makeTestDb } from "../testing/db";
 import { signSession } from "../auth";
 import { encryptSecret } from "./crypto";
@@ -190,6 +190,63 @@ describe.skipIf(!accounts.available)("requireAccount", () => {
     await expectRefused(signed(1));
     clearAccountCache();
     expect((await requireAccount(signed(2))).ok).toBe(true);
+  });
+
+  describe("a stale cached row", () => {
+    // Every database read opens one connection, so counting connects counts reads.
+    function countReads() {
+      return vi.spyOn(Client.prototype, "connect");
+    }
+
+    it("re-reads once and accepts when the database now holds the cookie's session number", async () => {
+      expect((await requireAccount(signed(1))).ok).toBe(true); // caches session_no 1
+      await client.query("UPDATE people SET session_no = 2 WHERE id = $1", [pid]);
+      const reads = countReads();
+      try {
+        expect((await requireAccount(signed(2))).ok).toBe(true);
+        expect(reads).toHaveBeenCalledTimes(1);
+      } finally {
+        reads.mockRestore();
+      }
+    });
+
+    it("refuses when the database still holds the old session number", async () => {
+      expect((await requireAccount(signed(1))).ok).toBe(true);
+      const reads = countReads();
+      try {
+        const r = await requireAccount(signed(2));
+        expect(r.ok).toBe(false);
+        expect(reads).toHaveBeenCalledTimes(1);
+      } finally {
+        reads.mockRestore();
+      }
+    });
+
+    it("refuses an old cookie after a reset with at most one re-read", async () => {
+      await client.query("UPDATE people SET session_no = 2 WHERE id = $1", [pid]);
+      const reads = countReads();
+      try {
+        const r = await requireAccount(signed(1));
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.response.status).toBe(401);
+        expect(reads.mock.calls.length).toBeLessThanOrEqual(2);
+      } finally {
+        reads.mockRestore();
+      }
+    });
+
+    it("re-reads once and accepts after a person is reinstated on another instance", async () => {
+      await client.query("UPDATE people SET status = 'suspended' WHERE id = $1", [pid]);
+      expect((await requireAccount(signed(1))).ok).toBe(false);
+      await client.query("UPDATE people SET status = 'active' WHERE id = $1", [pid]);
+      const reads = countReads();
+      try {
+        expect((await requireAccount(signed(1))).ok).toBe(true);
+        expect(reads).toHaveBeenCalledTimes(1);
+      } finally {
+        reads.mockRestore();
+      }
+    });
   });
 
   it("sees a suspension after the 60-second cache expires", async () => {
