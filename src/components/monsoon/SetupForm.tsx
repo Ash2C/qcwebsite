@@ -1,38 +1,15 @@
 "use client";
 
-// The setup link's form: database address, monsoon_app password and Claude key. The server tests
-// everything before storing it; the fields are cleared and the form hidden once it succeeds.
+// The setup link's form: just the Claude key. The server tests the key before storing it;
+// the field is cleared and the form hidden once it succeeds.
 import { useState, type FormEvent } from "react";
 import { card, fieldInput, fieldLabel, primaryButton } from "./styles";
 
-type Fields = { projectRef: string; poolerHost: string; password: string; claudeKey: string };
-const EMPTY: Fields = { projectRef: "", poolerHost: "", password: "", claudeKey: "" };
-
-const ROWS: { key: keyof Fields; label: string; type: "text" | "password"; placeholder?: string }[] = [
-  { key: "projectRef", label: "Project reference", type: "text", placeholder: "20 letters and digits" },
-  { key: "poolerHost", label: "Pooler host", type: "text", placeholder: "aws-0-region.pooler.supabase.com" },
-  { key: "password", label: "monsoon_app password", type: "password" },
-  { key: "claudeKey", label: "Claude API key", type: "password" },
-];
-
-const KEEP_KEY = "Leave blank to keep the Claude key already on file";
-
-export default function SetupForm({
-  token,
-  purpose,
-  claudeKeyOnFile = false,
-}: {
-  token: string;
-  purpose: "connect" | "replace";
-  claudeKeyOnFile?: boolean;
-}) {
-  const [fields, setFields] = useState<Fields>(EMPTY);
+export default function SetupForm({ token }: { token: string }) {
+  const [claudeKey, setClaudeKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [done, setDone] = useState(false);
-  const optional = purpose === "replace";
-  // A second pipeline's connect link: the customer's Claude key is already stored.
-  const keepKey = purpose === "connect" && claudeKeyOnFile;
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -44,11 +21,11 @@ export default function SetupForm({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         cache: "no-store",
-        body: JSON.stringify({ token, ...fields }),
+        body: JSON.stringify({ token, claudeKey }),
       });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; message?: string; error?: string };
       if (res.ok && body.ok) {
-        setFields(EMPTY);
+        setClaudeKey("");
         setDone(true);
         setMessage({ text: body.message ?? "Connected. You can close this page.", ok: true });
       } else {
@@ -65,40 +42,23 @@ export default function SetupForm({
     <div className="flex flex-col gap-4">
       {!done && (
         <form onSubmit={onSubmit} className="flex flex-col gap-4" autoComplete="off">
-          {optional && (
-            <p className="text-[15px] text-neutral-600 dark:text-neutral-400">
-              Leave blank to keep the current one. To change the database, fill in all three database fields.
-            </p>
-          )}
-          {keepKey && <p className="text-[15px] text-neutral-600 dark:text-neutral-400">{KEEP_KEY}.</p>}
-          <div className={`${card} divide-y divide-black/5 dark:divide-white/10`}>
-            {ROWS.map((row) => (
-              <div key={row.key}>
-                <label htmlFor={`setup-${row.key}`} className={fieldLabel}>
-                  {row.label}
-                </label>
-                <input
-                  id={`setup-${row.key}`}
-                  name={row.key}
-                  type={row.type}
-                  autoComplete={row.type === "password" ? "new-password" : "off"}
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  required={!optional && !(keepKey && row.key === "claudeKey")}
-                  placeholder={
-                    optional
-                      ? "Leave blank to keep the current one"
-                      : keepKey && row.key === "claudeKey"
-                        ? KEEP_KEY
-                        : row.placeholder
-                  }
-                  value={fields[row.key]}
-                  onChange={(ev) => setFields((f) => ({ ...f, [row.key]: ev.target.value }))}
-                  className={fieldInput}
-                />
-              </div>
-            ))}
+          <div className={card}>
+            <label htmlFor="setup-claudeKey" className={fieldLabel}>
+              Claude API key
+            </label>
+            <input
+              id="setup-claudeKey"
+              name="claudeKey"
+              type="password"
+              autoComplete="new-password"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              required
+              value={claudeKey}
+              onChange={(ev) => setClaudeKey(ev.target.value)}
+              className={fieldInput}
+            />
           </div>
           <button type="submit" disabled={busy} className={primaryButton}>
             {busy ? "Testing…" : "Test and connect"}
@@ -113,33 +73,6 @@ export default function SetupForm({
           {message.text}
         </p>
       )}
-    </div>
-  );
-}
-
-/** The setup script in a selectable block with a copy button. */
-export function SetupScript({ script }: { script: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className={`${card} overflow-hidden`}>
-      <div className="flex items-center justify-between px-4 pt-2">
-        <span className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Setup script</span>
-        <button
-          type="button"
-          className="min-h-[36px] rounded-lg px-3 text-[15px] font-medium text-[#0E7FA6] dark:text-[#6AE6FF]"
-          onClick={() => {
-            void navigator.clipboard?.writeText(script).then(
-              () => setCopied(true),
-              () => setCopied(false),
-            );
-          }}
-        >
-          {copied ? "Copied" : "Copy"}
-        </button>
-      </div>
-      <pre className="max-h-72 select-all overflow-auto whitespace-pre px-4 pb-4 pt-2 font-mono text-[12px] leading-snug text-neutral-800 dark:text-neutral-200">
-        {script}
-      </pre>
     </div>
   );
 }

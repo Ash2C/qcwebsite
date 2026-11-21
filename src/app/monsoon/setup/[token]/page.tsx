@@ -11,6 +11,9 @@ export const metadata: Metadata = {
   referrer: "no-referrer",
 };
 
+const KEY_INSTRUCTION =
+  "Enter your Claude API key. Monsoon tests it before keeping it. You can create a key in the Claude Console at platform.claude.com (a claude.ai subscription can't be used).";
+
 const shell =
   "mx-auto flex min-h-dvh max-w-xl flex-col gap-5 px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(1.5rem,env(safe-area-inset-top))]";
 
@@ -36,7 +39,10 @@ export default async function SetupLinkPage({ params }: { params: Promise<{ toke
           {SETUP_EXPIRED}
         </p>
       ) : (
-        <SetupForm token={token} purpose="connect" claudeKeyOnFile={page.claudeKeyOnFile} />
+        <>
+          <p className="text-[17px] text-neutral-700 dark:text-neutral-300">{KEY_INSTRUCTION}</p>
+          <SetupForm token={token} />
+        </>
       )}
     </main>
   );

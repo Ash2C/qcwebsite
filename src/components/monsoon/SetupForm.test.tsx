@@ -9,15 +9,6 @@ import SetupForm from "./SetupForm";
 const TOKEN = "t".repeat(43);
 const fetchMock = vi.fn();
 
-async function fill() {
-  const user = userEvent.setup();
-  await user.type(screen.getByLabelText("Project reference"), "abcdefghij0123456789");
-  await user.type(screen.getByLabelText("Pooler host"), "aws-1-us-east-1.pooler.supabase.com");
-  await user.type(screen.getByLabelText("monsoon_app password"), "secret-password-123");
-  await user.type(screen.getByLabelText("Claude API key"), "sk-ant-key");
-  return user;
-}
-
 describe("SetupForm", () => {
   beforeEach(() => {
     fetchMock.mockReset();
@@ -28,63 +19,45 @@ describe("SetupForm", () => {
     vi.unstubAllGlobals();
   });
 
-  it("uses password fields for the password and key", () => {
-    render(<SetupForm token={TOKEN} purpose="connect" />);
-    expect(screen.getByLabelText("monsoon_app password")).toHaveAttribute("type", "password");
-    expect(screen.getByLabelText("Claude API key")).toHaveAttribute("type", "password");
-    expect(screen.getByLabelText("Project reference")).toBeRequired();
-  });
-
-  it("posts the fields with the token, then clears and hides the form on success", async () => {
+  it("shows one field, Claude API key, and posts only token and claudeKey", async () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true, message: "Connected. You can close this page." })));
-    render(<SetupForm token={TOKEN} purpose="connect" />);
-    const user = await fill();
+    render(<SetupForm token={TOKEN} />);
+    expect(screen.queryAllByRole("textbox")).toHaveLength(0);
+    expect(document.querySelectorAll("input")).toHaveLength(1);
+    expect(screen.getByLabelText("Claude API key")).toHaveAttribute("type", "password");
+    expect(screen.getByLabelText("Claude API key")).toBeRequired();
+    for (const label of ["Project reference", "Pooler host", "monsoon_app password"]) {
+      expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
+    }
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Claude API key"), "sk-ant-key");
     await user.click(screen.getByRole("button", { name: "Test and connect" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("Connected. You can close this page.");
-    expect(screen.queryByLabelText("monsoon_app password")).not.toBeInTheDocument();
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/monsoon/setup");
-    expect(JSON.parse(init.body)).toEqual({
-      token: TOKEN,
-      projectRef: "abcdefghij0123456789",
-      poolerHost: "aws-1-us-east-1.pooler.supabase.com",
-      password: "secret-password-123",
-      claudeKey: "sk-ant-key",
-    });
+    expect(JSON.parse(init.body)).toEqual({ token: TOKEN, claudeKey: "sk-ant-key" });
   });
 
-  it("shows the server's message and keeps the form on failure", async () => {
+  it("clears and hides the form after success", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true, message: "Connected. You can close this page." })));
+    render(<SetupForm token={TOKEN} />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Claude API key"), "sk-ant-key");
+    await user.click(screen.getByRole("button", { name: "Test and connect" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Connected. You can close this page.");
+    expect(screen.queryByLabelText("Claude API key")).not.toBeInTheDocument();
+  });
+
+  it("shows the server error", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ error: "That Claude key didn't work. Check it in your Anthropic console.", failure: "claude_key" }), {
         status: 422,
       }),
     );
-    render(<SetupForm token={TOKEN} purpose="connect" />);
-    const user = await fill();
+    render(<SetupForm token={TOKEN} />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Claude API key"), "sk-ant-key");
     await user.click(screen.getByRole("button", { name: "Test and connect" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("That Claude key didn't work.");
-    expect(screen.getByLabelText("Pooler host")).toBeInTheDocument();
-  });
-
-  it("a connect link with a Claude key on file lets the key be left blank", () => {
-    render(<SetupForm token={TOKEN} purpose="connect" claudeKeyOnFile />);
-    expect(screen.getByLabelText("Claude API key")).not.toBeRequired();
-    expect(screen.getByLabelText("Claude API key")).toHaveAttribute(
-      "placeholder",
-      "Leave blank to keep the Claude key already on file",
-    );
-    expect(screen.getByText("Leave blank to keep the Claude key already on file.")).toBeInTheDocument();
-    expect(screen.getByLabelText("Project reference")).toBeRequired();
-  });
-
-  it("a connect link without a key on file still requires it", () => {
-    render(<SetupForm token={TOKEN} purpose="connect" />);
-    expect(screen.getByLabelText("Claude API key")).toBeRequired();
-  });
-
-  it("replace links make every field optional", () => {
-    render(<SetupForm token={TOKEN} purpose="replace" />);
-    expect(screen.getByLabelText("Claude API key")).not.toBeRequired();
-    expect(screen.getByLabelText("Claude API key")).toHaveAttribute("placeholder", "Leave blank to keep the current one");
+    expect(screen.getByLabelText("Claude API key")).toBeInTheDocument();
   });
 });
