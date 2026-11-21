@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Client } from "pg";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { makeAccountsTestDb } from "../testing/db";
 
 const db = makeAccountsTestDb();
@@ -23,11 +25,11 @@ describe.skipIf(!db.available)("accounts schema", () => {
     return r.rows[0].id;
   }
 
-  it("creates all seven tables and records migration 1", async () => {
+  it("creates all seven tables and records migrations 1 and 2", async () => {
     const r = await client.query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'");
     expect(r.rows.map((x) => x.tablename).sort()).toEqual([...TABLES].sort());
     const m = await client.query("SELECT version FROM accounts_migrations");
-    expect(m.rows.map((x) => x.version)).toEqual([1]);
+    expect(m.rows.map((x) => x.version)).toEqual([1, 2]);
   });
 
   it("applies defaults to customers", async () => {
@@ -115,6 +117,57 @@ describe.skipIf(!db.available)("accounts schema", () => {
     const { join } = await import("node:path");
     await client.query(readFileSync(join(__dirname, "schema.sql"), "utf8"));
     const m = await client.query("SELECT count(*)::int AS n FROM accounts_migrations");
-    expect(m.rows[0].n).toBe(1);
+    expect(m.rows[0].n).toBe(2);
+  });
+
+  it("version 2: setup_links accepts host and key purposes", async () => {
+    const id = await customer();
+    const ins = (hash: string, purpose: string) =>
+      client.query(
+        "INSERT INTO setup_links (customer_id, token_hash, purpose, expires_at) VALUES ($1,$2,$3, now() + interval '7 days')",
+        [id, hash, purpose],
+      );
+    await ins("h1", "host");
+    await ins("k1", "key");
+    await expect(ins("o1", "other")).rejects.toMatchObject({ code: "23514" });
+  });
+
+  it("version 2: activity accepts host and key actions", async () => {
+    const id = await customer();
+    const ins = (a: string) => client.query("INSERT INTO activity (customer_id, action) VALUES ($1,$2)", [id, a]);
+    await ins("host");
+    await ins("key");
+    await expect(ins("delete")).rejects.toMatchObject({ code: "23514" });
+  });
+
+  it("version 2: a project ref can be recorded on only one pipeline", async () => {
+    const id = await customer();
+    const ins = (k: string, ref: string | null) =>
+      client.query("INSERT INTO pipelines (customer_id, key, label, default_role, position, project_ref) VALUES ($1,$2,'L','investor',0,$3)", [id, k, ref]);
+    await ins("aa", "abcdefghij");
+    await expect(ins("bb", "abcdefghij")).rejects.toMatchObject({ code: "23505" });
+    await ins("cc", null);
+    await ins("dd", null);
+  });
+
+  it("version 2 applies over a version 1 database", async () => {
+    await db.reset();
+    const c2 = await db.connect();
+    try {
+      await c2.query(readFileSync(join(__dirname, "..", "testing", "accounts-schema-v1.sql"), "utf8"));
+      const cu = await c2.query("INSERT INTO customers (code, name) VALUES ('acme-co','Acme') RETURNING id");
+      await c2.query(
+        "INSERT INTO setup_links (customer_id, token_hash, purpose, expires_at) VALUES ($1,'v1tok','connect', now() + interval '7 days')",
+        [cu.rows[0].id],
+      );
+      await c2.query(readFileSync(join(__dirname, "schema.sql"), "utf8"));
+      const l = await c2.query("SELECT purpose FROM setup_links WHERE token_hash = 'v1tok'");
+      expect(l.rows[0].purpose).toBe("connect");
+      const m = await c2.query("SELECT max(version)::int AS v FROM accounts_migrations");
+      expect(m.rows[0].v).toBe(2);
+    } finally {
+      await c2.end();
+      await db.reset();
+    }
   });
 });

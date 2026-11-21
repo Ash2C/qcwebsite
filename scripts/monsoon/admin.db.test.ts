@@ -37,7 +37,7 @@ describe.skipIf(!db.available)("monsoon admin", () => {
 
   it("migrate is idempotent", async () => {
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toMatch(/already/i);
+    expect(text()).toContain("Schema already applied (version 2).");
   });
 
   it("adds a customer and a person whose passcode verifies", async () => {

@@ -88,3 +88,16 @@ ALTER TABLE sign_in_attempts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE activity ENABLE ROW LEVEL SECURITY;
 
 INSERT INTO accounts_migrations (version) VALUES (1) ON CONFLICT DO NOTHING;
+
+-- Version 2: hosted databases. Setup links for host and key, pipelines remember their Supabase project.
+ALTER TABLE setup_links DROP CONSTRAINT IF EXISTS setup_links_purpose_check,
+  ADD CONSTRAINT setup_links_purpose_check CHECK (purpose IN ('connect', 'replace', 'host', 'key'));
+ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
+  ADD CONSTRAINT activity_action_check CHECK (action IN (
+    'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
+    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key'
+  ));
+ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS project_ref TEXT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS pipelines_project_ref_key ON pipelines (project_ref);
+
+INSERT INTO accounts_migrations (version) VALUES (2) ON CONFLICT DO NOTHING;
