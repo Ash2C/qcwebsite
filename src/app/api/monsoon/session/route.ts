@@ -32,11 +32,12 @@ const CODE_LIMIT = 50;
 const WRONG = "Wrong company code or passcode.";
 const LOCKED = "Wrong company code or passcode. Try again later.";
 
+// Vercel sets x-real-ip and the client cannot forge it; x-forwarded-for can carry client-supplied entries.
 function networkAddress(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  if (forwarded) return forwarded;
   const real = request.headers.get("x-real-ip")?.trim();
-  return real || "unknown";
+  if (real) return real;
+  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  return forwarded || "unknown";
 }
 
 function errorClass(err: unknown): string {

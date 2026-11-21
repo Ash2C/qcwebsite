@@ -305,6 +305,23 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/session", { timeout: 20_
     expect(r.rows.map((x) => x.address_hash)).toEqual([hashAddress("198.51.100.23"), hashAddress("unknown")]);
   });
 
+  it("prefers x-real-ip over x-forwarded-for, and stores its hash on the attempt", async () => {
+    const both = new Request("http://localhost/api/monsoon/session", {
+      method: "POST",
+      body: JSON.stringify({ code: "acme-co", passcode: ANN }),
+      headers: { "x-real-ip": "198.51.100.23", "x-forwarded-for": "6.6.6.6, 10.0.0.1" },
+    });
+    expect((await POST(both)).status).toBe(200);
+    const r = await client.query("SELECT address_hash FROM sign_in_attempts");
+    expect(r.rows).toEqual([{ address_hash: hashAddress("198.51.100.23") }]);
+  });
+
+  it("falls back to the first x-forwarded-for entry when x-real-ip is absent", async () => {
+    expect((await POST(post({ code: "acme-co", passcode: ANN }, "192.0.2.5"))).status).toBe(200);
+    const r = await client.query("SELECT address_hash FROM sign_in_attempts");
+    expect(r.rows).toEqual([{ address_hash: hashAddress("192.0.2.5") }]);
+  });
+
   it("returns 500 immediately when not configured", async () => {
     vi.stubEnv("MONSOON_MASTER_KEY", "");
     const res = await POST(post({ code: "acme-co", passcode: ANN }));
