@@ -65,6 +65,7 @@ async function main(): Promise<number> {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
+          redirect: "error",
           signal: AbortSignal.timeout(70_000),
         });
         const parsed = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; failure?: string };

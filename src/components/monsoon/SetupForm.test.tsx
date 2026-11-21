@@ -49,7 +49,7 @@ describe("SetupForm", () => {
 
   it("shows the server error", async () => {
     fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ error: "That Claude key didn't work. Check it in your Anthropic console.", failure: "claude_key" }), {
+      new Response(JSON.stringify({ error: "That Claude key didn't work. Check it in the Claude Console.", failure: "claude_key" }), {
         status: 422,
       }),
     );

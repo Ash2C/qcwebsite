@@ -292,7 +292,7 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/setup", { timeout: 30_00
     h.create.mockRejectedValue(Object.assign(new Error(`401 invalid x-api-key ${KEY}`), { status: 401 }));
     const { status, json } = await send(keyBody());
     expect(status).toBe(422);
-    expect(json).toEqual({ error: "That Claude key didn't work. Check it in your Anthropic console.", failure: "claude_key" });
+    expect(json).toEqual({ error: "That Claude key didn't work. Check it in the Claude Console.", failure: "claude_key" });
     await expectNothingStored();
   });
 

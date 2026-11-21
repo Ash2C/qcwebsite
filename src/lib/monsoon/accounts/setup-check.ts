@@ -33,7 +33,7 @@ export const SETUP_MESSAGES: Record<SetupFailure, string> = {
   privileges: TOO_MUCH,
   role_flags: TOO_MUCH,
   public_policies: "Your database lets the public API read Monsoon tables. Remove the policies for anon and authenticated.",
-  claude_key: "That Claude key didn't work. Check it in your Anthropic console.",
+  claude_key: "That Claude key didn't work. Check it in the Claude Console.",
 };
 
 export const SETUP_SUCCESS = "Connected. You can close this page.";

@@ -342,6 +342,15 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         if (!ownerPassword) return fail(`environment variable ${pwVar} is not set`);
         const { connectOwner, post } = deps;
         if (!connectOwner || !post) return fail("host is not available here");
+        let publicUrl: URL | null = null;
+        try {
+          publicUrl = new URL(publicBase());
+        } catch {
+          publicUrl = null;
+        }
+        if (!publicUrl || (publicUrl.protocol !== "https:" && publicUrl.hostname !== "localhost" && publicUrl.hostname !== "127.0.0.1")) {
+          return fail("MONSOON_PUBLIC_URL must be an https address");
+        }
 
         const c = await customer(pos[0]);
         const p = await pipeline(c.id, pos[1]);

@@ -493,6 +493,13 @@ describe.skipIf(!db.available)("monsoon admin", () => {
       expect(connects).toHaveLength(0);
     });
 
+    it("refuses a MONSOON_PUBLIC_URL that is not https before connecting", async () => {
+      expect(await run(hostArgs(), hostDeps({ MONSOON_PUBLIC_URL: "http://example.test" }))).toBe(1);
+      expect(lines).toEqual(["Error: MONSOON_PUBLIC_URL must be an https address"]);
+      expect(connects).toHaveLength(0);
+      expect(posts).toHaveLength(0);
+    });
+
     it("refuses a pipeline that is already connected unless --replace", async () => {
       await client.query("UPDATE pipelines SET db_url_enc = 'k1.ddd.eee.fff', connected_at = now(), project_ref = $1", [REF]);
       expect(await host()).toBe(1);

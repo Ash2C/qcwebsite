@@ -155,6 +155,6 @@ describe.skipIf(!db.available)("runSetupChecks (real Postgres)", { timeout: 20_0
     expect(SETUP_MESSAGES.public_policies).toBe(
       "Your database lets the public API read Monsoon tables. Remove the policies for anon and authenticated.",
     );
-    expect(SETUP_MESSAGES.claude_key).toBe("That Claude key didn't work. Check it in your Anthropic console.");
+    expect(SETUP_MESSAGES.claude_key).toBe("That Claude key didn't work. Check it in the Claude Console.");
   });
 });

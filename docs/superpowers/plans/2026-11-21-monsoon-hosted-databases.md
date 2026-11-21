@@ -164,12 +164,14 @@
 - [ ] **Step 1: Full suite and build in the clean worktree.** Run `npx vitest run` then `npx tsc --noEmit` then `npx next build`. Expected: all pass (the known `BatchReview.test.tsx` flake passes when re-run alone).
 - [ ] **Step 2: Whole-branch review** by a fresh reviewer against this plan and the spec. Fix its findings, then rerun Step 1.
 - [ ] **Step 3: With Vincent: deploy and test.**
-  1. Merge, push and run `migrate` on the accounts database.
+  1. Merge, then deploy in this order: push, wait until Vercel reports the deploy Ready, run `migrate` on the accounts database, and only then issue any `host` or `key` link. Reason: old production code treats unknown link purposes as `replace` and would connect a pipeline without recording `project_ref`.
+     - Before migrating, confirm the live constraint names with `SELECT conname FROM pg_constraint WHERE conrelid IN ('setup_links'::regclass,'activity'::regclass)`; they should include `setup_links_purpose_check` and `activity_action_check`.
   2. Create a throwaway customer `test-client` with one person and one pipeline.
   3. Vincent creates a free Supabase project for it.
   4. Run `host test-client main --ref ... --pooler ... --owner-password-from-env MONSOON_TEST_OWNER_PW`.
   
   Expected: `Pipeline main hosted on project <ref>.`, and `status` shows `main connected <date>`.
+  5. After the live `host` run, check the Supabase project's Postgres logs (Logs Explorer) to confirm the generated monsoon_app password does not appear.
 - [ ] **Step 4: Key link and phone check.** Run `link test-client`, open the link, enter a Claude key, and expect "Connected. You can close this page." Sign in as the test person on a phone, capture a card, and check the row lands in the new project. Then run `forget test-client` and pause or delete the throwaway project, Vincent's call.
 - [ ] **Step 5: Write the runbook** with four sections:
   - **Onboard a client:** the five commands in order, where each value comes from, and the Supabase plan check.

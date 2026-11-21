@@ -15,7 +15,9 @@ export type ActivityAction =
   | "act_research"
   | "research"
   | "setup"
-  | "replace";
+  | "replace"
+  | "host"
+  | "key";
 
 export type PipelineRow = {
   id: string;
