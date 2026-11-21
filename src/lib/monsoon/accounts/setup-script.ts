@@ -8,6 +8,8 @@ export type SetupVocabulary = {
   roles: { key: string; label: string }[];
   owners: { key: string; name: string }[];
   roleName?: string;
+  /** When set, the script carries this password and runs unedited (Monsoon's own `host` command). */
+  password?: string;
 };
 
 const DEFAULT_ROLE = "monsoon_app";
@@ -29,7 +31,7 @@ function checkRole(name: string): string {
   return name;
 }
 
-function loginPart(role: string): string {
+function loginPart(role: string, password: string = PASSWORD_PLACEHOLDER): string {
   const policies: string[] = [];
   const policy = (table: string, action: "select" | "insert" | "update") => {
     const name = `${role}_${action}`;
@@ -46,7 +48,7 @@ function loginPart(role: string): string {
   return `DO $$
 DECLARE
   -- Put your own password between the quotes on the next line (at least 16 characters).
-  pw text := ${lit(PASSWORD_PLACEHOLDER)};
+  pw text := ${lit(password)};
 BEGIN
   IF pw IS NULL OR pw LIKE 'REPLACE-%' OR length(pw) < 16 THEN
     RAISE EXCEPTION 'Set your own password for ${role} on the marked line, then run the script again.';
@@ -98,6 +100,7 @@ export function loginAndPoliciesScript(roleName: string = DEFAULT_ROLE): string 
 
 export function generateSetupScript(v: SetupVocabulary): string {
   const role = checkRole(v.roleName ?? DEFAULT_ROLE);
+  if (v.password !== undefined && v.password.length < 16) throw new Error("invalid password");
   const rows = (items: string[]) => items.join(",\n  ");
   const parts = [
     "BEGIN;",
@@ -116,6 +119,6 @@ export function generateSetupScript(v: SetupVocabulary): string {
     const values = v.owners.map((o) => `(${lit(o.key)}, ${lit(o.name)})`);
     parts.push(`INSERT INTO owners (key, display_name) VALUES\n  ${rows(values)}\nON CONFLICT DO NOTHING;`);
   }
-  parts.push(loginPart(role), "COMMIT;");
+  parts.push(loginPart(role, v.password), "COMMIT;");
   return parts.join("\n\n") + "\n";
 }

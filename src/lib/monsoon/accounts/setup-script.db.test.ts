@@ -325,6 +325,19 @@ describe.skipIf(!testDb.available)("Setup script and restricted login (real Post
     await expect(admin.query(script)).rejects.toThrow(/Set your own password/);
   });
 
+  it("a script with a password runs unedited and the login signs in with it", async () => {
+    const script = generateSetupScript({ ...vocabulary, roleName: roleA, password });
+    expect(script).not.toContain(PLACEHOLDER);
+    await admin.query(script);
+    expect((await admin.query("SELECT count(*)::int AS n FROM stages")).rows[0].n).toBe(3);
+    await (await asRole(setupDb, roleA)).end();
+  });
+
+  it("a password under 16 characters is refused", () => {
+    expect(() => generateSetupScript({ ...vocabulary, roleName: roleA, password: "x".repeat(15) })).toThrow("invalid password");
+    expect(() => generateSetupScript({ ...vocabulary, roleName: roleA, password: "" })).toThrow("invalid password");
+  });
+
   it("refuses a pre-existing login that is a member of another role, and changes nothing", async () => {
     await admin.query(`CREATE ROLE ${roleA} LOGIN PASSWORD 'old-password-123456'`);
     await admin.query(`GRANT pg_read_all_data TO ${roleA}`);

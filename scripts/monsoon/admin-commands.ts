@@ -1,11 +1,15 @@
 // Command logic for the Monsoon admin tool. Takes its database and output as dependencies so tests can drive it.
 // Never reads the master key, so it can never decrypt or print a stored credential.
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClientBase } from "pg";
+import { POOLER_HOST, PROJECT_REF } from "../../src/lib/monsoon/accounts/address";
 import { generatePasscode, hashPasscode, hashToken, newToken } from "../../src/lib/monsoon/accounts/crypto";
-import { generateSetupScript, loginAndPoliciesScript } from "../../src/lib/monsoon/accounts/setup-script";
+import { generateSetupScript, loginAndPoliciesScript, type SetupVocabulary } from "../../src/lib/monsoon/accounts/setup-script";
+
+export type PostReply = { status: number; body: { ok?: boolean; error?: string; failure?: string } };
 
 export interface AdminDeps {
   db: ClientBase;
@@ -13,6 +17,13 @@ export interface AdminDeps {
   env?: Record<string, string | undefined>;
   readFile?: (path: string) => string;
   now?: () => Date;
+  /** Opens a connection to a client's Supabase project as its owner (`host`). */
+  connectOwner?: (url: string) => Promise<ClientBase & { end(): Promise<void> }>;
+  /** Posts JSON to the live server (`host` submits its setup link there). */
+  post?: (url: string, body: Record<string, string>) => Promise<PostReply>;
+  randomPassword?: () => string;
+  /** Test-only: Postgres roles are cluster-wide, so tests give the login their own name. */
+  appRole?: string;
 }
 
 const USAGE = [
@@ -22,7 +33,8 @@ const USAGE = [
   '  person add <code> "<display name>" <OWNER> [--passcode-from-env MONSOON_PASSCODE]',
   "  person reset|suspend|resume <code> <OWNER>",
   '  pipeline add <code> <key> "<label>" --default-role <role> --stages <json> --roles <json>',
-  "  link <code> <pipeline key> [--replace]",
+  "  host <code> <pipeline key> --ref <ref> --pooler <host> --owner-password-from-env <VAR> [--replace]",
+  "  link <code>",
   "  script <code> <pipeline key> [--login-only]",
   "  status",
   "  people <code>",
@@ -32,6 +44,8 @@ const USAGE = [
 
 const MAX_PEOPLE = 50;
 const LINK_DAYS = 7;
+const HOST_LINK_MINUTES = 15;
+const NOT_CONNECTED = "The pipeline is not connected until host runs again successfully.";
 const CODE_RE = /^[a-z0-9-]{3,32}$/;
 const KEY_RE = /^[a-z0-9-]{2,32}$/;
 const OWNER_RE = /^[A-Z]{2,4}$/;
@@ -151,9 +165,28 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
     return r.rows[0] ?? fail(`no customer with code ${code}`);
   }
   async function pipeline(customerId: string, key: string) {
-    const r = await db.query("SELECT id, vocab, label FROM pipelines WHERE customer_id = $1 AND key = $2", [customerId, key]);
+    const r = await db.query(
+      "SELECT id, vocab, label, (db_url_enc IS NOT NULL) AS connected FROM pipelines WHERE customer_id = $1 AND key = $2",
+      [customerId, key],
+    );
     return r.rows[0] ?? fail(`no pipeline ${key}`);
   }
+  /** What the setup script writes: the pipeline's stages and roles, and the customer's active people as owners. */
+  async function setupVocabulary(
+    customerId: string,
+    p: { vocab?: { stages?: SetupVocabulary["stages"]; roles?: SetupVocabulary["roles"] } | null },
+  ): Promise<SetupVocabulary> {
+    const people = await db.query(
+      "SELECT owner_key, display_name FROM people WHERE customer_id = $1 AND status = 'active' ORDER BY owner_key",
+      [customerId],
+    );
+    return {
+      stages: p.vocab?.stages ?? [],
+      roles: p.vocab?.roles ?? [],
+      owners: people.rows.map((r: { owner_key: string; display_name: string }) => ({ key: r.owner_key, name: r.display_name })),
+    };
+  }
+  const publicBase = () => (env.MONSOON_PUBLIC_URL || "https://quantcloud.com").replace(/\/+$/, "");
 
   try {
     const [cmd, sub] = argv;
@@ -266,20 +299,85 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         return 0;
       }
       case "link": {
-        const { pos, flags } = parseArgs(argv.slice(1), [], ["--replace"]);
-        need(pos, 2);
+        // A key link carries the customer's Claude key only; databases are set up with `host`.
+        const { pos } = parseArgs(argv.slice(1));
+        need(pos, 1);
+        if (pos.length > 1) fail("link takes only the company code; use host for a pipeline's database");
         const c = await customer(pos[0]);
-        const p = await pipeline(c.id, pos[1]);
         const token = newToken();
         const expires = new Date(now().getTime() + LINK_DAYS * 86400_000);
         await db.query(
-          "INSERT INTO setup_links (customer_id, pipeline_id, token_hash, purpose, expires_at) VALUES ($1, $2, $3, $4, $5)",
-          [c.id, p.id, hashToken(token), flags.has("--replace") ? "replace" : "connect", expires],
+          "INSERT INTO setup_links (customer_id, pipeline_id, token_hash, purpose, expires_at) VALUES ($1, NULL, $2, 'key', $3)",
+          [c.id, hashToken(token), expires],
         );
-        const base = (env.MONSOON_PUBLIC_URL || "https://quantcloud.com").replace(/\/+$/, "");
-        out(`${base}/monsoon/setup/${token}`);
+        out(`${publicBase()}/monsoon/setup/${token}`);
         out(`Valid ${LINK_DAYS} days, single use. It cannot be shown again.`);
         return 0;
+      }
+      case "host": {
+        // Builds the client's CRM in their Supabase project as its owner, then hands the project, pooler and a
+        // generated login password to the live server, which checks the login and stores the connection encrypted.
+        const { pos, flags } = parseArgs(argv.slice(1), ["--ref", "--pooler", "--owner-password-from-env"], ["--replace"]);
+        need(pos, 2);
+        if (pos.length > 2) fail("host takes a company code and a pipeline key");
+        const ref = flags.get("--ref");
+        if (typeof ref !== "string") return fail("--ref is required");
+        if (!PROJECT_REF.test(ref)) fail("--ref must be a 20-character project reference: a-z, 0-9");
+        const poolerFlag = flags.get("--pooler");
+        if (typeof poolerFlag !== "string") return fail("--pooler is required");
+        const pooler = poolerFlag.toLowerCase();
+        if (!POOLER_HOST.test(pooler)) fail("--pooler must be a Supabase pooler host ending in .pooler.supabase.com");
+        const pwVar = flags.get("--owner-password-from-env");
+        if (typeof pwVar !== "string") return fail("--owner-password-from-env is required");
+        const replace = flags.has("--replace");
+        const ownerPassword = env[pwVar];
+        if (!ownerPassword) return fail(`environment variable ${pwVar} is not set`);
+        const { connectOwner, post } = deps;
+        if (!connectOwner || !post) return fail("host is not available here");
+
+        const c = await customer(pos[0]);
+        const p = await pipeline(c.id, pos[1]);
+        if (p.connected && !replace) fail(`pipeline ${pos[1]} is already connected. Pass --replace to host it again.`);
+        const taken = await db.query("SELECT 1 FROM pipelines WHERE project_ref = $1 AND id <> $2", [ref, p.id]);
+        if (taken.rowCount) fail("That project is already used by another pipeline.");
+
+        const vocabulary = await setupVocabulary(c.id, p);
+        const password = (deps.randomPassword ?? (() => randomBytes(32).toString("base64url")))();
+        const owner = await connectOwner(`postgresql://postgres.${ref}:${encodeURIComponent(ownerPassword)}@${pooler}:5432/postgres`);
+        try {
+          const t = await owner.query("SELECT to_regclass('public.people') AS t");
+          if (t.rows[0].t && !replace) {
+            const held = await owner.query("SELECT EXISTS (SELECT 1 FROM public.people) AS found");
+            if (held.rows[0].found) fail("That project already holds Monsoon data. Check the project reference, or pass --replace.");
+          }
+          await owner.query(generateSetupScript({ ...vocabulary, roleName: deps.appRole ?? "monsoon_app", password }));
+          out(`CRM built in project ${ref}.`);
+
+          const token = newToken();
+          await db.query(
+            "INSERT INTO setup_links (customer_id, pipeline_id, token_hash, purpose, expires_at) VALUES ($1, $2, $3, 'host', $4)",
+            [c.id, p.id, hashToken(token), new Date(now().getTime() + HOST_LINK_MINUTES * 60_000)],
+          );
+          let reply: PostReply;
+          try {
+            reply = await post(`${publicBase()}/api/monsoon/setup`, { token, projectRef: ref, poolerHost: pooler, password });
+          } catch (err) {
+            // A network error can echo the request, so only its class name is shown.
+            out(`Error: could not reach the setup route (${err instanceof Error ? err.name : "error"}).`);
+            out(NOT_CONNECTED);
+            return 1;
+          }
+          if (reply.status !== 200 || reply.body?.ok !== true) {
+            const error = typeof reply.body?.error === "string" ? reply.body.error : `the server refused (status ${reply.status})`;
+            out(`Error: ${error}`);
+            out(NOT_CONNECTED);
+            return 1;
+          }
+          out(`Pipeline ${pos[1]} hosted on project ${ref}.`);
+          return 0;
+        } finally {
+          await owner.end().catch(() => undefined);
+        }
       }
       case "script": {
         const { pos, flags } = parseArgs(argv.slice(1), [], ["--login-only"]);
@@ -290,17 +388,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         need(pos, 2);
         const c = await customer(pos[0]);
         const p = await pipeline(c.id, pos[1]);
-        const people = await db.query(
-          "SELECT owner_key, display_name FROM people WHERE customer_id = $1 AND status = 'active' ORDER BY owner_key",
-          [c.id],
-        );
-        out(
-          generateSetupScript({
-            stages: p.vocab?.stages ?? [],
-            roles: p.vocab?.roles ?? [],
-            owners: people.rows.map((r: { owner_key: string; display_name: string }) => ({ key: r.owner_key, name: r.display_name })),
-          }),
-        );
+        out(generateSetupScript(await setupVocabulary(c.id, p)));
         return 0;
       }
       case "status": {

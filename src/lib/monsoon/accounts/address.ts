@@ -1,6 +1,6 @@
 // Monsoon only ever connects to Supabase pooler hosts (or, in development, local ones).
-const POOLER_HOST = /^[a-z0-9-]+\.pooler\.supabase\.com$/;
-const PROJECT_REF = /^[a-z0-9]{20}$/;
+export const POOLER_HOST = /^[a-z0-9-]+\.pooler\.supabase\.com$/;
+export const PROJECT_REF = /^[a-z0-9]{20}$/;
 const ALLOWED_PORTS = new Set(["6543", "5432"]);
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 

@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Client } from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { Client } from "pg";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { hashToken, verifyPasscode } from "@/lib/monsoon/accounts/crypto";
-import { makeAccountsTestDb } from "@/lib/monsoon/testing/db";
+import { makeAccountsTestDb, makeTestDb, testRoleName } from "@/lib/monsoon/testing/db";
 import { runAdmin } from "./admin-commands";
 
 const db = makeAccountsTestDb();
@@ -95,7 +95,7 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     expect(await run(["person", "add", "nope", "Ann", "AN"])).toBe(1);
   });
 
-  it("adds a pipeline, makes a link, prints a script", async () => {
+  it("adds a pipeline and prints a script", async () => {
     await run(["customer", "add", "acme", "Acme"]);
     await run(["person", "add", "acme", "Ann", "AN"]);
     expect(
@@ -105,24 +105,32 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     expect(p.rows[0].position).toBe(1);
     expect(p.rows[0].vocab.roles).toHaveLength(1);
 
-    expect(await run(["link", "acme", "main"], { env: { MONSOON_PUBLIC_URL: "https://example.test" } })).toBe(0);
-    const url = lines.find((l) => l.includes("/monsoon/setup/"))!.trim();
-    expect(url.startsWith("https://example.test/monsoon/setup/")).toBe(true);
-    const token = url.split("/").pop()!;
-    const l = await client.query("SELECT token_hash, purpose, EXTRACT(EPOCH FROM (expires_at - now())) AS span FROM setup_links");
-    expect(l.rows[0].token_hash).toBe(hashToken(token));
-    expect(l.rows[0].purpose).toBe("connect");
-    expect(Number(l.rows[0].span)).toBeGreaterThan(6.99 * 86400);
-
-    await run(["link", "acme", "main", "--replace"]);
-    const n = await client.query("SELECT purpose FROM setup_links ORDER BY created_at");
-    expect(n.rows.map((r) => r.purpose)).toEqual(["connect", "replace"]);
-
     expect(await run(["script", "acme", "main"])).toBe(0);
     expect(text()).toContain("Ann");
     expect(await run(["script", "acme", "main", "--login-only"])).toBe(0);
     expect(text()).toContain("monsoon_app");
     expect(text()).not.toContain("Ann");
+  });
+
+  it("link makes a 7-day key link for the customer", async () => {
+    await run(["customer", "add", "acme", "Acme"]);
+    expect(await run(["link", "acme"], { env: { MONSOON_PUBLIC_URL: "https://example.test" } })).toBe(0);
+    const url = lines.find((l) => l.includes("/monsoon/setup/"))!.trim();
+    expect(url.startsWith("https://example.test/monsoon/setup/")).toBe(true);
+    const token = url.split("/").pop()!;
+    const l = await client.query(
+      "SELECT token_hash, purpose, pipeline_id, EXTRACT(EPOCH FROM (expires_at - now())) AS span FROM setup_links",
+    );
+    expect(l.rows[0].token_hash).toBe(hashToken(token));
+    expect(l.rows[0].purpose).toBe("key");
+    expect(l.rows[0].pipeline_id).toBeNull();
+    expect(Number(l.rows[0].span)).toBeGreaterThan(6.99 * 86400);
+    expect(Number(l.rows[0].span)).toBeLessThanOrEqual(7 * 86400);
+
+    expect(await run(["link", "acme", "main"])).toBe(1);
+    expect(await run(["link", "acme", "--replace"])).toBe(1);
+    expect(lines).toEqual(["Error: unknown flag --replace"]);
+    expect((await client.query("SELECT count(*)::int AS n FROM setup_links")).rows[0].n).toBe(1);
   });
 
   it("status prints no encrypted values", async () => {
@@ -148,7 +156,7 @@ describe.skipIf(!db.available)("monsoon admin", () => {
   it("rejects a flag the command does not accept, with a one-line error and exit 1", async () => {
     await run(["customer", "add", "acme", "Acme"]);
     await run(["pipeline", "add", "acme", "main", "Main", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
-    expect(await run(["link", "acme", "main", "--replce"])).toBe(1);
+    expect(await run(["link", "acme", "--replce"])).toBe(1);
     expect(lines).toEqual(["Error: unknown flag --replce"]);
     expect((await client.query("SELECT count(*)::int AS n FROM setup_links")).rows[0].n).toBe(0);
     expect(await run(["customer", "add", "beta", "Beta", "--modle", "x"])).toBe(1);
@@ -157,7 +165,7 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     expect(await run(["suspend", "acme", "--now"])).toBe(1);
     expect(await run(["status", "--all"])).toBe(1);
     expect((await client.query("SELECT status FROM customers")).rows[0].status).toBe("active");
-    expect(await run(["link", "acme", "main", "--replace"])).toBe(0);
+    expect(await run(["link", "acme"])).toBe(0);
   });
 
   describe("pipeline vocabulary", () => {
@@ -254,9 +262,9 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     await run(["customer", "add", "other", "Other"]);
     await run(["pipeline", "add", "acme", "main", "Main", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
     await run(["pipeline", "add", "other", "main", "Main", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
-    await run(["link", "acme", "main"]);
-    await run(["link", "acme", "main"]);
-    await run(["link", "other", "main"]);
+    await run(["link", "acme"]);
+    await run(["link", "acme"]);
+    await run(["link", "other"]);
     await client.query(
       "UPDATE setup_links SET used_at = now() - interval '1 day' WHERE id = (SELECT id FROM setup_links ORDER BY created_at LIMIT 1)",
     );
@@ -270,6 +278,203 @@ describe.skipIf(!db.available)("monsoon admin", () => {
       { code: "acme", used: false, expired: true },
       { code: "other", used: false, expired: false },
     ]);
+  });
+
+  describe("host", () => {
+    const crm = makeTestDb("host");
+    const role = `${testRoleName()}_host`;
+    const REF = "abcdefghij0123456789";
+    const POOLER = "aws-0-eu-west-1.pooler.supabase.com";
+    const GENERATED = "Gx7_".repeat(10) + "abc";
+    const OWNER_PW = "owner p@ss/word:with#odd?chars";
+    const PUBLIC = "https://example.test";
+    type Reply = { status: number; body: { ok?: boolean; error?: string; failure?: string } };
+    let connects: string[];
+    let posts: { url: string; body: Record<string, string> }[];
+    let reply: () => Promise<Reply>;
+    let owners: Client[];
+
+    async function dropRole() {
+      const c = await crm.connect();
+      try {
+        if ((await c.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [role])).rowCount) {
+          await c.query(`DROP OWNED BY ${role}`);
+          await c.query(`DROP ROLE ${role}`);
+        }
+      } finally {
+        await c.end();
+      }
+    }
+    const hostDeps = (env: Record<string, string> = {}) => ({
+      env: { MONSOON_PUBLIC_URL: PUBLIC, OWNER_PW_VAR: OWNER_PW, ...env },
+      appRole: role,
+      randomPassword: () => GENERATED,
+      connectOwner: async (url: string) => {
+        connects.push(url);
+        const c = await crm.connect();
+        owners.push(c);
+        return c;
+      },
+      post: async (url: string, body: Record<string, string>) => {
+        posts.push({ url, body });
+        return reply();
+      },
+    });
+    const hostArgs = (ref = REF, pooler = POOLER) => ["host", "acme", "main", "--ref", ref, "--pooler", pooler, "--owner-password-from-env", "OWNER_PW_VAR"];
+    const host = (extra: string[] = []) => run([...hostArgs(), ...extra], hostDeps());
+    const noSecrets = () => {
+      for (const l of lines) {
+        expect(l).not.toContain(GENERATED);
+        expect(l).not.toContain(OWNER_PW);
+        expect(l).not.toContain(encodeURIComponent(OWNER_PW));
+      }
+    };
+
+    beforeEach(async () => {
+      connects = [];
+      posts = [];
+      owners = [];
+      reply = async () => ({ status: 200, body: { ok: true } });
+      await dropRole();
+      const c = await crm.connect();
+      await c.query("DROP SCHEMA IF EXISTS public CASCADE");
+      await c.query("CREATE SCHEMA public");
+      await c.end();
+      await run(["customer", "add", "acme", "Acme"]);
+      await run(["person", "add", "acme", "Ann", "AN"]);
+      await run(["person", "add", "acme", "Bob", "BO"]);
+      await run(["pipeline", "add", "acme", "main", "Main", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
+    });
+    afterEach(async () => {
+      for (const o of owners) await o.end().catch(() => undefined);
+      await dropRole();
+    });
+
+    it("host builds the CRM, posts ref, pooler and generated password to the setup route on a host link, prints no secret", async () => {
+      expect(await host()).toBe(0);
+      expect(text()).toContain(`Pipeline main hosted on project ${REF}.`);
+      noSecrets();
+
+      expect(connects).toEqual([`postgresql://postgres.${REF}:${encodeURIComponent(OWNER_PW)}@${POOLER}:5432/postgres`]);
+      const c = await crm.connect();
+      try {
+        const t = await c.query("SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = 'public'");
+        expect(t.rows[0].n).toBe(11);
+        expect((await c.query("SELECT key FROM stages ORDER BY ord")).rows.map((r) => r.key)).toEqual(["new", "won"]);
+        expect((await c.query("SELECT key FROM roles")).rows.map((r) => r.key)).toEqual(["investor"]);
+        expect((await c.query("SELECT key, display_name FROM owners ORDER BY key")).rows).toEqual([
+          { key: "AN", display_name: "Ann" },
+          { key: "BO", display_name: "Bob" },
+        ]);
+      } finally {
+        await c.end();
+      }
+      const url = new URL(crm.url());
+      const login = new Client({ host: url.hostname, port: Number(url.port), database: url.pathname.slice(1), user: role, password: GENERATED });
+      await login.connect();
+      await login.end();
+
+      expect(posts).toHaveLength(1);
+      expect(posts[0].url).toBe(`${PUBLIC}/api/monsoon/setup`);
+      expect(posts[0].body).toEqual({ token: expect.any(String), projectRef: REF, poolerHost: POOLER, password: GENERATED });
+      const l = await client.query(
+        `SELECT l.purpose, p.key, EXTRACT(EPOCH FROM (l.expires_at - now())) AS span
+           FROM setup_links l JOIN pipelines p ON p.id = l.pipeline_id WHERE l.token_hash = $1`,
+        [hashToken(posts[0].body.token)],
+      );
+      expect(l.rows).toHaveLength(1);
+      expect(l.rows[0]).toMatchObject({ purpose: "host", key: "main" });
+      expect(Number(l.rows[0].span)).toBeGreaterThan(0);
+      expect(Number(l.rows[0].span)).toBeLessThanOrEqual(15 * 60);
+    });
+
+    it("refuses a project ref already used by a pipeline", async () => {
+      await run(["pipeline", "add", "acme", "side", "Side", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
+      await client.query("UPDATE pipelines SET project_ref = $1 WHERE key = 'side'", [REF]);
+      expect(await host()).toBe(1);
+      expect(text()).toContain("That project is already used by another pipeline.");
+      expect(connects).toHaveLength(0);
+      expect(posts).toHaveLength(0);
+    });
+
+    it("refuses a project that already holds Monsoon people unless --replace", async () => {
+      await crm.reset();
+      const c = await crm.connect();
+      await c.query("INSERT INTO people (name, name_key, source) VALUES ('Jane Tan', 'jane tan', 'test')");
+      await c.end();
+      expect(await host()).toBe(1);
+      expect(text()).toContain("That project already holds Monsoon data. Check the project reference, or pass --replace.");
+      expect(posts).toHaveLength(0);
+      expect(await host(["--replace"])).toBe(0);
+      expect(posts).toHaveLength(1);
+      noSecrets();
+    });
+
+    it("refuses a pipeline that is already connected unless --replace", async () => {
+      await client.query("UPDATE pipelines SET db_url_enc = 'k1.ddd.eee.fff', connected_at = now(), project_ref = $1", [REF]);
+      expect(await host()).toBe(1);
+      expect(text()).toMatch(/already connected/);
+      expect(text()).toContain("--replace");
+      expect(connects).toHaveLength(0);
+      expect(await host(["--replace"])).toBe(0);
+      expect(posts).toHaveLength(1);
+    });
+
+    it("a server refusal after the script ran exits 1 and says to run host again", async () => {
+      reply = async () => ({ status: 422, body: { failure: "can_delete", error: "The Monsoon login can remove rows." } });
+      expect(await host()).toBe(1);
+      expect(text()).toContain("The Monsoon login can remove rows.");
+      expect(text()).toContain("The pipeline is not connected until host runs again successfully.");
+      expect(text()).not.toContain("hosted on project");
+      noSecrets();
+    });
+
+    it("an unreachable server exits 1 with the error class only and says to run host again", async () => {
+      reply = async () => {
+        throw new TypeError(`fetch failed for ${GENERATED}`);
+      };
+      expect(await host()).toBe(1);
+      expect(text()).toContain("TypeError");
+      expect(text()).toContain("The pipeline is not connected until host runs again successfully.");
+      expect(text()).not.toContain("fetch failed");
+      noSecrets();
+    });
+
+    it("a missing owner password variable fails before connecting", async () => {
+      expect(await run(["host", "acme", "main", "--ref", REF, "--pooler", POOLER, "--owner-password-from-env", "X"], hostDeps())).toBe(1);
+      expect(lines).toEqual(["Error: environment variable X is not set"]);
+      expect(connects).toHaveLength(0);
+    });
+
+    it("refuses a malformed ref or a non-pooler host before connecting", async () => {
+      const cases: [string, string][] = [
+        ["ABCDEFGHIJ0123456789", POOLER],
+        ["abc", POOLER],
+        [`${REF}x`, POOLER],
+        [REF, "db.abcdefghij0123456789.supabase.co"],
+        [REF, "evil.example.com"],
+        [REF, "x.pooler.supabase.com.evil.example"],
+      ];
+      for (const [ref, pooler] of cases) {
+        expect(await run(hostArgs(ref, pooler), hostDeps())).toBe(1);
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toMatch(/^Error: --(ref|pooler) /);
+      }
+      expect(await run(["host", "acme", "main", "--pooler", POOLER, "--owner-password-from-env", "OWNER_PW_VAR"], hostDeps())).toBe(1);
+      expect(connects).toHaveLength(0);
+      expect(posts).toHaveLength(0);
+    });
+
+    it("a driver error is reported by class and code only", async () => {
+      const deps = {
+        ...hostDeps(),
+        connectOwner: async (): Promise<Client> => {
+          throw Object.assign(new Error(`password authentication failed for ${OWNER_PW}`), { code: "28P01" });
+        },
+      };
+      expect(await run(hostArgs(), deps)).toBe(1);
+      expect(lines).toEqual(["Error: Error (28P01)"]);
+    });
   });
 
   it("unknown command prints usage and exits 1", async () => {

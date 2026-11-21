@@ -45,7 +45,32 @@ async function main(): Promise<number> {
     return 1;
   }
   try {
-    return await runAdmin(process.argv.slice(2), { db, out: (l) => console.log(l), env: process.env });
+    return await runAdmin(process.argv.slice(2), {
+      db,
+      out: (l) => console.log(l),
+      env: process.env,
+      connectOwner: async (ownerUrl) => {
+        // The setup script runs in one statement; allow it longer than the app's 10 s query limit.
+        const owner = new Client({ ...clientConfig(ownerUrl), query_timeout: 60_000 });
+        try {
+          await owner.connect();
+        } catch (err) {
+          await owner.end().catch(() => undefined);
+          throw err;
+        }
+        return owner;
+      },
+      post: async (postUrl, body) => {
+        const res = await fetch(postUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(70_000),
+        });
+        const parsed = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; failure?: string };
+        return { status: res.status, body: parsed && typeof parsed === "object" ? parsed : {} };
+      },
+    });
   } finally {
     await db.end();
   }
