@@ -58,10 +58,14 @@ async function signIn(code: string, passcode: string, addressHash: string): Prom
     // Recorded first and counted with the others, so parallel attempts cannot all slip under a limit.
     const attemptId = await beginAttempt(db, { code, addressHash });
     const failures = await failuresSince(db, code, addressHash, Date.now() - WINDOW_MS);
-    if (failures.pair > PAIR_LIMIT || failures.code > CODE_LIMIT) {
+    // The per-address limit is a hard lock. The code-wide limit alone must not lock out a correct
+    // passcode (anyone who knows the company code could otherwise lock the whole company out), so
+    // it only turns a wrong passcode into "locked".
+    if (failures.pair > PAIR_LIMIT) {
       await settleAttempt(db, attemptId, null);
       return { kind: "locked" };
     }
+    const codeLocked = failures.code > CODE_LIMIT;
 
     const found = await findCustomerByCode(db, code);
     const people =
@@ -83,7 +87,7 @@ async function signIn(code: string, passcode: string, addressHash: string): Prom
       await settleAttempt(db, attemptId, true, match.id);
       return { kind: "ok", customer: found.customer, person: match };
     }
-    return { kind: "wrong" };
+    return { kind: codeLocked ? "locked" : "wrong" };
   });
 }
 

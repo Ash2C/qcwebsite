@@ -249,11 +249,35 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/session", { timeout: 20_
     expect((await POST(post({ code: "acme-co", passcode: ANN }, "6.6.6.6"))).status).toBe(200);
   });
 
-  it("locks the code after 50 failures across addresses", async () => {
-    for (let i = 0; i < 50; i++) await failAt(`10.1.0.${i}`, 1);
+  it("with the code-wide limit exceeded, a wrong passcode from a fresh address gets 429 LOCKED after the delay", async () => {
+    for (let i = 0; i < 51; i++) await failAt(`10.1.0.${i}`, 1);
+    const started = Date.now();
+    const res = await POST(post({ code: "acme-co", passcode: WRONG }, "192.0.2.99"));
+    expect(Date.now() - started).toBeGreaterThanOrEqual(990);
+    expect(res.status).toBe(429);
+    const text = await res.text();
+    expect(JSON.parse(text)).toEqual({ error: LOCKED_MSG });
+    expect(text).not.toContain(WRONG);
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("with the code-wide limit exceeded, the correct passcode from a fresh address still signs in", async () => {
+    for (let i = 0; i < 51; i++) await failAt(`10.1.0.${i}`, 1);
     const res = await POST(post({ code: "acme-co", passcode: ANN }, "192.0.2.99"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    const token = /monsoon_session=([^;]+)/.exec(res.headers.get("set-cookie") ?? "")?.[1];
+    expect(verifySession(token)?.personId).toBe(annId);
+  });
+
+  it("with the pair limit exceeded, the correct passcode from that address is still locked, unverified", async () => {
+    await failAt("203.0.113.7", 6);
+    vi.mocked(verifyPasscode).mockClear();
+    const res = await POST(post({ code: "acme-co", passcode: ANN }));
     expect(res.status).toBe(429);
     expect(await res.json()).toEqual({ error: LOCKED_MSG });
+    expect(res.headers.get("set-cookie")).toBeNull();
+    expect(vi.mocked(verifyPasscode)).not.toHaveBeenCalled();
   });
 
   it("49 failures across addresses do not lock the code; old failures do not count", async () => {
