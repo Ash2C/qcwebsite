@@ -1,5 +1,5 @@
-// One-time setup link: the customer's administrator submits their database address and Claude
-// key; Monsoon checks both as the restricted login and stores them encrypted. No credential is
+// One-time setup link. A `host` link carries the database details (submitted by Monsoon's own
+// admin tool); a `key` link carries the customer's Claude key. Each is checked, then stored encrypted. No credential is
 // ever logged or returned: log lines carry the error class name and Postgres code only.
 import Anthropic from "@anthropic-ai/sdk";
 import type { Client } from "pg";
@@ -61,15 +61,17 @@ type Link = {
   pipelineKey: string | null;
   defaultRole: string | null;
   claudeKeyOnFile: boolean;
-  purpose: "connect" | "replace";
+  purpose: "host" | "key";
 };
 
 /** Counts this attempt first, in its own statement, so failed checks still use one up. */
 async function claimAttempt(tokenHash: string): Promise<Link | "expired" | "too_many"> {
+  // Legacy connect/replace links are expired for every purpose: they neither count nor load.
   return withAccountsDb(async (db) => {
     const r = await db.query(
       `UPDATE setup_links l SET attempts = attempts + 1
         WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() AND attempts < $2
+          AND purpose IN ('host', 'key')
         RETURNING l.id, l.customer_id, l.pipeline_id, l.purpose,
                   (SELECT p.key FROM pipelines p WHERE p.id = l.pipeline_id AND p.customer_id = l.customer_id) AS pipeline_key,
                   (SELECT p.default_role FROM pipelines p WHERE p.id = l.pipeline_id AND p.customer_id = l.customer_id) AS default_role,
@@ -89,7 +91,7 @@ async function claimAttempt(tokenHash: string): Promise<Link | "expired" | "too_
       };
     }
     const spent = await db.query(
-      "SELECT 1 FROM setup_links WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() AND attempts >= $2",
+      "SELECT 1 FROM setup_links WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() AND attempts >= $2 AND purpose IN ('host', 'key')",
       [tokenHash, MAX_ATTEMPTS],
     );
     return spent.rowCount ? "too_many" : "expired";
@@ -97,7 +99,7 @@ async function claimAttempt(tokenHash: string): Promise<Link | "expired" | "too_
 }
 
 /** One transaction: the link is consumed first, so two racing submissions cannot both store. */
-async function store(link: Link, dbUrl: string | null, claudeKey: string | null): Promise<boolean> {
+async function store(link: Link, dbUrl: string | null, projectRef: string | null, claudeKey: string | null): Promise<boolean | "project_taken"> {
   const dbUrlEnc = dbUrl === null ? null : encryptSecret(dbUrl, link.customerId, `pipeline:${link.pipelineId}`);
   const claudeKeyEnc = claudeKey === null ? null : encryptSecret(claudeKey, link.customerId, "claude_key");
   return withAccountsDb(async (db: Client) => {
@@ -113,8 +115,8 @@ async function store(link: Link, dbUrl: string | null, claudeKey: string | null)
       }
       if (dbUrlEnc !== null) {
         const p = await db.query(
-          "UPDATE pipelines SET db_url_enc = $1, connected_at = now() WHERE id = $2 AND customer_id = $3",
-          [dbUrlEnc, link.pipelineId, link.customerId],
+          "UPDATE pipelines SET db_url_enc = $1, connected_at = now(), project_ref = $4 WHERE id = $2 AND customer_id = $3",
+          [dbUrlEnc, link.pipelineId, link.customerId, projectRef],
         );
         if (p.rowCount !== 1) throw new Error("Pipeline not found");
       }
@@ -124,12 +126,14 @@ async function store(link: Link, dbUrl: string | null, claudeKey: string | null)
       await db.query("INSERT INTO activity (customer_id, person_id, pipeline_key, action) VALUES ($1, NULL, $2, $3)", [
         link.customerId,
         link.pipelineKey,
-        link.purpose === "connect" ? "setup" : "replace",
+        link.purpose,
       ]);
       await db.query("COMMIT");
       return true;
     } catch (err) {
       await db.query("ROLLBACK").catch(() => undefined);
+      const e = err as { code?: unknown; table?: unknown };
+      if (e.code === "23505" && e.table === "pipelines") return "project_taken";
       throw err;
     }
   });
@@ -169,42 +173,40 @@ export async function POST(request: Request): Promise<Response> {
 
   const wantsDb = input.projectRef !== "" || input.poolerHost !== "" || input.password !== "";
   const claudeKey = input.claudeKey === "" ? null : input.claudeKey;
-  if (link.purpose === "connect") {
-    // Blank is allowed when the customer's key is already stored (a second pipeline): it is kept.
-    if (claudeKey === null && !link.claudeKeyOnFile) return failed("claude_key");
-    if (!wantsDb) return failed("connect");
-  } else if (!wantsDb && claudeKey === null) {
-    return invalid();
-  }
-  if (wantsDb && (link.pipelineId === null || link.pipelineKey === null)) return invalid();
-
   let dbUrl: string | null = null;
-  if (wantsDb) {
+  let projectRef: string | null = null;
+
+  if (link.purpose === "host") {
+    if (link.pipelineId === null || link.pipelineKey === null) return invalid();
+    if (input.projectRef === "" || input.poolerHost === "" || input.password === "") return failed("connect");
     try {
       dbUrl = buildPoolerUrl(input);
     } catch (err) {
       if (err instanceof AddressError && err.code === "bad_host") return failed("address");
       return failed("connect");
     }
+    projectRef = input.projectRef;
     const result = await runSetupChecks({
       dbUrl,
-      claudeKey,
+      claudeKey: null,
       roleName: ROLE_NAME,
       defaultRole: link.defaultRole ?? "",
       tryClaude,
     });
     if (!result.ok) return failed(result.failure);
-  } else if (claudeKey !== null && !(await tryClaude(claudeKey))) {
-    return failed("claude_key");
+  } else {
+    if (wantsDb) return invalid();
+    if (claudeKey === null || !(await tryClaude(claudeKey))) return failed("claude_key");
   }
 
-  let saved: boolean;
+  let saved: boolean | "project_taken";
   try {
-    saved = await store(link, dbUrl, claudeKey);
+    saved = await store(link, dbUrl, projectRef, link.purpose === "key" ? claudeKey : null);
   } catch (err) {
     logError("store", err);
     return reply({ error: "Could not reach the accounts database" }, 502);
   }
+  if (saved === "project_taken") return reply({ error: "That project is already used by another pipeline." }, 409);
   if (!saved) return expired();
   clearAccountCache();
   return reply({ ok: true, message: SETUP_SUCCESS }, 200);

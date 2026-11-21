@@ -16,7 +16,7 @@ describe.skipIf(!accounts.available)("loadSetupPage", () => {
     await client.query(
       `INSERT INTO setup_links (customer_id, pipeline_id, token_hash, purpose, expires_at, used_at, attempts)
        VALUES ($1, $2, $3, $4, now() + $5::interval, $6, $7)`,
-      [cid, pid, hashToken(t), opts.purpose ?? "connect", opts.expires ?? "7 days", opts.used ? new Date() : null, opts.attempts ?? 0],
+      [cid, pid, hashToken(t), opts.purpose ?? "key", opts.expires ?? "7 days", opts.used ? new Date() : null, opts.attempts ?? 0],
     );
     return t;
   }
@@ -53,33 +53,18 @@ describe.skipIf(!accounts.available)("loadSetupPage", () => {
     vi.unstubAllEnvs();
   });
 
-  it("returns the script for a connect link, with the pipeline vocabulary and active people", async () => {
-    const page = await loadSetupPage(await link());
-    expect(page.kind).toBe("ok");
-    if (page.kind !== "ok") return;
-    expect(page.purpose).toBe("connect");
-    expect(page.script).toContain("'New Lead'");
-    expect(page.script).toContain("'Buyer Desk'");
-    expect(page.script).toContain("('AL', 'Ann Lee')");
-    expect(page.script).not.toContain("Sam Old");
-  });
-
-  it("shows no script for a replace link", async () => {
-    expect(await loadSetupPage(await link({ purpose: "replace" }))).toEqual({
-      kind: "ok",
-      purpose: "replace",
-      script: null,
-      claudeKeyOnFile: false,
-    });
-  });
-
-  it("says whether a Claude key is already on file", async () => {
-    const before = await loadSetupPage(await link());
-    expect(before.kind === "ok" && before.claudeKeyOnFile).toBe(false);
+  it("a key link loads with claudeKeyOnFile", async () => {
+    expect(await loadSetupPage(await link({ purpose: "key" }))).toEqual({ kind: "ok", purpose: "key", claudeKeyOnFile: false });
     await client.query("UPDATE customers SET claude_key_enc = 'k1.a.b.c' WHERE id = $1", [cid]);
-    const after = await loadSetupPage(await link());
-    expect(after.kind === "ok" && after.claudeKeyOnFile).toBe(true);
+    const after = await loadSetupPage(await link({ purpose: "key" }));
+    expect(after).toEqual({ kind: "ok", purpose: "key", claudeKeyOnFile: true });
     expect(JSON.stringify(after)).not.toContain("k1.");
+  });
+
+  it("host, connect and replace links load as expired", async () => {
+    for (const purpose of ["host", "connect", "replace"]) {
+      expect(await loadSetupPage(await link({ purpose }))).toEqual({ kind: "expired" });
+    }
   });
 
   it("does not consume the link or count an attempt", async () => {

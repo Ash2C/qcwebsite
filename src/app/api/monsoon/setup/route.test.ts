@@ -75,7 +75,8 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/setup", { timeout: 30_00
   let errorSpy: ReturnType<typeof vi.spyOn>;
   const bodies: string[] = [];
 
-  const body = (extra: Record<string, unknown> = {}) => ({ token, projectRef: REF, poolerHost: HOST, password, claudeKey: KEY, ...extra });
+  const body = (extra: Record<string, unknown> = {}) => ({ token, projectRef: REF, poolerHost: HOST, password, ...extra });
+  const keyBody = (extra: Record<string, unknown> = {}) => ({ token, claudeKey: KEY, ...extra });
   async function send(b: unknown): Promise<{ status: number; json: Record<string, unknown>; res: Response }> {
     const res = await POST(post(b));
     const text = await res.text();
@@ -91,7 +92,7 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/setup", { timeout: 30_00
         cid,
         opts.pipeline === undefined ? pid : opts.pipeline,
         hashToken(t),
-        opts.purpose ?? "connect",
+        opts.purpose ?? "host",
         opts.expires ?? "7 days",
         opts.used ? new Date() : null,
         opts.attempts ?? 0,
@@ -100,16 +101,17 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/setup", { timeout: 30_00
     return t;
   }
   async function stored() {
-    const p = (await client.query("SELECT db_url_enc, connected_at FROM pipelines WHERE id = $1", [pid])).rows[0];
+    const p = (await client.query("SELECT db_url_enc, connected_at, project_ref FROM pipelines WHERE id = $1", [pid])).rows[0];
     const c = (await client.query("SELECT claude_key_enc FROM customers WHERE id = $1", [cid])).rows[0];
     const l = (await client.query("SELECT used_at, attempts FROM setup_links WHERE token_hash = $1", [hashToken(token)])).rows[0];
     const a = (await client.query("SELECT action, pipeline_key, person_id FROM activity ORDER BY id")).rows;
-    return { dbUrlEnc: p.db_url_enc, connectedAt: p.connected_at, claudeKeyEnc: c.claude_key_enc, usedAt: l?.used_at ?? null, attempts: l?.attempts, activity: a };
+    return { dbUrlEnc: p.db_url_enc, connectedAt: p.connected_at, projectRef: p.project_ref, claudeKeyEnc: c.claude_key_enc, usedAt: l?.used_at ?? null, attempts: l?.attempts, activity: a };
   }
   async function expectNothingStored() {
     const s = await stored();
     expect(s.dbUrlEnc).toBeNull();
     expect(s.connectedAt).toBeNull();
+    expect(s.projectRef).toBeNull();
     expect(s.claudeKeyEnc).toBeNull();
     expect(s.usedAt).toBeNull();
     expect(s.activity).toEqual([]);
@@ -175,28 +177,60 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/setup", { timeout: 30_00
     vi.unstubAllEnvs();
   });
 
-  it("connects: stores both secrets encrypted, consumes the link, records setup", async () => {
+  it("host: stores the address encrypted and the project ref, consumes the link, records host", async () => {
     const { status, json, res } = await send(body());
     expect(status).toBe(200);
     expect(json).toEqual({ ok: true, message: SUCCESS });
     expect(res.headers.get("Cache-Control")).toBe("no-store");
-    expect(vi.mocked(runSetupChecks).mock.calls[0][0]).toMatchObject({ roleName: "monsoon_app", claudeKey: KEY });
-    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-haiku-5-5", max_tokens: 1 }));
+    expect(vi.mocked(runSetupChecks).mock.calls[0][0]).toMatchObject({ roleName: "monsoon_app", claudeKey: null });
+    expect(h.create).not.toHaveBeenCalled();
 
     const s = await stored();
     expect(s.usedAt).not.toBeNull();
     expect(s.connectedAt).not.toBeNull();
+    expect(s.projectRef).toBe(REF);
     expect(s.dbUrlEnc).toMatch(/^k1\./);
     expect(s.dbUrlEnc).not.toContain(password);
     const url = new URL(decryptSecret(s.dbUrlEnc, cid, `pipeline:${pid}`));
     expect(decodeURIComponent(url.password)).toBe(password);
-    expect(decryptSecret(s.claudeKeyEnc, cid, "claude_key")).toBe(KEY);
-    expect(s.activity).toEqual([{ action: "setup", pipeline_key: "main", person_id: null }]);
+    expect(url.username).toBe(ROLE);
+    expect(s.claudeKeyEnc).toBeNull();
+    expect(s.activity).toEqual([{ action: "host", pipeline_key: "main", person_id: null }]);
 
-    // Single use.
     const again = await send(body());
     expect(again.status).toBe(410);
     expect(again.json.error).toBe(EXPIRED);
+  });
+
+  it("host: a project ref used by another pipeline is refused with 409 and nothing stored", async () => {
+    await client.query(
+      "INSERT INTO pipelines (customer_id, key, label, default_role, project_ref) VALUES ($1, 'other', 'Other', 'investor', $2)",
+      [cid, REF],
+    );
+    const { status, json } = await send(body());
+    expect(status).toBe(409);
+    expect(json).toEqual({ error: "That project is already used by another pipeline." });
+    await expectNothingStored();
+  });
+
+  it("host: missing password is refused with 422 connect", async () => {
+    const { status, json } = await send(body({ password: "" }));
+    expect(status).toBe(422);
+    expect(json.failure).toBe("connect");
+    await expectNothingStored();
+  });
+
+  it("host: a link without a pipeline is refused with 400", async () => {
+    token = await link({ pipeline: null });
+    const { status } = await send(body());
+    expect(status).toBe(400);
+  });
+
+  it("host: a Claude key in the body is ignored and Anthropic is never called", async () => {
+    const { status } = await send(body({ claudeKey: KEY }));
+    expect(status).toBe(200);
+    expect(h.create).not.toHaveBeenCalled();
+    expect((await stored()).claudeKeyEnc).toBeNull();
   });
 
   it("vocabulary: the pipeline's default role missing from the CRM's roles is refused, 422", async () => {
@@ -239,40 +273,72 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/setup", { timeout: 30_00
     await expectNothingStored();
   });
 
-  it("claude_key: a key Anthropic refuses is reported and nothing is stored", async () => {
+  it("key: stores the Claude key encrypted, records key", async () => {
+    token = await link({ purpose: "key", pipeline: null });
+    const { status, json } = await send(keyBody());
+    expect(status).toBe(200);
+    expect(json).toEqual({ ok: true, message: SUCCESS });
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-haiku-5-5", max_tokens: 1 }));
+    expect(runSetupChecks).not.toHaveBeenCalled();
+    const s = await stored();
+    expect(decryptSecret(s.claudeKeyEnc, cid, "claude_key")).toBe(KEY);
+    expect(s.dbUrlEnc).toBeNull();
+    expect(s.usedAt).not.toBeNull();
+    expect(s.activity).toEqual([{ action: "key", pipeline_key: null, person_id: null }]);
+  });
+
+  it("key: a key Anthropic refuses is 422 claude_key and nothing stored", async () => {
+    token = await link({ purpose: "key", pipeline: null });
     h.create.mockRejectedValue(Object.assign(new Error(`401 invalid x-api-key ${KEY}`), { status: 401 }));
-    const { status, json } = await send(body());
+    const { status, json } = await send(keyBody());
     expect(status).toBe(422);
     expect(json).toEqual({ error: "That Claude key didn't work. Check it in your Anthropic console.", failure: "claude_key" });
     await expectNothingStored();
   });
 
-  it("connect links require a Claude key", async () => {
-    const { status, json } = await send(body({ claudeKey: undefined }));
+  it("key: blank key is 422 claude_key", async () => {
+    token = await link({ purpose: "key", pipeline: null });
+    const { status, json } = await send(keyBody({ claudeKey: "  " }));
     expect(status).toBe(422);
     expect(json.failure).toBe("claude_key");
+    expect(h.create).not.toHaveBeenCalled();
     await expectNothingStored();
   });
 
-  it("a connect link for a customer with a Claude key on file may leave the key blank: kept, not re-checked", async () => {
-    await client.query("UPDATE customers SET claude_key_enc = 'k1.kept.on.file' WHERE id = $1", [cid]);
-    const { status, json } = await send(body({ claudeKey: "" }));
-    expect(status).toBe(200);
-    expect(json).toEqual({ ok: true, message: SUCCESS });
+  it("key: database fields on a key link are refused with 400", async () => {
+    token = await link({ purpose: "key", pipeline: null });
+    const { status, json } = await send(keyBody({ projectRef: REF, poolerHost: HOST, password }));
+    expect(status).toBe(400);
+    expect(json).toEqual({ error: "Invalid request" });
     expect(h.create).not.toHaveBeenCalled();
-    const s = await stored();
-    expect(s.claudeKeyEnc).toBe("k1.kept.on.file");
-    expect(s.dbUrlEnc).toMatch(/^k1\./);
-    expect(s.usedAt).not.toBeNull();
+    await expectNothingStored();
   });
 
-  it("a connect link with a key on file still checks and stores a new key when one is entered", async () => {
-    await client.query("UPDATE customers SET claude_key_enc = 'k1.kept.on.file' WHERE id = $1", [cid]);
-    const { status } = await send(body());
+  it("key: empty database fields (as the current form posts them) are not database fields", async () => {
+    token = await link({ purpose: "key", pipeline: null });
+    const { status } = await send(keyBody({ projectRef: "", poolerHost: "", password: "" }));
     expect(status).toBe(200);
-    expect(h.create).toHaveBeenCalled();
-    const s = await stored();
-    expect(decryptSecret(s.claudeKeyEnc, cid, "claude_key")).toBe(KEY);
+  });
+
+  it("key: replaces a key already on file", async () => {
+    await client.query("UPDATE customers SET claude_key_enc = 'k1.kept.on.file' WHERE id = $1", [cid]);
+    token = await link({ purpose: "key", pipeline: null });
+    const { status } = await send(keyBody());
+    expect(status).toBe(200);
+    expect(decryptSecret((await stored()).claudeKeyEnc, cid, "claude_key")).toBe(KEY);
+  });
+
+  it("legacy connect and replace links are refused as expired", async () => {
+    for (const purpose of ["connect", "replace"]) {
+      const t = await link({ purpose });
+      const { status, json } = await send(body({ token: t, claudeKey: KEY }));
+      expect(status).toBe(410);
+      expect(json).toEqual({ error: EXPIRED });
+      const row = (await client.query("SELECT used_at, attempts FROM setup_links WHERE token_hash = $1", [hashToken(t)])).rows[0];
+      expect(row).toEqual({ used_at: null, attempts: 0 });
+    }
+    expect(h.create).not.toHaveBeenCalled();
+    expect(runSetupChecks).not.toHaveBeenCalled();
   });
 
   it("address: a host that isn't a pooler", async () => {
@@ -284,7 +350,7 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/setup", { timeout: 30_00
     });
   });
 
-  it("connect: a wrong password", async () => {
+  it("host: a wrong password", async () => {
     const { status, json } = await send(body({ password: "not-the-right-password-1" }));
     expect(status).toBe(422);
     expect(json.failure).toBe("connect");
@@ -325,36 +391,6 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/setup", { timeout: 30_00
     expect(results.map((r) => r.status).sort()).toEqual([200, 410]);
     expect(results.find((r) => r.status === 410)?.json).toEqual({ error: EXPIRED });
     expect((await stored()).activity).toHaveLength(1);
-  });
-
-  it("replace links store only what is entered", async () => {
-    token = await link({ purpose: "replace" });
-    const { status } = await send({ token, projectRef: "", poolerHost: "", password: "", claudeKey: KEY });
-    expect(status).toBe(200);
-    const s = await stored();
-    expect(decryptSecret(s.claudeKeyEnc, cid, "claude_key")).toBe(KEY);
-    expect(s.dbUrlEnc).toBeNull();
-    expect(s.activity).toEqual([{ action: "replace", pipeline_key: "main", person_id: null }]);
-    expect(runSetupChecks).not.toHaveBeenCalled();
-  });
-
-  it("replace links can change only the database, without a Claude key check", async () => {
-    token = await link({ purpose: "replace" });
-    const { status } = await send(body({ claudeKey: "" }));
-    expect(status).toBe(200);
-    expect(h.create).not.toHaveBeenCalled();
-    const s = await stored();
-    expect(s.claudeKeyEnc).toBeNull();
-    expect(s.dbUrlEnc).toMatch(/^k1\./);
-    expect(s.activity).toEqual([{ action: "replace", pipeline_key: "main", person_id: null }]);
-  });
-
-  it("replace links with nothing entered are refused", async () => {
-    token = await link({ purpose: "replace" });
-    const { status, json } = await send({ token, projectRef: "", poolerHost: "", password: "", claudeKey: "" });
-    expect(status).toBe(400);
-    expect(json).toEqual({ error: "Invalid request" });
-    await expectNothingStored();
   });
 
   it("rejects a malformed body", async () => {
