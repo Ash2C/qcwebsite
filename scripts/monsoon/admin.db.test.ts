@@ -397,17 +397,100 @@ describe.skipIf(!db.available)("monsoon admin", () => {
       expect(posts).toHaveLength(0);
     });
 
-    it("refuses a project that already holds Monsoon people unless --replace", async () => {
+    const OTHER_REF = "zyxwvutsrq9876543210";
+    async function populateProject() {
       await crm.reset();
       const c = await crm.connect();
       await c.query("INSERT INTO people (name, name_key, source) VALUES ('Jane Tan', 'jane tan', 'test')");
       await c.end();
+    }
+    async function crmPeople(): Promise<number> {
+      const c = await crm.connect();
+      try {
+        return (await c.query("SELECT count(*)::int AS n FROM people")).rows[0].n;
+      } finally {
+        await c.end();
+      }
+    }
+    const hostLinks = async () =>
+      (await client.query("SELECT count(*)::int AS n FROM setup_links WHERE purpose = 'host'")).rows[0].n as number;
+    const markConnected = (ref: string) =>
+      client.query("UPDATE pipelines SET db_url_enc = 'k1.ddd.eee.fff', connected_at = now(), project_ref = $1 WHERE key = 'main'", [ref]);
+
+    it("refuses a project that already holds Monsoon people unless --replace", async () => {
+      await populateProject();
       expect(await host()).toBe(1);
-      expect(text()).toContain("That project already holds Monsoon data. Check the project reference, or pass --replace.");
+      expect(lines).toEqual(["Error: That project already holds Monsoon data. Check the project reference, or pass --replace."]);
       expect(posts).toHaveLength(0);
+      expect(await hostLinks()).toBe(0);
+    });
+
+    it("--replace rebuilds over Monsoon people only in the project the pipeline already uses", async () => {
+      await populateProject();
+      await markConnected(REF);
       expect(await host(["--replace"])).toBe(0);
+      expect(text()).toContain(`Pipeline main hosted on project ${REF}.`);
       expect(posts).toHaveLength(1);
+      expect(await crmPeople()).toBe(1);
       noSecrets();
+    });
+
+    it("--replace refuses a populated project under a different, unrecorded ref and runs nothing", async () => {
+      await populateProject();
+      await markConnected(REF);
+      expect(await run([...hostArgs(OTHER_REF), "--replace"], hostDeps())).toBe(1);
+      expect(lines).toEqual(["Error: That project already holds Monsoon data. Check the project reference."]);
+      expect(posts).toHaveLength(0);
+      expect(await hostLinks()).toBe(0);
+      expect(await crmPeople()).toBe(1);
+      const r = await client.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [role]);
+      expect(r.rowCount).toBe(0);
+    });
+
+    it("--replace moves a connected pipeline onto an empty project with a new ref", async () => {
+      await markConnected(REF);
+      expect(await run([...hostArgs(OTHER_REF), "--replace"], hostDeps())).toBe(0);
+      expect(text()).toContain(`Pipeline main hosted on project ${OTHER_REF}.`);
+      expect(posts).toHaveLength(1);
+      expect(posts[0].body.projectRef).toBe(OTHER_REF);
+      noSecrets();
+    });
+
+    it.each([
+      ["the server refuses", async (): Promise<Reply> => ({ status: 422, body: { failure: "can_delete", error: "The Monsoon login can remove rows." } })],
+      [
+        "the server cannot be reached",
+        async (): Promise<Reply> => {
+          throw new TypeError(`fetch failed for ${GENERATED}`);
+        },
+      ],
+    ])("host --replace on a connected pipeline exits 1 and says it is not connected when %s", async (_label, fake) => {
+      await markConnected(REF);
+      reply = fake;
+      expect(await host(["--replace"])).toBe(1);
+      expect(lines).toContain("The pipeline is not connected until host runs again successfully.");
+      expect(lines[lines.length - 1]).toBe("The pipeline is not connected until host runs again successfully.");
+      expect(text()).not.toContain("hosted on project");
+      expect(text()).not.toContain("fetch failed");
+      noSecrets();
+    });
+
+    it("a failure after the script ran, such as the host link insert, also says the pipeline is not connected", async () => {
+      const failing = Object.create(client) as Client;
+      failing.query = ((text: unknown, ...rest: unknown[]) =>
+        typeof text === "string" && text.includes("INSERT INTO setup_links")
+          ? Promise.reject(Object.assign(new Error(`insert failed ${GENERATED}`), { code: "23505" }))
+          : (client.query as (...a: unknown[]) => unknown)(text, ...rest)) as Client["query"];
+      expect(await run(hostArgs(), { ...hostDeps(), db: failing })).toBe(1);
+      expect(lines.slice(-2)).toEqual(["Error: Error (23505)", "The pipeline is not connected until host runs again successfully."]);
+      expect(posts).toHaveLength(0);
+      noSecrets();
+    });
+
+    it("an empty owner password variable fails before connecting", async () => {
+      expect(await run(hostArgs(), hostDeps({ OWNER_PW_VAR: "" }))).toBe(1);
+      expect(lines).toEqual(["Error: environment variable OWNER_PW_VAR is not set"]);
+      expect(connects).toHaveLength(0);
     });
 
     it("refuses a pipeline that is already connected unless --replace", async () => {

@@ -149,6 +149,14 @@ function parseEnvFile(text: string): Map<string, string> {
   return m;
 }
 
+function errorLine(err: unknown): string {
+  if (err instanceof Fail) return `Error: ${err.message}`;
+  // Never echo driver messages: they can carry connection details.
+  const code = (err as { code?: string } | null)?.code;
+  const name = err instanceof Error ? err.name : "Error";
+  return `Error: ${name}${typeof code === "string" && code.length === 5 ? ` (${code})` : ""}`;
+}
+
 function usage(out: (line: string) => void): number {
   for (const l of USAGE) out(l);
   return 1;
@@ -166,7 +174,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
   }
   async function pipeline(customerId: string, key: string) {
     const r = await db.query(
-      "SELECT id, vocab, label, (db_url_enc IS NOT NULL) AS connected FROM pipelines WHERE customer_id = $1 AND key = $2",
+      "SELECT id, vocab, label, project_ref, (db_url_enc IS NOT NULL) AS connected FROM pipelines WHERE customer_id = $1 AND key = $2",
       [customerId, key],
     );
     return r.rows[0] ?? fail(`no pipeline ${key}`);
@@ -346,35 +354,46 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         const owner = await connectOwner(`postgresql://postgres.${ref}:${encodeURIComponent(ownerPassword)}@${pooler}:5432/postgres`);
         try {
           const t = await owner.query("SELECT to_regclass('public.people') AS t");
-          if (t.rows[0].t && !replace) {
+          if (t.rows[0].t) {
             const held = await owner.query("SELECT EXISTS (SELECT 1 FROM public.people) AS found");
-            if (held.rows[0].found) fail("That project already holds Monsoon data. Check the project reference, or pass --replace.");
+            // --replace may rebuild over existing people only in the project this pipeline already uses.
+            if (held.rows[0].found && !replace) {
+              fail("That project already holds Monsoon data. Check the project reference, or pass --replace.");
+            }
+            if (held.rows[0].found && ref !== p.project_ref) fail("That project already holds Monsoon data. Check the project reference.");
           }
           await owner.query(generateSetupScript({ ...vocabulary, roleName: deps.appRole ?? "monsoon_app", password }));
           out(`CRM built in project ${ref}.`);
 
-          const token = newToken();
-          await db.query(
-            "INSERT INTO setup_links (customer_id, pipeline_id, token_hash, purpose, expires_at) VALUES ($1, $2, $3, 'host', $4)",
-            [c.id, p.id, hashToken(token), new Date(now().getTime() + HOST_LINK_MINUTES * 60_000)],
-          );
-          let reply: PostReply;
+          // From here the login's password has changed: every failure also says the pipeline is not connected.
           try {
-            reply = await post(`${publicBase()}/api/monsoon/setup`, { token, projectRef: ref, poolerHost: pooler, password });
+            const token = newToken();
+            await db.query(
+              "INSERT INTO setup_links (customer_id, pipeline_id, token_hash, purpose, expires_at) VALUES ($1, $2, $3, 'host', $4)",
+              [c.id, p.id, hashToken(token), new Date(now().getTime() + HOST_LINK_MINUTES * 60_000)],
+            );
+            let reply: PostReply;
+            try {
+              reply = await post(`${publicBase()}/api/monsoon/setup`, { token, projectRef: ref, poolerHost: pooler, password });
+            } catch (err) {
+              // A network error can echo the request, so only its class name is shown.
+              out(`Error: could not reach the setup route (${err instanceof Error ? err.name : "error"}).`);
+              out(NOT_CONNECTED);
+              return 1;
+            }
+            if (reply.status !== 200 || reply.body?.ok !== true) {
+              const error = typeof reply.body?.error === "string" ? reply.body.error : `the server refused (status ${reply.status})`;
+              out(`Error: ${error}`);
+              out(NOT_CONNECTED);
+              return 1;
+            }
+            out(`Pipeline ${pos[1]} hosted on project ${ref}.`);
+            return 0;
           } catch (err) {
-            // A network error can echo the request, so only its class name is shown.
-            out(`Error: could not reach the setup route (${err instanceof Error ? err.name : "error"}).`);
+            out(errorLine(err));
             out(NOT_CONNECTED);
             return 1;
           }
-          if (reply.status !== 200 || reply.body?.ok !== true) {
-            const error = typeof reply.body?.error === "string" ? reply.body.error : `the server refused (status ${reply.status})`;
-            out(`Error: ${error}`);
-            out(NOT_CONNECTED);
-            return 1;
-          }
-          out(`Pipeline ${pos[1]} hosted on project ${ref}.`);
-          return 0;
         } finally {
           await owner.end().catch(() => undefined);
         }
@@ -476,13 +495,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         return usage(out);
     }
   } catch (err) {
-    if (err instanceof Fail) {
-      out(`Error: ${err.message}`);
-      return 1;
-    }
-    // Never echo driver messages: they can carry connection details.
-    const code = (err as { code?: string }).code;
-    out(`Error: ${(err as Error).name}${typeof code === "string" && code.length === 5 ? ` (${code})` : ""}`);
+    out(errorLine(err));
     return 1;
   }
 }

@@ -100,7 +100,8 @@ export function loginAndPoliciesScript(roleName: string = DEFAULT_ROLE): string 
 
 export function generateSetupScript(v: SetupVocabulary): string {
   const role = checkRole(v.roleName ?? DEFAULT_ROLE);
-  if (v.password !== undefined && v.password.length < 16) throw new Error("invalid password");
+  // The password sits inside a dollar-quoted DO block, so a "$" could end the block early.
+  if (v.password !== undefined && (v.password.length < 16 || v.password.includes("$"))) throw new Error("invalid password");
   const rows = (items: string[]) => items.join(",\n  ");
   const parts = [
     "BEGIN;",

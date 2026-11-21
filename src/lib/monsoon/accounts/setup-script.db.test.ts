@@ -338,6 +338,12 @@ describe.skipIf(!testDb.available)("Setup script and restricted login (real Post
     expect(() => generateSetupScript({ ...vocabulary, roleName: roleA, password: "" })).toThrow("invalid password");
   });
 
+  it("a password containing $ is refused, since it sits inside a DO $$ block", () => {
+    for (const pw of ["abcdefgh$$ijklmnop", "$".repeat(20), "abcdefghijklmnop$"]) {
+      expect(() => generateSetupScript({ ...vocabulary, roleName: roleA, password: pw })).toThrow("invalid password");
+    }
+  });
+
   it("refuses a pre-existing login that is a member of another role, and changes nothing", async () => {
     await admin.query(`CREATE ROLE ${roleA} LOGIN PASSWORD 'old-password-123456'`);
     await admin.query(`GRANT pg_read_all_data TO ${roleA}`);
