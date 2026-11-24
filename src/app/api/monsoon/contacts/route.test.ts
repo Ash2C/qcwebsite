@@ -8,6 +8,12 @@ vi.mock("@/lib/monsoon/contacts", () => ({
   recentContacts: (...a: unknown[]) => recentContacts(...a),
 }));
 
+const listMembers = vi.fn();
+vi.mock("@/lib/monsoon/sift", async (original) => ({
+  ...(await original<typeof import("@/lib/monsoon/sift")>()),
+  listMembers: (...a: unknown[]) => listMembers(...a),
+}));
+
 vi.mock("@/lib/monsoon/accounts/account", async () =>
   (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
 );
@@ -23,6 +29,8 @@ const PIPELINES = [
 let account: ReturnType<typeof fakeAccount>;
 let withDb: MockInstance<Account["withDb"]>;
 const HITS = [{ kind: "person", name: "Mia Chen" }];
+// What the route answers for HITS: none of them is on the pipeline, so each row's work is blank.
+const SENT = { contacts: [{ kind: "person", name: "Mia Chen", work: null }], total: 1 };
 
 function get(query: string): Request {
   return new Request(`http://localhost/api/monsoon/contacts${query}`);
@@ -34,6 +42,7 @@ beforeEach(() => {
   signInAs(account);
   searchContacts.mockReset().mockResolvedValue(HITS);
   recentContacts.mockReset().mockResolvedValue(HITS);
+  listMembers.mockReset();
 });
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -75,7 +84,7 @@ describe("GET /api/monsoon/contacts", () => {
   it("searches when q has two or more characters after trimming", async () => {
     const res = await GET(get("?estate=traxo&q=%20%20mia%20"));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ contacts: HITS });
+    expect(await res.json()).toEqual(SENT);
     expect(searchContacts).toHaveBeenCalledTimes(1);
     expect(searchContacts.mock.calls[0][0]).toBe(fakeDb);
     expect(searchContacts.mock.calls[0][1]).toBe("mia");
@@ -87,10 +96,40 @@ describe("GET /api/monsoon/contacts", () => {
     for (const q of ["?estate=zeroone", "?estate=zeroone&q=", "?estate=zeroone&q=%20m%20"]) {
       const res = await GET(get(q));
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ contacts: HITS });
+      expect(await res.json()).toEqual(SENT);
     }
     expect(recentContacts).toHaveBeenCalledTimes(3);
     expect(searchContacts).not.toHaveBeenCalled();
+    expect(listMembers).not.toHaveBeenCalled();
+  });
+
+  it("lists the pipeline filtered and sorted when high or a sort is asked, with the phone's date", async () => {
+    const LIST = { contacts: [{ kind: "company", name: "Raffles", work: { priority: "high" } }], total: 7 };
+    listMembers.mockResolvedValue(LIST);
+    const today = new Date().toISOString().slice(0, 10);
+    const res = await GET(get(`?estate=traxo&high=1&sort=next&today=${today}`));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(LIST);
+    expect(listMembers).toHaveBeenCalledWith(fakeDb, { high: true, sort: "next", today });
+    expect(recentContacts).not.toHaveBeenCalled();
+
+    await GET(get("?estate=traxo&sort=stage"));
+    expect(listMembers).toHaveBeenLastCalledWith(fakeDb, { high: false, sort: "stage", today });
+    // An unknown sort is the default one.
+    await GET(get("?estate=traxo&sort=drop%20table"));
+    expect(recentContacts).toHaveBeenCalledTimes(1);
+  });
+
+  it("a search keeps only high-priority hits when asked, and sorts them when a sort is given", async () => {
+    const hit = (name: string, priority: string | null, lastAt: string | null) => ({ kind: "person", name, personId: name, orgId: null, member: null, work: { priority, lastAt } });
+    const sift = await import("@/lib/monsoon/sift");
+    const spy = vi.spyOn(sift, "withWork");
+    spy.mockResolvedValue([hit("Ann", "high", "2026-01-01"), hit("Bob", null, "2026-03-01"), hit("Cy", "high", "2026-02-01")] as never);
+    const high = await (await GET(get("?estate=traxo&q=mia&high=1"))).json();
+    expect(high.contacts.map((c: { name: string }) => c.name)).toEqual(["Ann", "Cy"]);
+    expect(high.total).toBe(2);
+    const sorted = await (await GET(get("?estate=traxo&q=mia&sort=last"))).json();
+    expect(sorted.contacts.map((c: { name: string }) => c.name)).toEqual(["Bob", "Cy", "Ann"]);
   });
 
   it("answers 502 without leaking details when the lookup throws", async () => {

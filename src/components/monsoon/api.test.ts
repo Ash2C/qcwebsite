@@ -19,6 +19,9 @@ const refine = { fields: { name: "A", title: "", org: "", email: "", phone: "", 
 const save = { estate: "traxo", captureId: "c", role: "r", fields: { name: "A" } };
 const act = { estate: "traxo", proposal: { kind: "add_note" } as never, signature: "s" };
 
+// The phone's local date, as the client sends it with the Contacts list.
+const NOW = new Date();
+const LOCAL_DAY = `${NOW.getFullYear()}-${String(NOW.getMonth() + 1).padStart(2, "0")}-${String(NOW.getDate()).padStart(2, "0")}`;
 const CALLS: [string, string, number, () => Promise<unknown>][] = [
   ["signIn", "/api/monsoon/session", 15_000, () => signIn("acme", "pass")],
   ["loadEstates", "/api/monsoon/estates", 15_000, () => loadEstates()],
@@ -27,7 +30,13 @@ const CALLS: [string, string, number, () => Promise<unknown>][] = [
   ["refineCard", "/api/monsoon/refine", 35_000, () => refineCard(refine)],
   ["actOnCrm", "/api/monsoon/act", 35_000, () => actOnCrm(act)],
   ["researchContact", "/api/monsoon/research", 70_000, () => researchContact({ estate: "traxo", personId: "p1" })],
-  ["searchContacts", "/api/monsoon/contacts?estate=traxo&q=jane+tan", 15_000, () => searchContacts("traxo", "jane tan")],
+  ["searchContacts", `/api/monsoon/contacts?estate=traxo&q=jane+tan&today=${LOCAL_DAY}`, 15_000, () => searchContacts("traxo", "jane tan")],
+  [
+    "searchContacts (sifted)",
+    `/api/monsoon/contacts?estate=traxo&q=&today=${LOCAL_DAY}&high=1&sort=next`,
+    15_000,
+    () => searchContacts("traxo", "", { high: true, sort: "next" }),
+  ],
   ["loadProfile", "/api/monsoon/contact?estate=traxo&today=2026-11-13&personId=p1", 15_000, () => loadProfile("traxo", { personId: "p1" }, "2026-11-13")],
   ["proposeChange", "/api/monsoon/propose", 35_000, () => proposeChange({ estate: "traxo", kind: "add_note", target: { memberId: "m1" }, text: "hi" })],
   ["askCrm", "/api/monsoon/ask", 70_000, () => askCrm({ estate: "traxo", today: "2026-11-13", messages: [] })],

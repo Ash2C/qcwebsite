@@ -3,6 +3,7 @@ import type { Client, ClientBase } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CUT } from "./ask/queries";
 import { getProfile, recentContacts, searchContacts } from "./contacts";
+import { listMembers, withWork } from "./sift";
 import { testDb } from "./testing/db";
 
 const TODAY = "2026-11-13";
@@ -197,6 +198,56 @@ describe.skipIf(!testDb.available)("Contact lookups (real Postgres)", () => {
       } as unknown as ClientBase;
       await expect(searchContacts(failing, "raffles")).rejects.toThrow("boom");
       await outsideTransaction();
+    });
+  });
+
+  describe("sifting the list", () => {
+    const names = (r: { contacts: { name: string }[] }) => r.contacts.map((c) => c.name);
+
+    it("carries each member's priority, next action and last action, blank when there is none", async () => {
+      const { contacts, total } = await listMembers(db, { high: false, sort: "stage", today: TODAY });
+      expect(total).toBe(3);
+      const raffles = contacts.find((c) => c.name === "Raffles Family Office")!;
+      expect(raffles.work).toMatchObject({
+        priority: "high",
+        nextAction: "Send deck",
+        nextActionDate: day(-3),
+        due: "overdue",
+        lastKind: "meeting", // the later system entry is not an action
+      });
+      expect(raffles.work!.lastAt).toBe(new Date(ago(2)).toISOString());
+      const miaD = contacts.find((c) => c.name === "Mia Ditrolio")!;
+      expect(miaD.work).toMatchObject({ priority: null, nextAction: null, nextActionDate: null, due: "none", lastKind: null, lastAt: null });
+    });
+
+    it("keeps only high priority when asked", async () => {
+      const r = await listMembers(db, { high: true, sort: "recent", today: TODAY });
+      expect(names(r)).toEqual(["Raffles Family Office"]);
+      expect(r.total).toBe(1);
+    });
+
+    it("sorts by next action, last action, stage and recency", async () => {
+      const by = async (sort: "next" | "last" | "stage" | "recent") => names(await listMembers(db, { high: false, sort, today: TODAY }));
+      // The one dated next action first, then the rest by name.
+      expect(await by("next")).toEqual(["Raffles Family Office", "Mia Ditrolio", "Raj Mehta"]);
+      // Newest call, meeting, email or note first; no action last.
+      expect(await by("last")).toEqual(["Raj Mehta", "Raffles Family Office", "Mia Ditrolio"]);
+      // Pipeline order: uncontacted, contacted, engaged.
+      expect(await by("stage")).toEqual(["Mia Ditrolio", "Raj Mehta", "Raffles Family Office"]);
+      expect(await by("recent")).toEqual((await recentContacts(db)).map((c) => c.name));
+    });
+
+    it("gives a search hit its own member's work, else its company's, else none", async () => {
+      const hits = await withWork(db, await searchContacts(db, "mia"), TODAY);
+      const work = (name: string) => hits.find((h) => h.name === name)!.work;
+      expect(work("Mia Chen")).toMatchObject({ priority: "high", nextAction: "Send deck", due: "overdue", lastKind: "meeting" });
+      expect(work("Mia Ditrolio")).toMatchObject({ priority: null, nextAction: null, lastKind: null });
+      expect(work("Jamia Park")).toBeNull();
+    });
+
+    it("writes nothing and leaves the connection outside a transaction", async () => {
+      await unchanged(() => listMembers(db, { high: true, sort: "next", today: TODAY }));
+      await unchanged(async () => withWork(db, await searchContacts(db, "mia"), TODAY));
     });
   });
 

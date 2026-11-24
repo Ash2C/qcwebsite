@@ -6,7 +6,8 @@ import type { CardMatch } from "@/lib/monsoon/match";
 import type { CaptureResult } from "@/lib/monsoon/capture";
 import type { RefineInput, RefineOutput } from "@/lib/monsoon/refine";
 import type { AskMessage, AskResult } from "@/lib/monsoon/ask/loop";
-import type { ContactHit, Profile } from "@/lib/monsoon/contacts";
+import type { Profile } from "@/lib/monsoon/contacts";
+import type { SiftHit, Sort } from "@/lib/monsoon/sift";
 import type { SignedProposal } from "@/lib/monsoon/ask/proposal";
 import type { ClaudeKeyState } from "@/lib/monsoon/accounts/claude-key";
 import { claudeStatusOf, reportClaudeStatus, type ClaudeChipStatus } from "./claudeStatus";
@@ -199,11 +200,22 @@ export async function proposeChange(
   );
 }
 
+// The phone's local date, never the UTC one (due dates are judged against it).
+function localDay(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** The Contacts list: a search when `q` has text, else the pipeline; `sift` filters and orders it. */
 export async function searchContacts(
   estate: string,
   q: string,
-): Promise<ApiResult<{ contacts: ContactHit[] } | { error: string }>> {
-  const params = new URLSearchParams({ estate, q });
+  sift?: { high: boolean; sort: Sort },
+): Promise<ApiResult<{ contacts: SiftHit[]; total?: number } | { error: string }>> {
+  const params = new URLSearchParams({ estate, q, today: localDay() });
+  if (sift?.high) params.set("high", "1");
+  if (sift && sift.sort !== "recent") params.set("sort", sift.sort);
   return parse(await request(`/api/monsoon/contacts?${params}`, { cache: "no-store" }, TIMEOUT_MS.quick));
 }
 

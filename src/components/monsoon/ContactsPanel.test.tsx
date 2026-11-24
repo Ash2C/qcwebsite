@@ -70,6 +70,64 @@ afterEach(() => {
 });
 
 describe("ContactsPanel", () => {
+  it("every row shows its next action and last action, blank when there is none", async () => {
+    const year = new Date().getFullYear();
+    const busy = {
+      ...SELF,
+      work: { priority: "high", nextAction: "Send deck", nextActionDate: `${year}-03-05`, due: "overdue", lastKind: "meeting", lastAt: `${year}-02-20T10:00:00Z`, stageOrd: 2, recentAt: null },
+    };
+    m.searchContacts.mockResolvedValue(hits(busy, { ...COMPANY, work: null }));
+    render(<Harness />);
+    await advance(0);
+    const rows = screen.getAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("High");
+    expect(rows[0]).toHaveTextContent("Next: Send deck · 5 Mar · overdue");
+    expect(rows[0]).toHaveTextContent("Last: Meeting · 20 Feb");
+    expect(rows[1]).toHaveTextContent("Next: —");
+    expect(rows[1]).toHaveTextContent("Last: —");
+    expect(rows[1]).not.toHaveTextContent("High");
+  });
+
+  it("High priority and the sorts ask the server again and stay switched on", async () => {
+    m.searchContacts.mockResolvedValue(hits(SELF));
+    render(<Harness />);
+    await advance(0);
+    const high = screen.getByRole("button", { name: "High priority" });
+    expect(high).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(high);
+    await advance(0);
+    expect(m.searchContacts).toHaveBeenLastCalledWith("traxo", "", { high: true, sort: "recent" });
+    expect(high).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("heading", { name: "Recent" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next action" }));
+    await advance(0);
+    expect(m.searchContacts).toHaveBeenLastCalledWith("traxo", "", { high: true, sort: "next" });
+    expect(screen.getByRole("button", { name: "Next action" })).toHaveAttribute("aria-pressed", "true");
+    for (const name of ["Recent", "Last action", "Stage"]) {
+      expect(screen.getByRole("button", { name })).toHaveAttribute("aria-pressed", "false");
+    }
+
+    fireEvent.click(high);
+    await advance(0);
+    expect(m.searchContacts).toHaveBeenLastCalledWith("traxo", "", { high: false, sort: "next" });
+  });
+
+  it("says when nothing is high priority, and how many rows are not shown", async () => {
+    m.searchContacts.mockResolvedValue(hits());
+    render(<Harness />);
+    await advance(0);
+    expect(screen.getByText("No contacts yet.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "High priority" }));
+    await advance(0);
+    expect(screen.getByText("No high-priority contacts.")).toBeInTheDocument();
+
+    m.searchContacts.mockResolvedValue({ status: 200, body: { contacts: [SELF], total: 240 } } as never);
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    await advance(0);
+    expect(screen.getByText("Showing 1 of 240. Search to find the rest.")).toBeInTheDocument();
+  });
+
   it("shows the recent list under Recent and a search box with the estate placeholder", async () => {
     m.searchContacts.mockResolvedValue(hits(SELF));
     render(<Harness />);
