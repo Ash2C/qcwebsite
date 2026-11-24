@@ -24,6 +24,8 @@ const setupHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // The commit this build was made from; the Monsoon app compares it with /api/monsoon/version.
+  env: { NEXT_PUBLIC_MONSOON_BUILD: process.env.VERCEL_GIT_COMMIT_SHA ?? "dev" },
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },

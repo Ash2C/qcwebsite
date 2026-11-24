@@ -101,3 +101,19 @@ ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS project_ref TEXT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS pipelines_project_ref_key ON pipelines (project_ref);
 
 INSERT INTO accounts_migrations (version) VALUES (2) ON CONFLICT DO NOTHING;
+
+-- Version 3: the Claude key in the app. One named person per customer may change the key; the
+-- status is the result of the last real Claude call (NULL with a key on file: tested when it was saved).
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS key_person_id UUID NULL REFERENCES people(id);
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS claude_status TEXT NULL;
+ALTER TABLE customers DROP CONSTRAINT IF EXISTS customers_claude_status_check,
+  ADD CONSTRAINT customers_claude_status_check CHECK (claude_status IN ('ok', 'key_rejected', 'no_credit'));
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS claude_checked_at TIMESTAMPTZ NULL;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS claude_key_set_at TIMESTAMPTZ NULL;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS claude_key_set_by UUID NULL REFERENCES people(id);
+-- A customer with nobody named yet: its earliest person keeps the key.
+UPDATE customers c
+   SET key_person_id = (SELECT p.id FROM people p WHERE p.customer_id = c.id ORDER BY p.created_at, p.id LIMIT 1)
+ WHERE c.key_person_id IS NULL;
+
+INSERT INTO accounts_migrations (version) VALUES (3) ON CONFLICT DO NOTHING;

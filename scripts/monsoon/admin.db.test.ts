@@ -37,7 +37,22 @@ describe.skipIf(!db.available)("monsoon admin", () => {
 
   it("migrate is idempotent", async () => {
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toContain("Schema already applied (version 2).");
+    expect(text()).toContain("Schema already applied (version 3).");
+  });
+
+  it("the first person keeps the Claude key until keyholder names another", async () => {
+    await run(["customer", "add", "acme", "Acme Ltd"]);
+    await run(["person", "add", "acme", "Ann", "AN"]);
+    await run(["person", "add", "acme", "Bob", "BO"]);
+    const holder = async () =>
+      (await client.query("SELECT p.owner_key FROM customers c JOIN people p ON p.id = c.key_person_id WHERE c.code = 'acme'")).rows[0]?.owner_key;
+    expect(await holder()).toBe("AN");
+    expect(await run(["keyholder", "acme", "BO"])).toBe(0);
+    expect(await holder()).toBe("BO");
+    expect(await run(["keyholder", "acme", "ZZ"])).not.toBe(0);
+    expect(await holder()).toBe("BO");
+    await run(["status"]);
+    expect(text()).toContain("key holder BO");
   });
 
   it("adds a customer and a person whose passcode verifies", async () => {

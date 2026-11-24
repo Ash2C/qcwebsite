@@ -29,6 +29,8 @@ export type FakeAccountOptions = {
   /** Returned by anthropic(). Without it anthropic() throws NotConnected. */
   claude?: unknown;
   model?: string;
+  /** Whether this person may change the Claude key (default false). */
+  canChangeKey?: boolean;
 };
 
 export function fakeAccount(over: FakeAccountOptions = {}): Account {
@@ -50,6 +52,8 @@ export function fakeAccount(over: FakeAccountOptions = {}): Account {
     },
     model: () => model,
     record: vi.fn(async () => undefined),
+    canChangeKey: over.canChangeKey ?? false,
+    noteClaude: vi.fn(async () => undefined),
   };
 }
 

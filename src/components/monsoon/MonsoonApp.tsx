@@ -1,6 +1,10 @@
 "use client";
 
 import { claudeFailureText } from "./claudeFailure";
+import ClaudeChip from "./ClaudeChip";
+import ClaudeKeyPanel from "./ClaudeKeyPanel";
+import { onClaudeStatus, type ClaudeChipStatus } from "./claudeStatus";
+import UpdateBanner from "./UpdateBanner";
 import MonsoonLoader from "./MonsoonLoader";
 import MonsoonLogo from "./MonsoonLogo";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -81,12 +85,19 @@ function storeEstate(key: string) {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-dvh bg-[#f2f2f7] text-neutral-900 dark:bg-[#07090C] dark:text-white">{children}</div>
+    <div className="min-h-dvh bg-[#f2f2f7] text-neutral-900 dark:bg-[#07090C] dark:text-white">
+      <UpdateBanner />
+      {children}
+    </div>
   );
 }
 
 export default function MonsoonApp() {
   const [phase, setPhase] = useState<Phase>("loading");
+  // The header chip: the last real Claude result, from the server at load and from each call after.
+  const [claude, setClaude] = useState<ClaudeChipStatus | null>(null);
+  const [keyOpen, setKeyOpen] = useState(false);
+  useEffect(() => onClaudeStatus(setClaude), []);
   const [estates, setEstates] = useState<EstateInfo[]>([]);
   const [estateKey, setEstateKey] = useState(DEFAULT_ESTATE);
   const [role, setRole] = useState("");
@@ -166,6 +177,7 @@ export default function MonsoonApp() {
           list[0];
         setEstates(list);
         setPersonName(res.body.person?.name ?? null);
+        setClaude(res.body.claude?.status ?? null);
         if (pick) {
           setEstateKey(pick.key);
           // A reload keeps the role the user already chose when this estate still offers it.
@@ -629,10 +641,34 @@ export default function MonsoonApp() {
         ? "text-red-600 dark:text-red-400"
         : "text-neutral-900 dark:text-white";
 
+  if (keyOpen) {
+    return (
+      <Shell>
+        <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
+          <ClaudeKeyPanel
+            onBack={() => setKeyOpen(false)}
+            onUnauthorized={() => {
+              setKeyOpen(false);
+              setPhase("locked");
+            }}
+            onStatus={setClaude}
+          />
+        </main>
+      </Shell>
+    );
+  }
+
   return (
     <Shell>
       <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
-        <MonsoonLogo className="h-8 px-1 pt-2" />
+        <div className="flex items-center justify-between gap-3 pt-2">
+          <MonsoonLogo className="h-8 px-1" />
+          <ClaudeChip
+            status={claude}
+            disabled={busy || batchRunning || askBusy || profileBusy}
+            onClick={() => setKeyOpen(true)}
+          />
+        </div>
         {personName && <p className="px-1 text-[13px] text-neutral-500 dark:text-neutral-400">{personName}</p>}
 
         <div

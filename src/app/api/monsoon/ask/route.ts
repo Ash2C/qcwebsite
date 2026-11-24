@@ -114,12 +114,14 @@ export async function POST(request: Request) {
         messages,
       ),
     );
+    await account.noteClaude();
     await account.record("ask", estate.key);
     return NextResponse.json(result);
   } catch (err) {
     // Name and status only: messages can carry questions, contact data or connection details.
     const status = (err as { status?: unknown })?.status;
     console.error("monsoon: ask failed", err instanceof Error ? err.name : "error", ...(typeof status === "number" ? [status] : []));
+    await account.noteClaude(err);
     return claudeFailureResponse(err) ?? NextResponse.json({ error: "Could not get an answer" }, { status: 502 });
   }
 }

@@ -121,7 +121,10 @@ async function store(link: Link, dbUrl: string | null, projectRef: string | null
         if (p.rowCount !== 1) throw new Error("Pipeline not found");
       }
       if (claudeKeyEnc !== null) {
-        await db.query("UPDATE customers SET claude_key_enc = $1 WHERE id = $2", [claudeKeyEnc, link.customerId]);
+        await db.query(
+          "UPDATE customers SET claude_key_enc = $1, claude_status = 'ok', claude_checked_at = now(), claude_key_set_at = now(), claude_key_set_by = NULL WHERE id = $2",
+          [claudeKeyEnc, link.customerId],
+        );
       }
       await db.query("INSERT INTO activity (customer_id, person_id, pipeline_key, action) VALUES ($1, NULL, $2, $3)", [
         link.customerId,

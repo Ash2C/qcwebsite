@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { CRM_SCHEMA_VERSION, requireAccount } from "@/lib/monsoon/accounts/account";
+import { loadClaudeKeyState } from "@/lib/monsoon/accounts/claude-key";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,8 +39,12 @@ export async function GET(request: Request) {
     }),
   );
 
+  // The chip's starting state. A failed lookup leaves it out; the app then shows no chip state.
+  const claude = await loadClaudeKeyState(account).catch(() => null);
+
   return NextResponse.json({
     estates,
+    ...(claude ? { claude: { status: claude.status } } : {}),
     person: { name: account.person.name },
     customer: { name: account.customer.name },
   });

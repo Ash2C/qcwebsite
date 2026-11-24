@@ -203,14 +203,14 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         parseArgs(argv.slice(1));
         const t = await db.query("SELECT to_regclass('public.accounts_migrations') AS t");
         if (t.rows[0].t) {
-          const v = await db.query("SELECT 1 FROM accounts_migrations WHERE version = 2");
+          const v = await db.query("SELECT 1 FROM accounts_migrations WHERE version = 3");
           if (v.rowCount) {
-            out("Schema already applied (version 2).");
+            out("Schema already applied (version 3).");
             return 0;
           }
         }
         await db.query(readFile(join(process.cwd(), "src", "lib", "monsoon", "accounts", "schema.sql")));
-        out("Schema applied (version 2).");
+        out("Schema applied (version 3).");
         return 0;
       }
       case "customer": {
@@ -247,6 +247,8 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
             [c.id, pos[1], owner, hash],
           );
           if (!r.rowCount) fail(`${owner} already exists for ${pos[0]}`);
+          // The first person of a customer keeps its Claude key until `keyholder` names someone else.
+          await db.query("UPDATE customers SET key_person_id = $2 WHERE id = $1 AND key_person_id IS NULL", [c.id, r.rows[0].id]);
           out(`Person ${owner} added.`);
           if (typeof fromEnv === "string") out(`Passcode set from ${fromEnv}`);
           else {
@@ -284,6 +286,20 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
           return 0;
         }
         return usage(out);
+      }
+      case "keyholder": {
+        // Names the one person who may change the customer's Claude key in the app.
+        const { pos } = parseArgs(argv.slice(1));
+        need(pos, 2);
+        const c = await customer(pos[0]);
+        const owner = checkOwner(pos[1]);
+        const r = await db.query(
+          "UPDATE customers SET key_person_id = (SELECT id FROM people WHERE customer_id = $1 AND owner_key = $2) WHERE id = $1 AND EXISTS (SELECT 1 FROM people WHERE customer_id = $1 AND owner_key = $2) RETURNING id",
+          [c.id, owner],
+        );
+        if (!r.rowCount) fail(`no person ${owner} for ${pos[0]}`);
+        out(`${owner} now keeps the Claude key for ${pos[0]}.`);
+        return 0;
       }
       case "pipeline": {
         if (sub !== "add") return usage(out);
@@ -423,6 +439,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         parseArgs(argv.slice(1));
         const cs = await db.query(
           `SELECT c.id, c.code, c.status, (c.claude_key_enc IS NOT NULL) AS has_key,
+                  (SELECT owner_key FROM people k WHERE k.id = c.key_person_id) AS key_person,
                   (SELECT count(*)::int FROM people p WHERE p.customer_id = c.id) AS people
            FROM customers c ORDER BY c.code`,
         );
@@ -436,7 +453,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
               p.connected && p.connected_at ? `${p.key} connected ${p.connected_at.toISOString().slice(0, 10)}` : `${p.key} not connected`,
             )
             .join(", ");
-          out(`${c.code} | ${c.status} | ${c.people} people | ${pipes || "no pipelines"} | Claude key ${c.has_key ? "set" : "missing"}`);
+          out(`${c.code} | ${c.status} | ${c.people} people | ${pipes || "no pipelines"} | Claude key ${c.has_key ? "set" : "missing"} | key holder ${c.key_person ?? "none"}`);
         }
         if (cs.rowCount === 0) out("No customers.");
         return 0;

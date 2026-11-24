@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/monsoon/accounts/account", async () =>
   (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
 );
+const loadClaudeKeyState = vi.fn();
+vi.mock("@/lib/monsoon/accounts/claude-key", () => ({
+  loadClaudeKeyState: (...args: unknown[]) => loadClaudeKeyState(...args),
+}));
 import { fakeAccount, signInAs, signOut } from "@/lib/monsoon/testing/account";
 import { GET } from "./route";
 
@@ -25,12 +29,24 @@ function dbWith(version: number | null, roles = ROLES) {
 
 beforeEach(() => {
   signOut();
+  loadClaudeKeyState.mockReset();
+  loadClaudeKeyState.mockRejectedValue(new Error("no accounts database"));
 });
 afterEach(() => vi.restoreAllMocks());
 
 describe("GET /api/monsoon/estates", () => {
   it("returns 401 when requireAccount refuses", async () => {
     expect((await GET(request())).status).toBe(401);
+  });
+
+  it("carries the Claude key status for the header chip, and leaves it out when the lookup fails", async () => {
+    signInAs(fakeAccount({ pipelines: PIPELINES, db: dbWith(1) }));
+    loadClaudeKeyState.mockResolvedValue({ status: "key_rejected", last4: "abcd" });
+    expect((await (await GET(request())).json()).claude).toEqual({ status: "key_rejected" });
+    loadClaudeKeyState.mockRejectedValue(new Error("down"));
+    const res = await GET(request());
+    expect(res.status).toBe(200);
+    expect("claude" in (await res.json())).toBe(false);
   });
 
   it("lists the account's pipelines with roles, plus person and customer names", async () => {

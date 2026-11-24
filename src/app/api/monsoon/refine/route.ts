@@ -55,6 +55,7 @@ export async function POST(request: Request) {
       notes: b.notes,
       spoken: b.spoken,
     });
+    await account.noteClaude();
     await account.record("tidy");
     return NextResponse.json(out);
   } catch (err) {
@@ -65,6 +66,7 @@ export async function POST(request: Request) {
       err instanceof Error ? err.name : "error",
       typeof status === "number" ? status : "",
     );
+    await account.noteClaude(err);
     return claudeFailureResponse(err) ?? NextResponse.json({ error: "Could not tidy the notes" }, { status: 502 });
   }
 }

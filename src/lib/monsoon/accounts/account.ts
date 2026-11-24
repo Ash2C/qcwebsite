@@ -4,12 +4,15 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Client } from "pg";
 import { SESSION_COOKIE, accountsConfigured, cookieValue, verifySession } from "../auth";
 import { withPipelineDb } from "../db";
+import { claudeFailure } from "../claude-failure";
 import { decryptSecret } from "./crypto";
 import { NotConnected } from "./not-connected";
 import {
   evictAccount,
   loadAccountRows,
   recordActivity,
+  recordClaudeStatus,
+  type ClaudeStatus,
   withAccountsDb,
   type ActivityAction,
   type CustomerRow,
@@ -28,7 +31,17 @@ export type Account = {
   anthropic(opts: { timeout: number }): Anthropic;
   model(): string;
   record(action: ActivityAction, pipelineKey?: string | null): Promise<void>;
+  /** True for the one person who may change the customer's Claude key. */
+  canChangeKey: boolean;
+  /**
+   * Call after every real Claude call: with nothing when it worked, with the error when it failed.
+   * Keeps the customer's "last real result" (what the app's chip shows). Never throws.
+   */
+  noteClaude(err?: unknown): Promise<void>;
 };
+
+// A status that has not changed is written again only this often, to keep "last checked" fresh.
+const RECHECK_MS = 10 * 60_000;
 
 // Lives in its own file so the test helper can share the class without importing this module.
 export { NotConnected };
@@ -78,6 +91,20 @@ export function buildAccount(rows: { customer: CustomerRow; person: PersonRow; p
     },
     record(action, pipelineKey = null) {
       return recordActivity({ customerId: customer.id, personId: person.id, pipelineKey, action });
+    },
+    canChangeKey: customer.keyPersonId !== null && customer.keyPersonId === person.id,
+    async noteClaude(...args) {
+      let status: ClaudeStatus;
+      if (args.length === 0) status = "ok";
+      else {
+        const reason = claudeFailure(args[0]);
+        if (reason === "claude_key_rejected") status = "key_rejected";
+        else if (reason === "claude_no_credit") status = "no_credit";
+        else return; // a missing key, a busy Claude or another failure says nothing about the key
+      }
+      const fresh = customer.claudeCheckedAt !== null && Date.now() - customer.claudeCheckedAt.getTime() < RECHECK_MS;
+      if (customer.claudeStatus === status && fresh) return;
+      await recordClaudeStatus(customer.id, status);
     },
   };
 }

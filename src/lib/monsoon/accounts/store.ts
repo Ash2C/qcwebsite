@@ -35,7 +35,14 @@ export type CustomerRow = {
   status: "active" | "suspended";
   model: string;
   claudeKeyEnc: string | null;
+  /** The one person who may change the Claude key. */
+  keyPersonId: string | null;
+  /** The last real Claude result; null when nothing has been recorded since the key was saved. */
+  claudeStatus: ClaudeStatus | null;
+  claudeCheckedAt: Date | null;
 };
+
+export type ClaudeStatus = "ok" | "key_rejected" | "no_credit";
 
 export type PersonRow = {
   id: string;
@@ -66,7 +73,7 @@ export async function withAccountsDb<T>(fn: (db: Client) => Promise<T>): Promise
   }
 }
 
-const CUSTOMER_COLUMNS = "id, code, name, status, model, claude_key_enc";
+const CUSTOMER_COLUMNS = "id, code, name, status, model, claude_key_enc, key_person_id, claude_status, claude_checked_at";
 const PERSON_COLUMNS = "id, customer_id, display_name, owner_key, passcode_hash, session_no, status";
 
 type Raw = Record<string, unknown>;
@@ -79,6 +86,9 @@ function toCustomer(r: Raw): CustomerRow {
     status: r.status as CustomerRow["status"],
     model: r.model as string,
     claudeKeyEnc: (r.claude_key_enc as string | null) ?? null,
+    keyPersonId: (r.key_person_id as string | null) ?? null,
+    claudeStatus: (r.claude_status as ClaudeStatus | null) ?? null,
+    claudeCheckedAt: (r.claude_checked_at as Date | null) ?? null,
   };
 }
 
@@ -123,6 +133,23 @@ const cache = new Map<string, { at: number; value: AccountRows }>();
 
 export function clearAccountCache(): void {
   cache.clear();
+}
+
+/** Drops every cached row of one customer (after its Claude key or key status changed). */
+export function evictCustomer(customerId: string): void {
+  for (const key of cache.keys()) if (key.startsWith(`${customerId}:`)) cache.delete(key);
+}
+
+/** Never throws; logs the error class name only. Records the result of a real Claude call. */
+export async function recordClaudeStatus(customerId: string, status: ClaudeStatus): Promise<void> {
+  try {
+    await withAccountsDb((db) =>
+      db.query("UPDATE customers SET claude_status = $2, claude_checked_at = now() WHERE id = $1", [customerId, status]),
+    );
+    evictCustomer(customerId);
+  } catch (err) {
+    console.error(`monsoon: recordClaudeStatus failed (${err instanceof Error ? err.constructor.name : "Error"})`);
+  }
 }
 
 /** Drops one person's cached rows, so the next lookup reads the database (after a fresh sign-in). */

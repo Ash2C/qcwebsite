@@ -150,6 +150,18 @@ describe("POST /api/monsoon/read", () => {
     expect(extractCards).not.toHaveBeenCalled();
   });
 
+  it("notes the Claude result for the header chip: nothing passed when it worked, the error when it failed", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const account = signInAs(fakeAccount({ pipelines: PIPELINES, db: FAKE_DB, claude: FAKE_CLAUDE }));
+    extractCards.mockResolvedValue([FIELDS]);
+    await POST(await post(formWith(new Blob(["ABC"], { type: "image/png" }))));
+    expect(account.noteClaude).toHaveBeenLastCalledWith();
+    const err = Object.assign(new Error("x"), { status: 401 });
+    extractCards.mockRejectedValue(err);
+    await POST(await post(formWith(new Blob(["ABC"], { type: "image/png" }))));
+    expect(account.noteClaude).toHaveBeenLastCalledWith(err);
+  });
+
   it("answers 409 claude_key_rejected when Claude refuses the customer's key", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     extractCards.mockRejectedValue(Object.assign(new Error("invalid x-api-key secret detail"), { status: 401 }));

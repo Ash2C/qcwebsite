@@ -8,6 +8,8 @@ import type { RefineInput, RefineOutput } from "@/lib/monsoon/refine";
 import type { AskMessage, AskResult } from "@/lib/monsoon/ask/loop";
 import type { ContactHit, Profile } from "@/lib/monsoon/contacts";
 import type { SignedProposal } from "@/lib/monsoon/ask/proposal";
+import type { ClaudeKeyState } from "@/lib/monsoon/accounts/claude-key";
+import { claudeStatusOf, reportClaudeStatus, type ClaudeChipStatus } from "./claudeStatus";
 
 export type EstateInfo = {
   key: string;
@@ -78,6 +80,13 @@ async function parse<T>(response: Response): Promise<ApiResult<T>> {
   return { status: response.status, body: body as T };
 }
 
+// For the routes that call Claude: tells the header chip what the result says about the key.
+function noted<T>(res: ApiResult<T>, worked = true): ApiResult<T> {
+  const status = claudeStatusOf(res, worked);
+  if (status) reportClaudeStatus(status);
+  return res;
+}
+
 export async function signIn(
   code: string,
   passcode: string,
@@ -93,7 +102,8 @@ export async function signIn(
 
 export async function loadEstates(): Promise<
   ApiResult<
-    { estates: EstateInfo[]; person?: { name: string }; customer?: { name: string } } | { error: string }
+    | { estates: EstateInfo[]; person?: { name: string }; customer?: { name: string }; claude?: { status: ClaudeChipStatus } }
+    | { error: string }
   >
 > {
   return parse(await request("/api/monsoon/estates", { cache: "no-store" }, TIMEOUT_MS.quick));
@@ -106,7 +116,7 @@ export async function readCards(
   const form = new FormData();
   form.append("image", image, "card.jpg");
   form.append("estate", estate);
-  return parse(await request("/api/monsoon/read", { method: "POST", body: form }, TIMEOUT_MS.upload));
+  return noted(await parse(await request("/api/monsoon/read", { method: "POST", body: form }, TIMEOUT_MS.upload)));
 }
 
 export async function saveCard(
@@ -124,11 +134,13 @@ export async function saveCard(
 export async function refineCard(
   body: RefineInput,
 ): Promise<ApiResult<RefineOutput | { error: string }>> {
-  return parse(
-    await request(
-      "/api/monsoon/refine",
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
-      TIMEOUT_MS.standard,
+  return noted(
+    await parse(
+      await request(
+        "/api/monsoon/refine",
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+        TIMEOUT_MS.standard,
+      ),
     ),
   );
 }
@@ -138,11 +150,13 @@ export async function askCrm(body: {
   today: string;
   messages: AskMessage[];
 }): Promise<ApiResult<AskResult | { error: string }>> {
-  return parse(
-    await request(
-      "/api/monsoon/ask",
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
-      TIMEOUT_MS.ask,
+  return noted(
+    await parse(
+      await request(
+        "/api/monsoon/ask",
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+        TIMEOUT_MS.ask,
+      ),
     ),
   );
 }
@@ -214,11 +228,38 @@ export async function researchContact(body: {
   memberId?: string;
   personId?: string;
 }): Promise<ApiResult<ResearchResponse | { error: string } | null>> {
-  return parse(
+  const res: ApiResult<ResearchResponse | { error: string } | null> = await parse(
     await request(
       "/api/monsoon/research",
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
       TIMEOUT_MS.research,
     ),
   );
+  // A "none" answer can come back before Claude is asked (nothing to search on): it proves nothing.
+  return noted(res, res.body !== null && "status" in res.body && res.body.status === "findings");
+}
+
+type KeyReply = ApiResult<{ key: ClaudeKeyState } | { error: string }>;
+const keyPost = async (body: Record<string, unknown>): Promise<KeyReply> =>
+  parse(
+    await request(
+      "/api/monsoon/claude-key",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+      TIMEOUT_MS.standard,
+    ),
+  );
+
+/** The account's Claude key state (never the key). */
+export async function loadClaudeKey(): Promise<KeyReply> {
+  return parse(await request("/api/monsoon/claude-key", { cache: "no-store" }, TIMEOUT_MS.quick));
+}
+
+/** Tests the key on file with one tiny real call. */
+export function testClaudeKey(): Promise<KeyReply> {
+  return keyPost({ test: true });
+}
+
+/** Tests a new key and replaces the one on file only if Claude accepts it. */
+export function saveClaudeKey(claudeKey: string): Promise<KeyReply> {
+  return keyPost({ claudeKey });
 }

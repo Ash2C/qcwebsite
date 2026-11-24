@@ -56,6 +56,7 @@ export async function POST(request: Request) {
       base64,
       mediaType: file.type as MediaType,
     });
+    await account.noteClaude();
     let matches: CardMatch[] | null = null;
     const estate = account.pipeline(form.get("estate"));
     if (estate && cards.length > 0) {
@@ -95,6 +96,7 @@ export async function POST(request: Request) {
       err instanceof Error ? err.name : "error",
       typeof status === "number" ? status : ""
     );
+    await account.noteClaude(err);
     // The account's Claude key is the problem, not the photo: say so, so the app can tell the person.
     return claudeFailureResponse(err) ?? NextResponse.json({ error: "Could not read the photo" }, { status: 502 });
   }

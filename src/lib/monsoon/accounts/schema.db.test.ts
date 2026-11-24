@@ -25,11 +25,11 @@ describe.skipIf(!db.available)("accounts schema", () => {
     return r.rows[0].id;
   }
 
-  it("creates all seven tables and records migrations 1 and 2", async () => {
+  it("creates all seven tables and records migrations 1 to 3", async () => {
     const r = await client.query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'");
     expect(r.rows.map((x) => x.tablename).sort()).toEqual([...TABLES].sort());
     const m = await client.query("SELECT version FROM accounts_migrations");
-    expect(m.rows.map((x) => x.version)).toEqual([1, 2]);
+    expect(m.rows.map((x) => x.version)).toEqual([1, 2, 3]);
   });
 
   it("applies defaults to customers", async () => {
@@ -117,7 +117,27 @@ describe.skipIf(!db.available)("accounts schema", () => {
     const { join } = await import("node:path");
     await client.query(readFileSync(join(__dirname, "schema.sql"), "utf8"));
     const m = await client.query("SELECT count(*)::int AS n FROM accounts_migrations");
-    expect(m.rows[0].n).toBe(2);
+    expect(m.rows[0].n).toBe(3);
+  });
+
+  it("version 3: the earliest person is named key person, and the status takes only known values", async () => {
+    const id = await customer();
+    const late = await client.query(
+      "INSERT INTO people (customer_id, display_name, owner_key, passcode_hash, created_at) VALUES ($1, 'Bob', 'BO', 'h', now()) RETURNING id",
+      [id],
+    );
+    const early = await client.query(
+      "INSERT INTO people (customer_id, display_name, owner_key, passcode_hash, created_at) VALUES ($1, 'Ann', 'AN', 'h', now() - interval '1 day') RETURNING id",
+      [id],
+    );
+    await client.query(readFileSync(join(process.cwd(), "src", "lib", "monsoon", "accounts", "schema.sql"), "utf8"));
+    const r = await client.query("SELECT key_person_id, claude_status FROM customers WHERE id = $1", [id]);
+    expect(r.rows[0]).toEqual({ key_person_id: early.rows[0].id, claude_status: null });
+    // A second run leaves a named key person alone.
+    await client.query("UPDATE customers SET key_person_id = $2 WHERE id = $1", [id, late.rows[0].id]);
+    await client.query(readFileSync(join(process.cwd(), "src", "lib", "monsoon", "accounts", "schema.sql"), "utf8"));
+    expect((await client.query("SELECT key_person_id FROM customers WHERE id = $1", [id])).rows[0].key_person_id).toBe(late.rows[0].id);
+    await expect(client.query("UPDATE customers SET claude_status = 'weird' WHERE id = $1", [id])).rejects.toThrow();
   });
 
   it("version 2: setup_links accepts host and key purposes", async () => {
@@ -164,7 +184,7 @@ describe.skipIf(!db.available)("accounts schema", () => {
       const l = await c2.query("SELECT purpose FROM setup_links WHERE token_hash = 'v1tok'");
       expect(l.rows[0].purpose).toBe("connect");
       const m = await c2.query("SELECT max(version)::int AS v FROM accounts_migrations");
-      expect(m.rows[0].v).toBe(2);
+      expect(m.rows[0].v).toBe(3);
     } finally {
       await c2.end();
       await db.reset();

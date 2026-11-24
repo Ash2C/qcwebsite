@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
+import { reportClaudeStatus } from "./claudeStatus";
 import React from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MonsoonApp from "./MonsoonApp";
@@ -20,6 +21,9 @@ vi.mock("./api", () => ({
   loadProfile: vi.fn(),
   proposeChange: vi.fn(),
   researchContact: vi.fn(),
+  loadClaudeKey: vi.fn(),
+  saveClaudeKey: vi.fn(),
+  testClaudeKey: vi.fn(),
 }));
 vi.mock("./image", () => ({
   downsizeImage: vi.fn(),
@@ -225,6 +229,33 @@ describe("MonsoonApp", () => {
     render(<MonsoonApp />);
     await ready();
     expect(screen.getByRole("button", { name: "Zero One (unavailable)" })).toBeDisabled();
+  });
+
+  it("the header chip shows the Claude key status from the server and opens the key screen", async () => {
+    const user = userEvent.setup();
+    m.loadEstates.mockResolvedValue({ status: 200, body: { ...ESTATES, claude: { status: "ok" } } });
+    m.loadClaudeKey.mockResolvedValue({
+      status: 200,
+      body: { key: { status: "key_rejected", last4: "4f2A", checkedAt: null, setAt: null, setBy: null, keyPerson: "Ann", canChange: true } },
+    });
+    render(<MonsoonApp />);
+    await ready();
+    await user.click(screen.getByRole("button", { name: "Claude connected" }));
+    expect(await screen.findByRole("heading", { name: "Claude key" })).toBeInTheDocument();
+    expect(await screen.findByText("Not connected")).toBeInTheDocument();
+    // What the key screen learned is what the chip shows after Back.
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("button", { name: "Claude key refused" })).toBeInTheDocument();
+    expect(screen.getByText("Snap or choose a photo")).toBeInTheDocument();
+  });
+
+  it("the chip turns red when a photo read says the key is missing", async () => {
+    signedIn();
+    render(<MonsoonApp />);
+    await ready();
+    expect(screen.getByRole("button", { name: "Claude key" })).toBeInTheDocument();
+    act(() => reportClaudeStatus("missing"));
+    expect(screen.getByRole("button", { name: "Claude key needed" })).toBeInTheDocument();
   });
 
   it("fills the form from a photo", async () => {
