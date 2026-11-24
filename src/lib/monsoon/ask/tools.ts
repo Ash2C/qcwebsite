@@ -1,8 +1,12 @@
 // The assistant's toolbox: twelve fixed tools. Eight read the CRM; three only prepare a change and
 // return a signed proposal; one offers research, which the user starts with a button. Nothing in this
 // file writes to the database, searches the web or calls a model.
+// A person who has connected their own Granola key gets three more, which only read their meetings
+// through the Granola client. They exist for nobody else: not in the list sent to the model and not
+// in runTool.
 import type { ClientBase } from "pg";
 import { DETAIL_LABELS, proposeDetails, type DetailInput } from "../details";
+import { GRANOLA_TIMEOUT_MS, getGranolaNote, searchGranolaNotes, searchGranolaTranscripts, type GranolaFailure } from "../granola/client";
 import { readSubject } from "../research-subject";
 import { proposeNote, proposeStage, type Target } from "./actions";
 import type { DetailField, SignedProposal } from "./proposal";
@@ -26,6 +30,8 @@ import {
  * and on a person filed under their company, never on a person with their own pipeline entry.
  */
 export type Ref = { memberId: string; name: string; company: string | null; kind: MemberKind; personId?: string; orgId?: string };
+/** The signed-in person's own Granola key, and where a refusal of it is reported. */
+export type GranolaAccess = { key: string; onStatus?: (status: "key_rejected" | "no_access") => void };
 export type ToolContext = {
   db: ClientBase;
   /** The signed-in customer's id; every proposal is bound to it. Never from a request body. */
@@ -38,6 +44,8 @@ export type ToolContext = {
   nowMs: number;
   /** Milliseconds left in the request; bounds each query's statement timeout. */
   remainingMs?: () => number;
+  /** Set only when the person has a Granola key on file; without it the meeting tools do not exist. */
+  granola?: GranolaAccess;
 };
 /** An offer to research one person; the user runs it from the profile. */
 export type ResearchOffer = { personId: string; name: string; company: string | null };
@@ -152,7 +160,56 @@ export const TOOLS: ToolDef[] = [
   ),
 ];
 
-const SCHEMAS = new Map(TOOLS.map((t) => [t.name, t.input_schema]));
+const MEETING_ID: Prop = { type: "string", description: "A meeting id taken from an earlier meeting tool result." };
+const PARTICIPANT: Prop = {
+  type: "string",
+  description: "A name, email address, company or email domain of someone invited to the meeting.",
+};
+const FROM_DATE: Prop = { type: "string", description: "Only meetings on or after this day, written YYYY-MM-DD." };
+const TO_DATE: Prop = { type: "string", description: "Only meetings on or before this day, written YYYY-MM-DD." };
+
+/** Offered only to a person with a Granola key on file. They read that person's meetings and nothing else. */
+export const GRANOLA_TOOLS: ToolDef[] = [
+  tool(
+    "search_meetings",
+    "Search the user's own Granola meeting notes by topic, participant or date. Returns at most 10 meetings with id, title and date. Use it when the user asks about a meeting or a call, or about what was discussed or agreed.",
+    {
+      keywords: { type: "string", description: "Words or short phrases to look for in meeting notes, separated by commas; at most five." },
+      participant: PARTICIPANT,
+      from_date: FROM_DATE,
+      to_date: TO_DATE,
+    },
+  ),
+  tool(
+    "get_meeting",
+    "Get one Granola meeting: its title, date, attendees, summary and a link. Use it after a search to read what a meeting was about.",
+    { meeting_id: MEETING_ID },
+    ["meeting_id"],
+  ),
+  tool(
+    "search_meeting_transcripts",
+    "Find where given words were said in the user's Granola meeting transcripts. Returns at most 10 meetings, each with short matching passages. Use it for what was actually said: a number, a name, a reason or a commitment.",
+    {
+      keywords: { type: "string", description: "Words or short phrases likely to have been spoken, separated by commas; at most five." },
+      participant: PARTICIPANT,
+      meeting_id: MEETING_ID,
+      from_date: FROM_DATE,
+      to_date: TO_DATE,
+    },
+    ["keywords"],
+  ),
+];
+const GRANOLA_NAMES = new Set(GRANOLA_TOOLS.map((t) => t.name));
+const WITH_GRANOLA: ToolDef[] = [...TOOLS, ...GRANOLA_TOOLS];
+
+/** The tools sent to the model: the twelve, unchanged, or the twelve and the three meeting tools. */
+export function toolsFor(granola: boolean): ToolDef[] {
+  return granola ? WITH_GRANOLA : TOOLS;
+}
+
+const SCHEMAS = new Map(WITH_GRANOLA.map((t) => [t.name, t.input_schema]));
+const DATE_KEYS = new Set(["from_date", "to_date"]);
+const isDay = (v: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`));
 
 const FAILED = "That lookup failed.";
 const fail = (error: string): ToolOutcome => ({ result: { error }, refs: [] });
@@ -175,6 +232,10 @@ function validate(name: string, input: unknown): { ok: true; args: Record<string
       if (schema.required.includes(key) && v.trim() === "") return { ok: false, error: `${key} must not be empty.` };
       if (v.length > 4000) return { ok: false, error: `${key} is too long.` };
       if (prop.enum && !prop.enum.includes(v)) return { ok: false, error: `${key} must be one of: ${prop.enum.join(", ")}.` };
+      if (DATE_KEYS.has(key)) {
+        if (v.trim() === "") continue; // a blank date is a date left out
+        if (!isDay(v)) return { ok: false, error: `${key} must be a date written YYYY-MM-DD.` };
+      }
     } else if (typeof v !== "number" || !Number.isInteger(v)) {
       return { ok: false, error: `${key} must be a whole number.` };
     }
@@ -394,12 +455,104 @@ async function dispatch(ctx: ToolContext, name: string, a: Record<string, string
   }
 }
 
+const GRANOLA_REFUSED = "The Granola key was refused.";
+const GRANOLA_DOWN = "Granola could not be reached.";
+const NO_MEETING = "No such meeting.";
+const MAX_KEYWORDS = 5;
+const MAX_KEYWORD_CHARS = 100;
+// Ten meetings of three passages always fit the loop's cap on one result.
+const PASSAGES_PER_MEETING = 3;
+
+/**
+ * The three meeting tools. They read the person's own Granola and nothing else: no CRM query, no
+ * contact refs, never a proposal. Every failure is a plain sentence the model can relay.
+ */
+async function meetingTool(ctx: ToolContext, granola: GranolaAccess, name: string, a: Record<string, string | number>): Promise<ToolOutcome> {
+  // Eight seconds, or what is left of the request less three; with none left the client asks nothing.
+  const opts = { timeoutMs: Math.min(GRANOLA_TIMEOUT_MS, (ctx.remainingMs ? ctx.remainingMs() : Infinity) - 3000) };
+  const given = (key: string): string | undefined => {
+    const v = a[key];
+    return typeof v === "string" && v.trim() !== "" ? v.trim() : undefined;
+  };
+  const keywords = (given("keywords") ?? "")
+    .split(",")
+    .map((k) => k.trim().slice(0, MAX_KEYWORD_CHARS))
+    .filter((k) => k !== "")
+    .slice(0, MAX_KEYWORDS);
+  const participant = given("participant");
+  const fromDate = given("from_date");
+  const toDate = given("to_date");
+  const filters = {
+    ...(participant !== undefined ? { participant } : {}),
+    ...(fromDate !== undefined ? { fromDate } : {}),
+    ...(toDate !== undefined ? { toDate } : {}),
+  };
+  /** `one`: the call named a single meeting, so "not found" is about that meeting. */
+  const refused = (failure: GranolaFailure, one: boolean): ToolOutcome => {
+    if (failure === "busy") return fail(GRANOLA_DOWN);
+    if (failure === "not_found") return fail(one ? NO_MEETING : GRANOLA_REFUSED);
+    try {
+      granola.onStatus?.(failure);
+    } catch {
+      // Recording the refusal is a courtesy to the person's page; it must not cost the answer.
+    }
+    return fail(GRANOLA_REFUSED);
+  };
+  const done = (result: Record<string, unknown>): ToolOutcome => ({ result: { source: "Granola", ...result }, refs: [] });
+
+  switch (name) {
+    case "search_meetings": {
+      const r = await searchGranolaNotes(granola.key, { ...(keywords.length > 0 ? { keywords } : {}), ...filters }, opts);
+      if (!r.ok) return refused(r.failure, false);
+      return done({ meetings: r.meetings.map((m) => ({ meeting_id: m.id, title: m.title, date: m.date })) });
+    }
+    case "get_meeting": {
+      const r = await getGranolaNote(granola.key, a.meeting_id as string, opts);
+      if (!r.ok) return refused(r.failure, true);
+      const n = r.note;
+      return done({
+        meeting: {
+          title: n.title,
+          date: n.date,
+          attendees: n.attendees.map((p) => ({ name: p.name, email: p.email })),
+          ...(n.moreAttendees > 0 ? { attendees_not_shown: n.moreAttendees } : {}),
+          summary: n.summary,
+          link: n.url,
+        },
+      });
+    }
+    case "search_meeting_transcripts": {
+      if (keywords.length === 0) return fail("keywords must not be empty.");
+      const meetingId = given("meeting_id");
+      const r = await searchGranolaTranscripts(
+        granola.key,
+        { keywords, ...(meetingId !== undefined ? { noteIds: [meetingId] } : {}), ...filters },
+        opts,
+      );
+      if (!r.ok) return refused(r.failure, meetingId !== undefined);
+      return done({
+        meetings: r.meetings.map((m) => ({
+          meeting_id: m.id,
+          title: m.title,
+          date: m.date,
+          passages: m.passages.slice(0, PASSAGES_PER_MEETING).map((p) => ({ text: p.text, start_time: p.start_time })),
+        })),
+      });
+    }
+    default:
+      return fail("Unknown tool.");
+  }
+}
+
 /** Runs one tool. Never throws; a failure is returned as `{ error }` and never carries the thrown message. */
 export async function runTool(ctx: ToolContext, name: string, input: unknown): Promise<ToolOutcome> {
+  // Without a key the meeting tools are not tools at all, whatever the model asks for.
+  const granola = GRANOLA_NAMES.has(name) ? (ctx.granola?.key ? ctx.granola : null) : undefined;
+  if (granola === null) return fail("Unknown tool.");
   const v = validate(name, input);
   if (!v.ok) return fail(v.error);
   try {
-    return await dispatch(ctx, name, v.args);
+    return granola ? await meetingTool(ctx, granola, name, v.args) : await dispatch(ctx, name, v.args);
   } catch (err) {
     // Tool name, error name and a numeric code or status only: never the message or the arguments.
     const e = err as { code?: unknown; status?: unknown };

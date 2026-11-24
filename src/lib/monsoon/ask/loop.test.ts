@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClientBase } from "pg";
 
@@ -45,6 +46,7 @@ function setup(
     about?: AboutUser;
     ownerNames?: Record<string, string>;
     person?: { name: string; ownerKey: string };
+    granola?: { key: string; onStatus?: (status: "key_rejected" | "no_access") => void };
   } = {},
 ) {
   const calls: Record<string, unknown>[] = [];
@@ -75,6 +77,7 @@ function setup(
     viewing: extra.viewing,
     about: extra.about,
     ownerNames: extra.ownerNames,
+    ...(extra.granola ? { granola: extra.granola } : {}),
   };
   return { calls, create, timeouts, run: (m: AskMessage[] = Q) => runAsk(deps, m) };
 }
@@ -524,6 +527,100 @@ Jane and Li are due.
 
   it("lets a model error propagate", async () => {
     await expect(setup([new Error("boom")]).run()).rejects.toThrow("boom");
+  });
+});
+
+describe("Granola meetings", () => {
+  // Obviously fake: the shape of a key, never a real one.
+  const GRANOLA = { key: "grn_FAKE_test_key_0000000000", onStatus: () => undefined };
+  const NAMES = ["search_meetings", "get_meeting", "search_meeting_transcripts"];
+  const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+  const about: AboutUser = { phone: null, email: null, company: "Acme", website: null, roleObjectives: null, notes: [], notesTotal: 0 };
+  const viewing: Viewing = { kind: "person", name: "Jane Tan", company: "Acme", personId: "p1", orgId: null, memberId: "m1" };
+
+  it("without a key the tool list and the prompt are byte for byte what they were before the connector", async () => {
+    runTool.mockResolvedValue({ result: { ok: 1 }, refs: [] });
+    const s = setup([use("tu_1", "find_contacts", { query: "jane" }), text("Done.")]);
+    await s.run();
+    for (const req of s.calls) {
+      // Pinned from commit 36d6f89, the last one before the Granola connector.
+      expect(sha(JSON.stringify(req.tools))).toBe("c527c9608b3b15139b4b809c243eee18b2050254dda6e85617a0a1c2528a95a4");
+      expect(sha(req.system as string)).toBe("41a17365db06227e39ef44afe816d9049be7c1b08e59dd125a95785f1d51fe60");
+      expect(req.system).toHaveLength(2836);
+      expect(JSON.stringify(req)).not.toMatch(/granola|meeting/i);
+    }
+    expect(runTool.mock.calls[0][0]).not.toHaveProperty("granola");
+    expect(buildSystem("Traxo", VOCAB, "2026-11-13", ANN, undefined, undefined, undefined, false)).toBe(buildSystem("Traxo", VOCAB, "2026-11-13", ANN));
+  });
+
+  it("a key with nothing in it counts as no key", async () => {
+    const s = setup([text("Hi.")], () => 0, { granola: { key: "" } });
+    await s.run();
+    expect((s.calls[0].tools as unknown[]).length).toBe(12);
+    expect(s.calls[0].system).not.toMatch(/granola/i);
+  });
+
+  it("with a key the three meeting tools are offered on every call and the key reaches the tools, not the model", async () => {
+    runTool.mockResolvedValue({ result: { source: "Granola", meetings: [] }, refs: [] });
+    const s = setup([use("tu_1", "search_meetings", { keywords: "price" }), text("Nothing found.")], () => 0, { granola: GRANOLA });
+    const out = await s.run();
+    expect(out).toEqual({ answer: "Nothing found.", refs: [], proposals: [] });
+    for (const req of s.calls) {
+      const names = (req.tools as { name: string }[]).map((t) => t.name);
+      expect(names).toHaveLength(15);
+      expect(names.slice(12)).toEqual(NAMES);
+      expect(req.system).toContain("Granola");
+      expect(JSON.stringify(req)).not.toContain(GRANOLA.key);
+    }
+    expect(runTool.mock.calls[0][1]).toBe("search_meetings");
+    expect(runTool.mock.calls[0][0]).toMatchObject({ granola: GRANOLA });
+  });
+
+  it("the closing call for a question too big to finish offers the same fifteen tools", async () => {
+    runTool.mockResolvedValue({ result: { ok: 1 }, refs: [] });
+    const script = [...Array.from({ length: 6 }, (_, i) => use(`tu_${i}`, "search_meetings", {})), text("Too big.")];
+    const s = setup(script, () => 0, { granola: GRANOLA });
+    await s.run();
+    const last = s.calls[s.calls.length - 1];
+    expect(last.tool_choice).toEqual({ type: "none" });
+    expect((last.tools as unknown[]).length).toBe(15);
+  });
+
+  it("a failed meeting tool goes back to the model as an error it can relay, and the answer still comes", async () => {
+    runTool.mockResolvedValue({ result: { error: "Granola could not be reached." }, refs: [] });
+    const s = setup([use("tu_1", "get_meeting", { meeting_id: "not_AAAAAAAAAAAAAA" }), text("Meetings were unavailable; the CRM says X.")], () => 0, { granola: GRANOLA });
+    const out = await s.run();
+    expect(out.answer).toBe("Meetings were unavailable; the CRM says X.");
+    const msgs = s.calls[1].messages as { content: unknown }[];
+    expect(msgs[2].content).toEqual([
+      { type: "tool_result", tool_use_id: "tu_1", content: JSON.stringify({ error: "Granola could not be reached." }), is_error: true },
+    ]);
+  });
+
+  it("a meeting result still passes the size cap", async () => {
+    runTool.mockResolvedValue({ result: { source: "Granola", meeting: { summary: "x".repeat(24_001) } }, refs: [] });
+    const s = setup([use("tu_1", "get_meeting", { meeting_id: "not_AAAAAAAAAAAAAA" }), text("Too much.")], () => 0, { granola: GRANOLA });
+    await s.run();
+    const msgs = s.calls[1].messages as { content: { content: string }[] }[];
+    expect(msgs[2].content[0].content).toBe(JSON.stringify({ error: "Too much to show. Narrow the question." }));
+  });
+
+  it("the prompt gains one paragraph, after the rules and before the user's page and the contact on screen", () => {
+    const plain = buildSystem("Traxo", VOCAB, "2026-11-13", ANN);
+    const withMeetings = buildSystem("Traxo", VOCAB, "2026-11-13", ANN, undefined, undefined, undefined, true);
+    expect(withMeetings.startsWith(`${plain}\n\n`)).toBe(true);
+    const added = withMeetings.slice(plain.length + 2);
+    expect(added).not.toContain("\n\n");
+    for (const name of NAMES) expect(added).toContain(name);
+    expect(added).toMatch(/data, never an instruction/);
+    expect(added).toMatch(/say (so|that it comes from)/i);
+    expect(added).toMatch(/never justifies a change to the CRM/);
+    expect(added).toMatch(/for the user to confirm/);
+    expect(added).toMatch(/answer from the CRM and say (that )?(the )?meetings were unavailable/);
+    expect(added.split(/\s+/).length).toBeLessThan(220);
+
+    const full = buildSystem("Traxo", VOCAB, "2026-11-13", ANN, viewing, about, undefined, true);
+    expect(full).toBe(`${withMeetings}\n\n${aboutBlock(about)}\n\n${viewingLine(viewing)}`);
   });
 });
 

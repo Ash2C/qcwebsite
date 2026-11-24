@@ -7,6 +7,12 @@ const getProfile = vi.fn();
 vi.mock("@/lib/monsoon/contacts", () => ({ getProfile: (...a: unknown[]) => getProfile(...a) }));
 const loadAskContext = vi.fn();
 vi.mock("@/lib/monsoon/accounts/profile", () => ({ loadAskContext: (...a: unknown[]) => loadAskContext(...a) }));
+const readGranolaKeyForAsk = vi.fn();
+const recordGranolaStatus = vi.fn();
+vi.mock("@/lib/monsoon/accounts/granola-key", () => ({
+  readGranolaKeyForAsk: (...a: unknown[]) => readGranolaKeyForAsk(...a),
+  recordGranolaStatus: (...a: unknown[]) => recordGranolaStatus(...a),
+}));
 vi.mock("@/lib/monsoon/accounts/account", async () =>
   (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
 );
@@ -48,6 +54,8 @@ beforeEach(() => {
   runAsk.mockReset().mockResolvedValue(RESULT);
   getProfile.mockReset();
   loadAskContext.mockReset().mockResolvedValue(null);
+  readGranolaKeyForAsk.mockReset().mockResolvedValue(null);
+  recordGranolaStatus.mockReset().mockResolvedValue(undefined);
   account = fakeAccount({
     customer: { id: CUSTOMER },
     person: { name: "Ann Lee", ownerKey: "AL" },
@@ -448,5 +456,116 @@ describe("POST /api/monsoon/ask", () => {
       expect((await POST(post(valid(), false))).status).toBe(401);
       expect(loadAskContext).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("POST /api/monsoon/ask: the person's Granola key", () => {
+  // Obviously fake: the shape of a key, never a real one.
+  const KEY = "grn_FAKE_test_key_0000000000";
+  const PERSON = "00000000-0000-4000-8000-000000000002";
+  const OTHER = "99999999-9999-4999-8999-999999999999";
+  const WHO = { customerId: CUSTOMER, personId: PERSON };
+  const depsOf = () => runAsk.mock.calls[0][0];
+
+  it("reads the key of the session's person, capped at 3 seconds, whoever the body names", async () => {
+    await POST(post(valid({ personId: OTHER, customerId: OTHER, granola: { key: "grn_FAKE_from_the_body_000000" } })));
+    expect(readGranolaKeyForAsk).toHaveBeenCalledTimes(1);
+    expect(readGranolaKeyForAsk).toHaveBeenCalledWith(WHO, { timeoutMs: 3000 });
+    expect(depsOf()).not.toHaveProperty("granola");
+  });
+
+  it("without a key runAsk is called exactly as before", async () => {
+    readGranolaKeyForAsk.mockResolvedValue(null);
+    const res = await POST(post(valid()));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(RESULT);
+    expect(Object.keys(depsOf()).sort()).toEqual(
+      ["client", "customerId", "db", "defaultRole", "estate", "estateLabel", "model", "now", "person", "startedAt", "today", "viewing"].sort(),
+    );
+  });
+
+  it("with a key hands it to runAsk, and never returns it", async () => {
+    readGranolaKeyForAsk.mockResolvedValue(KEY);
+    const res = await POST(post(valid()));
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(await res.json())).not.toContain(KEY);
+    expect(depsOf().granola.key).toBe(KEY);
+    expect(typeof depsOf().granola.onStatus).toBe("function");
+  });
+
+  it("answers as usual, with no key and no log line, when the read fails, throws at once or never answers in time", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failures: (() => void)[] = [
+      () => readGranolaKeyForAsk.mockRejectedValue(new Error(`boom ${KEY}`)),
+      () =>
+        readGranolaKeyForAsk.mockImplementation(() => {
+          throw new Error("no accounts database configured");
+        }),
+      () => readGranolaKeyForAsk.mockResolvedValue(undefined),
+      () => readGranolaKeyForAsk.mockResolvedValue(42),
+    ];
+    for (const fail of failures) {
+      runAsk.mockClear();
+      readGranolaKeyForAsk.mockReset();
+      fail();
+      const res = await POST(post(valid()));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(RESULT);
+      expect(depsOf()).not.toHaveProperty("granola");
+    }
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("starts the read before connecting to the CRM, so the waits overlap", async () => {
+    let finish: (value: unknown) => void = () => {};
+    readGranolaKeyForAsk.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const pending = POST(post(valid()));
+    await vi.waitFor(() => expect(withDb).toHaveBeenCalledTimes(1));
+    expect(readGranolaKeyForAsk.mock.invocationCallOrder[0]).toBeLessThan(withDb.mock.invocationCallOrder[0]);
+    expect(runAsk).not.toHaveBeenCalled();
+    finish(KEY);
+    expect((await pending).status).toBe(200);
+    expect(depsOf().granola.key).toBe(KEY);
+  });
+
+  it("records a refused key for the session's person, once, without waiting for it", async () => {
+    readGranolaKeyForAsk.mockResolvedValue(KEY);
+    recordGranolaStatus.mockReturnValue(new Promise(() => {})); // never settles: the answer must not wait
+    runAsk.mockImplementation(async (deps: { granola: { onStatus: (s: string) => void } }) => {
+      deps.granola.onStatus("key_rejected");
+      deps.granola.onStatus("key_rejected");
+      return RESULT;
+    });
+    const res = await POST(post(valid()));
+    expect(res.status).toBe(200);
+    expect(recordGranolaStatus.mock.calls).toEqual([[WHO, "key_rejected"]]);
+  });
+
+  it("a status that cannot be recorded, or is not one, never breaks the answer", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    readGranolaKeyForAsk.mockResolvedValue(KEY);
+    const statuses = ["no_access", "ok", "busy", undefined];
+    for (const outcome of [() => Promise.reject(new Error("db")), () => { throw new Error("sync"); }]) {
+      recordGranolaStatus.mockReset().mockImplementation(outcome);
+      runAsk.mockReset().mockImplementation(async (deps: { granola: { onStatus: (s: unknown) => void } }) => {
+        for (const s of statuses) deps.granola.onStatus(s);
+        return RESULT;
+      });
+      const res = await POST(post(valid()));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(RESULT);
+      // Only the two refusals are ever recorded from Ask.
+      expect(recordGranolaStatus.mock.calls).toEqual([[WHO, "no_access"]]);
+    }
+    await new Promise((r) => setImmediate(r));
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("does no read without a session, for an unknown estate or without a Claude key", async () => {
+    expect((await POST(post(valid({ estate: "nope" })))).status).toBe(400);
+    expect((await POST(post(valid(), false))).status).toBe(401);
+    signInAs(fakeAccount({ customer: { id: CUSTOMER }, pipelines: PIPELINES, db: fakeDb }));
+    expect((await POST(post(valid()))).status).toBe(409);
+    expect(readGranolaKeyForAsk).not.toHaveBeenCalled();
   });
 });

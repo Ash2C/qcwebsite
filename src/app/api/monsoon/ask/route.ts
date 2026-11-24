@@ -4,6 +4,7 @@ import { claudeFailureResponse } from "@/lib/monsoon/claude-failure";
 import type { Client } from "pg";
 import { runAsk, type AboutUser, type AskMessage, type ModelClient, type Viewing } from "@/lib/monsoon/ask/loop";
 import { loadAskContext, type AskContext, type UserPage, type Who } from "@/lib/monsoon/accounts/profile";
+import { readGranolaKeyForAsk, recordGranolaStatus } from "@/lib/monsoon/accounts/granola-key";
 import { getProfile } from "@/lib/monsoon/contacts";
 import type { Ref } from "@/lib/monsoon/ask/tools";
 import { readJson } from "@/lib/monsoon/body";
@@ -128,6 +129,36 @@ async function askContext(who: Who, estateKey: string): Promise<AskContext | nul
   }
 }
 
+// The person's Granola key is a help too: the same cap, and silence when it cannot be read.
+const GRANOLA_KEY_TIMEOUT_MS = 3000;
+
+/**
+ * The signed-in person's own Granola key, or null. Never rejects and never logs: without it Ask
+ * answers from the CRM exactly as it does for someone who has not connected Granola.
+ */
+async function granolaKey(who: Who): Promise<string | null> {
+  try {
+    const key = await readGranolaKeyForAsk(who, { timeoutMs: GRANOLA_KEY_TIMEOUT_MS });
+    return typeof key === "string" && key !== "" ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where the meeting tools report a refused key: recorded once per request, never awaited, never throwing. */
+function granolaStatusRecorder(who: Who): (status: "key_rejected" | "no_access") => void {
+  let recorded = false;
+  return (status) => {
+    if (recorded || (status !== "key_rejected" && status !== "no_access")) return;
+    recorded = true;
+    try {
+      void Promise.resolve(recordGranolaStatus(who, status)).catch(() => undefined);
+    } catch {
+      // The status on the person's page is a courtesy; the answer does not depend on it.
+    }
+  };
+}
+
 /** What the prompt is told about the user. Their name is not here: it comes from the session. */
 function aboutOf(page: UserPage): AboutUser {
   return {
@@ -165,9 +196,12 @@ export async function POST(request: Request) {
     const model = account.model();
     // Started before the CRM connection and awaited inside it, so the two waits overlap. The person
     // and customer come from the session, never the body.
-    const pendingContext = askContext({ customerId: account.customer.id, personId: account.person.id }, estate.key);
+    const who: Who = { customerId: account.customer.id, personId: account.person.id };
+    const pendingContext = askContext(who, estate.key);
+    // The person's own Granola key, read alongside: with one, Ask can also consult their meetings.
+    const pendingGranola = granolaKey(who);
     const result = await account.withDb(estate.key, async (db) => {
-      const [viewing, context] = await Promise.all([resolveViewing(db, viewingTarget, today), pendingContext]);
+      const [viewing, context, granola] = await Promise.all([resolveViewing(db, viewingTarget, today), pendingContext, pendingGranola]);
       return runAsk(
         {
           db,
@@ -183,6 +217,7 @@ export async function POST(request: Request) {
           startedAt,
           viewing,
           ...(context ? { about: aboutOf(context.page), ownerNames: context.ownerNames } : {}),
+          ...(granola !== null ? { granola: { key: granola, onStatus: granolaStatusRecorder(who) } } : {}),
         },
         messages,
       );
