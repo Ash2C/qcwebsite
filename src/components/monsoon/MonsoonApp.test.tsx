@@ -258,6 +258,19 @@ describe("MonsoonApp", () => {
     expect(screen.getByRole("button", { name: "Claude key needed" })).toBeInTheDocument();
   });
 
+  it("a single estate takes the full width; two share the row", async () => {
+    m.loadEstates.mockResolvedValue({ status: 200, body: { estates: [ESTATES.estates[0]] } });
+    const one = render(<MonsoonApp />);
+    await ready();
+    expect(screen.getByRole("group", { name: "Estate" })).toHaveClass("grid-cols-1");
+    one.unmount();
+
+    signedIn();
+    render(<MonsoonApp />);
+    await ready();
+    expect(screen.getByRole("group", { name: "Estate" })).toHaveClass("grid-cols-2");
+  });
+
   it("fills the form from a photo", async () => {
     const user = userEvent.setup();
     signedIn();

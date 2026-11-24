@@ -674,7 +674,9 @@ export default function MonsoonApp() {
         <div
           role="group"
           aria-label="Estate"
-          className="grid grid-cols-2 gap-1 rounded-xl bg-neutral-200/80 p-1 dark:bg-white/10"
+          className={`grid gap-1 rounded-xl bg-neutral-200/80 p-1 dark:bg-white/10 ${
+            estates.length === 1 ? "grid-cols-1" : "grid-cols-2"
+          }`}
         >
           {estates.map((e) => {
             const selected = e.key === estateKey;
