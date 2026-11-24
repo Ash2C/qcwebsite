@@ -60,6 +60,71 @@ describe("AskSheet", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("takes the keyboard focus on opening, unless something inside already has it", () => {
+    const first = render(
+      <AskSheet busy={false} onClose={() => {}}>
+        <p>inside</p>
+      </AskSheet>,
+    );
+    expect(document.activeElement).toBe(screen.getByRole("dialog"));
+    first.unmount();
+    render(
+      <AskSheet busy={false} onClose={() => {}}>
+        <input aria-label="question" autoFocus />
+      </AskSheet>,
+    );
+    expect(document.activeElement).toBe(screen.getByLabelText("question"));
+  });
+
+  it("makes the page behind it inert while open, and gives it back after", () => {
+    const { unmount } = render(
+      <div>
+        <main data-testid="page">
+          <button>Save</button>
+        </main>
+        <aside data-testid="was-inert" inert />
+        <AskSheet busy={false} onClose={() => {}}>
+          <p>inside</p>
+        </AskSheet>
+      </div>,
+    );
+    expect(screen.getByTestId("page")).toHaveAttribute("inert");
+    expect(screen.getByRole("dialog").closest("[inert]")).toBeNull();
+    unmount();
+  });
+
+  it("gives the page back exactly as it was: what was already inert stays inert", () => {
+    function Page({ open }: { open: boolean }) {
+      return (
+        <div>
+          <main data-testid="page" />
+          <aside data-testid="was-inert" inert />
+          {open ? (
+            <AskSheet busy={false} onClose={() => {}}>
+              <p>inside</p>
+            </AskSheet>
+          ) : null}
+        </div>
+      );
+    }
+    const { rerender } = render(<Page open />);
+    expect(screen.getByTestId("page")).toHaveAttribute("inert");
+    rerender(<Page open={false} />);
+    expect(screen.getByTestId("page")).not.toHaveAttribute("inert");
+    expect(screen.getByTestId("was-inert")).toHaveAttribute("inert");
+  });
+
+  it("Escape pressed to finish typing with an input method does not close it", () => {
+    const onClose = vi.fn();
+    render(
+      <AskSheet busy={false} onClose={onClose}>
+        <p>inside</p>
+      </AskSheet>,
+    );
+    fireEvent.keyDown(document, { key: "Escape", isComposing: true });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it("stops the page behind from scrolling while open and restores it after", () => {
     document.body.style.overflow = "auto";
     const { unmount } = render(

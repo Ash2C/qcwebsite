@@ -1303,6 +1303,13 @@ describe("MonsoonApp", () => {
       expect(screen.getByRole("button", { name: "Capture" })).toHaveAttribute("aria-pressed", "true");
     });
 
+    it("closing puts the keyboard focus back on the Ask button", async () => {
+      const user = userEvent.setup();
+      await openAsk(user);
+      await user.click(screen.getByRole("button", { name: "Close" }));
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Ask Monsoon" }));
+    });
+
     it("cannot be closed while an answer is on its way", async () => {
       const user = userEvent.setup();
       let resolve!: (v: never) => void;
@@ -1445,6 +1452,20 @@ describe("Contacts mode", () => {
     await user.click(screen.getByRole("button", { name: "Close" }));
     await user.click(screen.getByRole("button", { name: "Capture" }));
     expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan");
+  });
+
+  it("the Contacts tab, tapped while a contact is open, goes back to the list with its search and filters", async () => {
+    const user = userEvent.setup();
+    m.loadProfile.mockResolvedValue({ status: 404, body: { error: "Not found" } } as never);
+    await openContacts(user);
+    await user.click(await screen.findByRole("button", { name: /Jane Tan/ }));
+    await screen.findByText("That contact is no longer on file.");
+    expect(screen.queryByRole("textbox", { name: "Search contacts" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    expect(await screen.findByRole("textbox", { name: "Search contacts" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "High priority" })).toBeInTheDocument();
+    expect(screen.queryByText("That contact is no longer on file.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Contacts" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("keeps an open profile when switching modes", async () => {
@@ -1689,7 +1710,7 @@ describe("Profile actions and links", () => {
     await openJane(user);
     await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
     await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Who is warm?");
-    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await user.click(screen.getByRole("button", { name: "Close" }));
     await user.click(await screen.findByRole("button", { name: "Ask about this contact" }));
     expect(await screen.findByRole("textbox", { name: "Your question" })).toHaveValue("Who is warm?\nAbout Jane Tan: ");
   });
@@ -1700,13 +1721,13 @@ describe("Profile actions and links", () => {
     await user.click(screen.getByRole("button", { name: "Ask about this contact" }));
     const box = await screen.findByRole("textbox", { name: "Your question" });
     await user.type(box, "is she warm?");
-    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await user.click(screen.getByRole("button", { name: "Close" }));
     await user.click(await screen.findByRole("button", { name: "Ask about this contact" }));
     expect(await screen.findByRole("textbox", { name: "Your question" })).toHaveValue("About Jane Tan: is she warm?");
     // A bare line without the trailing space counts too.
     await user.clear(screen.getByRole("textbox", { name: "Your question" }));
     await user.type(screen.getByRole("textbox", { name: "Your question" }), "Who?{Shift>}{Enter}{/Shift}About Jane Tan:");
-    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await user.click(screen.getByRole("button", { name: "Close" }));
     await user.click(await screen.findByRole("button", { name: "Ask about this contact" }));
     expect(await screen.findByRole("textbox", { name: "Your question" })).toHaveValue("Who?\nAbout Jane Tan:");
   });

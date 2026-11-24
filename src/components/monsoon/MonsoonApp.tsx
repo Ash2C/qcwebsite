@@ -145,6 +145,13 @@ export default function MonsoonApp() {
   // A change confirmed in Ask makes the profile underneath stale: closing the sheet re-reads it.
   const askChangedRef = useRef(false);
   const [profileReload, setProfileReload] = useState(0);
+  // Closing the sheet hands the keyboard focus back to the button that opened it.
+  const askButtonRef = useRef<HTMLButtonElement>(null);
+  const askWasOpenRef = useRef(false);
+  useEffect(() => {
+    if (askWasOpenRef.current && !askOpen) askButtonRef.current?.focus({ preventScroll: true });
+    askWasOpenRef.current = askOpen;
+  }, [askOpen]);
   function closeAsk() {
     setAskOpen(false);
     if (askChangedRef.current) {
@@ -668,6 +675,7 @@ export default function MonsoonApp() {
     <div className="pointer-events-none fixed inset-x-0 bottom-0 z-10 flex justify-center px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
       <button
         type="button"
+        ref={askButtonRef}
         aria-label="Ask Monsoon"
         disabled={askBlocked}
         onClick={() => setAskOpen(true)}
@@ -788,7 +796,11 @@ export default function MonsoonApp() {
                   ? askBusy || profileBusy
                   : reading || saving || tidying || batchRunning || profileBusy || askBusy
               }
-              onClick={() => setMode(m)}
+              onClick={() => {
+                // Contacts tapped while a contact is open: back to the list, with its search and filters.
+                if (m === "contacts" && mode === "contacts") setContacts((c) => withOpen(c, null));
+                setMode(m);
+              }}
               className={`min-h-[44px] rounded-lg px-2 text-[16px] font-semibold disabled:opacity-40 ${
                 mode === m
                   ? "bg-white text-neutral-900 shadow-sm dark:bg-[#1F3A4A] dark:text-white"

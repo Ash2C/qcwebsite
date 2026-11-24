@@ -389,6 +389,20 @@ describe("ContactsPanel tells Ask what is open", () => {
     expect(screen.getByText("Jane Tan")).toBeInTheDocument();
   });
 
+  it("keeps reporting the profile when a refresh fails and the old one stays on screen", async () => {
+    m.searchContacts.mockResolvedValue(hits());
+    m.loadProfile.mockResolvedValueOnce(LOADED);
+    const onViewing = vi.fn();
+    const { rerender } = render(<Harness initial={open} onViewing={onViewing} reloadSignal={0} />);
+    await advance(0);
+    m.loadProfile.mockResolvedValueOnce({ status: 500, body: { error: "x" } } as never);
+    rerender(<Harness initial={open} onViewing={onViewing} reloadSignal={1} />);
+    await advance(0);
+    expect(screen.getByText("Could not refresh. Check signal.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
+    expect(onViewing).toHaveBeenLastCalledWith({ target: { personId: "p1" }, name: SELF.name, company: SELF.company });
+  });
+
   it("a new reload signal reads the open profile again", async () => {
     m.searchContacts.mockResolvedValue(hits());
     m.loadProfile.mockResolvedValue(LOADED);

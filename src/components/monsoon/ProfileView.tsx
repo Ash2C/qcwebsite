@@ -268,7 +268,8 @@ export default function ProfileView({
 
   const loadedRef = useRef(onLoaded);
   loadedRef.current = onLoaded;
-  const shownProfile = phase === "ready" ? profile : null;
+  // Whatever profile is on screen, including one kept after a failed refresh.
+  const shownProfile = phase === "missing" ? null : profile;
   useEffect(() => {
     loadedRef.current?.(shownProfile);
   }, [shownProfile]);
