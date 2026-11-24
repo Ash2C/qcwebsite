@@ -89,6 +89,17 @@
 .monsoon-loader-blink .ml-bar-1, .monsoon-loader-rise .ml-bar-1 { animation-delay: 0s; }
 .monsoon-loader-blink .ml-bar-2, .monsoon-loader-rise .ml-bar-2 { animation-delay: calc(var(--ml-cycle) * 0.13); }
 .monsoon-loader-blink .ml-bar-3, .monsoon-loader-rise .ml-bar-3 { animation-delay: calc(var(--ml-cycle) * 0.26); }
+@keyframes ask-sheet-up {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
 @keyframes monsoon-blink {
   0%, 46%, 100% { opacity: 0.2; }
   14%, 28% { opacity: 1; }

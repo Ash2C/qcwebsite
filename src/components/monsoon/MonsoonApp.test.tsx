@@ -346,7 +346,7 @@ describe("MonsoonApp", () => {
       await screen.findByText("Could not read the photo. Try again or type the details."),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Zero One" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Ask" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Ask Monsoon" })).toBeEnabled();
     expect(document.querySelector('input[type="file"]')).toBeEnabled();
     expect(screen.getByText("Snap or choose a photo")).toBeInTheDocument();
   });
@@ -363,7 +363,7 @@ describe("MonsoonApp", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByText("Could not save. Check signal and try again.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Ask" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Ask Monsoon" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(2));
   });
@@ -392,11 +392,16 @@ describe("MonsoonApp", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByRole("button", { name: "Jane Tan added to Traxo. Open contact" });
     await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
-    expect(screen.getByRole("button", { name: "Ask" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "Tell me about Jane Tan" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Speak your question" })).toBeInTheDocument();
-    // In Ask itself the big button is gone: the question box is there.
+    const sheet = within(screen.getByRole("dialog", { name: "Ask" }));
+    expect(sheet.getByRole("button", { name: "Tell me about Jane Tan" })).toBeInTheDocument();
+    expect(sheet.getByRole("button", { name: "Speak your question" })).toBeInTheDocument();
+    // While the sheet is open the big button is gone: the question box is there.
     expect(screen.queryByRole("button", { name: "Ask Monsoon" })).toBeNull();
+    // The page underneath is still there.
+    expect(screen.getByRole("button", { name: "Jane Tan added to Traxo. Open contact" })).toBeInTheDocument();
+    await user.click(sheet.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("button", { name: "Ask Monsoon" })).toBeInTheDocument();
   });
 
   it("the saved line opens that person's contact card", async () => {
@@ -986,20 +991,20 @@ describe("MonsoonApp", () => {
     let resolve!: (v: never) => void;
     m.refineCard.mockImplementation(() => new Promise((r) => (resolve = r as never)));
     await openBatch(user);
-    expect(screen.getByRole("button", { name: "Ask" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Ask Monsoon" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: /Jane Tan/ }));
     await user.click(screen.getByRole("button", { name: "Speak notes" }));
     await user.type(screen.getByRole("textbox", { name: "Spoken notes" }), "likes tea");
     await user.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(m.refineCard).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Ask Monsoon" })).toBeDisabled());
     expect(screen.getByRole("button", { name: "Zero One" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Traxo" })).toBeDisabled();
     resolve({
       status: 200,
       body: { fields: { name: "Jane Tan", title: "Partner", org: "Acme Capital", email: "jane@acme.com", phone: "", linkedin: "" }, notes: "likes tea" },
     } as never);
-    await waitFor(() => expect(screen.getByRole("button", { name: "Ask" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Ask Monsoon" })).toBeEnabled());
     expect(screen.getByRole("button", { name: "Zero One" })).toBeEnabled();
   });
 
@@ -1272,7 +1277,7 @@ describe("MonsoonApp", () => {
       signedIn();
       render(<MonsoonApp />);
       await ready();
-      await user.click(screen.getByRole("button", { name: "Ask" }));
+      await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
       await screen.findByRole("textbox", { name: "Your question" });
     }
 
@@ -1281,16 +1286,37 @@ describe("MonsoonApp", () => {
       await user.click(screen.getByRole("button", { name: "Send question" }));
     }
 
-    it("switches to Ask and back to Capture with the capture form intact", async () => {
+    it("opens Ask over Capture, and Close leaves the capture form as it was", async () => {
       const user = userEvent.setup();
       signedIn();
       render(<MonsoonApp />);
       await ready();
       await typeName(user);
-      await user.click(screen.getByRole("button", { name: "Ask" }));
-      expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-      await user.click(screen.getByRole("button", { name: "Capture" }));
+      await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
+      expect(screen.getByRole("dialog", { name: "Ask" })).toHaveAttribute("aria-modal", "true");
+      // The form is still mounted underneath, not replaced.
       expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan");
+      expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Close" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan");
+      expect(screen.getByRole("button", { name: "Capture" })).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("cannot be closed while an answer is on its way", async () => {
+      const user = userEvent.setup();
+      let resolve!: (v: never) => void;
+      m.askCrm.mockImplementationOnce(() => new Promise((r) => (resolve = r as never)));
+      await openAsk(user);
+      await question(user, "Who?");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Close" })).toBeDisabled());
+      await user.click(screen.getByTestId("ask-backdrop"));
+      await user.keyboard("{Escape}");
+      expect(screen.getByRole("dialog", { name: "Ask" })).toBeInTheDocument();
+      resolve(ANSWER);
+      await screen.findByText("Jane is hot.");
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog")).toBeNull();
     });
 
     it("keeps the conversation when switching modes", async () => {
@@ -1299,8 +1325,9 @@ describe("MonsoonApp", () => {
       await openAsk(user);
       await question(user, "Who?");
       await screen.findByText("Jane is hot.");
-      await user.click(screen.getByRole("button", { name: "Capture" }));
-      await user.click(screen.getByRole("button", { name: "Ask" }));
+      await user.click(screen.getByRole("button", { name: "Close" }));
+      expect(screen.queryByText("Jane is hot.")).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
       expect(screen.getByText("Jane is hot.")).toBeInTheDocument();
     });
 
@@ -1373,7 +1400,7 @@ describe("MonsoonApp", () => {
       render(<MonsoonApp />);
       await ready();
       await pickPhoto(user);
-      await waitFor(() => expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled());
+      await waitFor(() => expect(screen.getByRole("button", { name: "Ask Monsoon" })).toBeDisabled());
     });
   });
 });
@@ -1394,7 +1421,7 @@ describe("Contacts mode", () => {
     await screen.findByRole("textbox", { name: "Search contacts" });
   }
 
-  it("has a three-way switch and keeps each mode's state across switches", async () => {
+  it("has a two-way switch, and Ask opens over either mode without disturbing it", async () => {
     const user = userEvent.setup();
     signedIn();
     m.searchContacts.mockResolvedValue(found(JANE));
@@ -1403,17 +1430,19 @@ describe("Contacts mode", () => {
     expect(within(screen.getByRole("group", { name: "Mode" })).getAllByRole("button").map((b) => b.textContent)).toEqual([
       "Capture",
       "Contacts",
-      "Ask",
     ]);
     await typeName(user);
     await user.click(screen.getByRole("button", { name: "Contacts" }));
     await user.type(await screen.findByRole("textbox", { name: "Search contacts" }), "jane");
-    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
     await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Who?");
-    await user.click(screen.getByRole("button", { name: "Contacts" }));
-    expect(await screen.findByRole("textbox", { name: "Search contacts" })).toHaveValue("jane");
-    await user.click(screen.getByRole("button", { name: "Ask" }));
+    expect(screen.getByRole("textbox", { name: "Search contacts" })).toHaveValue("jane");
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.getByRole("textbox", { name: "Search contacts" })).toHaveValue("jane");
+    expect(screen.getByRole("button", { name: "Contacts" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
     expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Who?");
+    await user.click(screen.getByRole("button", { name: "Close" }));
     await user.click(screen.getByRole("button", { name: "Capture" }));
     expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan");
   });
@@ -1467,7 +1496,7 @@ describe("Contacts mode", () => {
     signedIn();
     render(<MonsoonApp />);
     await ready();
-    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
     await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Who?");
     await user.click(screen.getByRole("button", { name: "Send question" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Contacts" })).toBeDisabled());
@@ -1515,13 +1544,13 @@ describe("Profile actions and links", () => {
     } as never);
     render(<MonsoonApp />);
     await ready();
-    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
     await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Who is warm?");
     await user.click(screen.getByRole("button", { name: "Send question" }));
     await user.click(await screen.findByRole("button", { name: "Jane Tan" }));
     expect(await screen.findByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
     expect(m.loadProfile).toHaveBeenCalledWith("traxo", { memberId: undefined, personId: "p1", orgId: undefined }, expect.any(String));
-    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
     expect(await screen.findByText("Jane is warm.")).toBeInTheDocument();
     expect(screen.getByText("Who is warm?")).toBeInTheDocument();
   });
@@ -1533,14 +1562,14 @@ describe("Profile actions and links", () => {
     } as never);
     render(<MonsoonApp />);
     await ready();
-    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
     await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Research Jane");
     await user.click(screen.getByRole("button", { name: "Send question" }));
     await user.click(await screen.findByRole("button", { name: "Run research" }));
   }
   const settle = () => new Promise((r) => setTimeout(r, 30));
 
-  it("a Run research tap does not start research when the user leaves before the profile loads and returns", async () => {
+  it("a Run research tap does not start research when the user opens Ask before the profile loads and closes it again", async () => {
     const user = userEvent.setup();
     signedIn();
     let release: (v: never) => void = () => {};
@@ -1548,11 +1577,10 @@ describe("Profile actions and links", () => {
     m.researchContact.mockResolvedValue({ status: 200, body: { status: "none", message: "x" } } as never);
     await tapRunResearch(user);
     await waitFor(() => expect(m.loadProfile).toHaveBeenCalledTimes(1));
-    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
     release({ status: 200, body: { profile: PROFILE } } as never);
     await settle();
-    m.loadProfile.mockResolvedValue({ status: 200, body: { profile: PROFILE } } as never);
-    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await user.click(screen.getByRole("button", { name: "Close" }));
     await screen.findByRole("heading", { name: "Jane Tan" });
     await settle();
     expect(m.researchContact).not.toHaveBeenCalled();
@@ -1630,7 +1658,7 @@ describe("Profile actions and links", () => {
     } as never);
     render(<MonsoonApp />);
     await ready();
-    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
     await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Research Jane");
     await user.click(screen.getByRole("button", { name: "Send question" }));
     await user.click(await screen.findByRole("button", { name: "Run research" }));
@@ -1659,7 +1687,7 @@ describe("Profile actions and links", () => {
   it("Ask about this contact keeps a draft that is already typed, adding the line below it", async () => {
     const user = userEvent.setup();
     await openJane(user);
-    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
     await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Who is warm?");
     await user.click(screen.getByRole("button", { name: "Contacts" }));
     await user.click(await screen.findByRole("button", { name: "Ask about this contact" }));
@@ -1720,6 +1748,98 @@ describe("Profile actions and links", () => {
     expect(screen.getByLabelText("Title")).toHaveValue("Partner");
   });
 
+  describe("Ask over an open profile", () => {
+    const NOTE = {
+      proposal: {
+        kind: "add_note", estate: "traxo", memberId: "m1", memberKind: "person", memberName: "Jane Tan",
+        company: "Acme Capital", about: "the Q3 call", expires: 1,
+      },
+      signature: "sig-note",
+      text: "Call went well",
+    };
+
+    it("says who is underneath and sends only that profile's id with the question", async () => {
+      const user = userEvent.setup();
+      await openJane(user);
+      m.askCrm.mockResolvedValue({ status: 200, body: { answer: "Last week.", refs: [], proposals: [] } } as never);
+      await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
+      const sheet = within(screen.getByRole("dialog", { name: "Ask" }));
+      expect(sheet.getByText("Looking at Jane Tan \u00b7 Acme Capital")).toBeInTheDocument();
+      expect(sheet.getByRole("button", { name: "Tell me about Jane Tan" })).toBeInTheDocument();
+      // The profile is still there underneath.
+      expect(screen.getByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
+      await user.type(sheet.getByRole("textbox", { name: "Your question" }), "When did I last speak to them?");
+      await user.click(sheet.getByRole("button", { name: "Send question" }));
+      await sheet.findByText("Last week.");
+      expect(m.askCrm.mock.calls[0][0].viewing).toEqual({ personId: "p1" });
+    });
+
+    it("sends no viewing from Capture, or from the Contacts list with no profile open", async () => {
+      const user = userEvent.setup();
+      await openJane(user);
+      m.askCrm.mockResolvedValue({ status: 200, body: { answer: "Hi.", refs: [], proposals: [] } } as never);
+      await user.click(screen.getByRole("button", { name: "\u2039 Contacts" }));
+      await screen.findByRole("textbox", { name: "Search contacts" });
+      await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
+      expect(screen.queryByText(/Looking at/)).toBeNull();
+      await user.type(screen.getByRole("textbox", { name: "Your question" }), "Who?");
+      await user.click(screen.getByRole("button", { name: "Send question" }));
+      await screen.findByText("Hi.");
+      expect("viewing" in m.askCrm.mock.calls[0][0]).toBe(false);
+      await user.click(screen.getByRole("button", { name: "Close" }));
+      await user.click(screen.getByRole("button", { name: "Capture" }));
+      await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
+      expect(screen.queryByText(/Looking at/)).toBeNull();
+    });
+
+    it("re-reads the profile underneath on Close after a change was confirmed in Ask, and not otherwise", async () => {
+      const user = userEvent.setup();
+      await openJane(user);
+      expect(m.loadProfile).toHaveBeenCalledTimes(1);
+      await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
+      await user.click(screen.getByRole("button", { name: "Close" }));
+      expect(m.loadProfile).toHaveBeenCalledTimes(1);
+      m.askCrm.mockResolvedValue({ status: 200, body: { answer: "Ready.", refs: [], proposals: [NOTE] } } as never);
+      m.actOnCrm.mockResolvedValue({ status: 200, body: { status: "ok", message: "Note added to Jane Tan." } } as never);
+      await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
+      await user.type(screen.getByRole("textbox", { name: "Your question" }), "Add a note");
+      await user.click(screen.getByRole("button", { name: "Send question" }));
+      await screen.findByText("Ready.");
+      await user.click(within(screen.getByRole("dialog", { name: "Ask" })).getByRole("button", { name: "Confirm" }));
+      await screen.findByText("Note added to Jane Tan.");
+      expect(m.loadProfile).toHaveBeenCalledTimes(1);
+      await user.click(screen.getByRole("button", { name: "Close" }));
+      await waitFor(() => expect(m.loadProfile).toHaveBeenCalledTimes(2));
+      expect(screen.getByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
+      // Only once: opening and closing again does not read it a third time.
+      await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
+      await user.click(screen.getByRole("button", { name: "Close" }));
+      expect(m.loadProfile).toHaveBeenCalledTimes(2);
+    });
+
+    it("a sign-in needed while the sheet is open keeps the conversation and the profile underneath", async () => {
+      const user = userEvent.setup();
+      await openJane(user);
+      m.askCrm.mockResolvedValueOnce({ status: 200, body: { answer: "Last week.", refs: [], proposals: [] } } as never);
+      await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
+      await user.type(screen.getByRole("textbox", { name: "Your question" }), "When?");
+      await user.click(screen.getByRole("button", { name: "Send question" }));
+      await screen.findByText("Last week.");
+      m.askCrm.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never);
+      await user.type(screen.getByRole("textbox", { name: "Your question" }), "And before that?");
+      await user.click(screen.getByRole("button", { name: "Send question" }));
+      const field = await screen.findByLabelText("Passcode");
+      expect(screen.queryByRole("dialog")).toBeNull();
+      m.signIn.mockResolvedValue({ status: 200, body: { ok: true } } as never);
+      await user.type(field, "a-long-passcode-here");
+      await user.click(screen.getByRole("button", { name: "Unlock" }));
+      const sheet = within(await screen.findByRole("dialog", { name: "Ask" }));
+      expect(sheet.getByText("Last week.")).toBeInTheDocument();
+      expect(sheet.getByRole("textbox", { name: "Your question" })).toHaveValue("And before that?");
+      expect(await screen.findByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
+    });
+  });
+
   it("locks the mode switch and estate buttons while a profile action is pending, then releases them", async () => {
     const user = userEvent.setup();
     await openJane(user);
@@ -1728,12 +1848,12 @@ describe("Profile actions and links", () => {
     await user.click(screen.getByRole("button", { name: "Edit" }));
     await user.type(screen.getByLabelText("Title"), "x");
     await user.click(screen.getByRole("button", { name: "Review changes" }));
-    for (const name of ["Capture", "Contacts", "Ask", "Traxo", "Zero One"]) {
+    for (const name of ["Capture", "Contacts", "Ask Monsoon", "Traxo", "Zero One"]) {
       await waitFor(() => expect(screen.getByRole("button", { name })).toBeDisabled());
     }
     resolve({ status: 200, body: { ok: false, reason: "Nope." } } as never);
     await screen.findByText("Nope.");
-    for (const name of ["Capture", "Contacts", "Ask", "Zero One"]) {
+    for (const name of ["Capture", "Contacts", "Ask Monsoon", "Zero One"]) {
       await waitFor(() => expect(screen.getByRole("button", { name })).toBeEnabled());
     }
   });
