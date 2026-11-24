@@ -150,6 +150,8 @@ export async function askCrm(body: {
   estate: string;
   today: string;
   messages: AskMessage[];
+  /** The contact open on screen, by id only; the server reads the rest itself. */
+  viewing?: { memberId?: string; personId?: string; orgId?: string };
 }): Promise<ApiResult<AskResult | { error: string }>> {
   return noted(
     await parse(

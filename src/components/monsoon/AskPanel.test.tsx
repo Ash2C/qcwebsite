@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import AskPanel, { EMPTY_ASK, type AskState, type AskTurn } from "./AskPanel";
+import AskPanel, { EMPTY_ASK, type AskState, type AskTurn, type AskViewing } from "./AskPanel";
 import * as api from "./api";
 
 vi.mock("./api", () => ({ askCrm: vi.fn(), actOnCrm: vi.fn() }));
@@ -55,7 +55,11 @@ function Harness({
   onUnauthorized = () => {},
   onBusy,
   onResearch,
+  viewing,
+  onChanged,
 }: {
+  viewing?: AskViewing | null;
+  onChanged?: () => void;
   onResearch?: (personId: string) => void;
   initial?: AskState;
   estate?: typeof ESTATE;
@@ -63,7 +67,7 @@ function Harness({
   onBusy?: (b: boolean) => void;
 }) {
   const [state, setState] = useState<AskState>(initial);
-  return <AskPanel estate={estate} state={state} onChange={setState} onUnauthorized={onUnauthorized} onBusy={onBusy} onResearch={onResearch} />;
+  return <AskPanel estate={estate} state={state} onChange={setState} onUnauthorized={onUnauthorized} onBusy={onBusy} onResearch={onResearch} viewing={viewing} onChanged={onChanged} />;
 }
 
 async function ask(user: User, text: string) {
@@ -801,5 +805,55 @@ describe("research offer", () => {
     await ask(user, "hello");
     await screen.findByText("Nothing.");
     expect(screen.queryByRole("button", { name: "Run research" })).toBeNull();
+  });
+});
+
+describe("the profile open underneath", () => {
+  const P = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const JANE: AskViewing = { target: { personId: P }, name: "Jane Tan", company: "Acme Capital" };
+
+  it("says who is being looked at, suggests them first and sends only their id", async () => {
+    const user = userEvent.setup();
+    m.askCrm.mockResolvedValueOnce(answer("She is a partner."));
+    render(<Harness viewing={JANE} />);
+    expect(screen.getByText("Looking at Jane Tan · Acme Capital")).toBeInTheDocument();
+    const tries = screen.getAllByRole("button").map((b) => b.textContent);
+    expect(tries.indexOf("Tell me about Jane Tan")).toBeGreaterThanOrEqual(0);
+    expect(tries.indexOf("Tell me about Jane Tan")).toBeLessThan(tries.indexOf("Who should I chase this week?"));
+    await ask(user, "When did I last speak to them?");
+    expect(await screen.findByText("She is a partner.")).toBeInTheDocument();
+    expect(m.askCrm).toHaveBeenCalledWith(expect.objectContaining({ viewing: { personId: P } }));
+    expect(JSON.stringify(m.askCrm.mock.calls[0][0])).not.toContain("Acme Capital");
+  });
+
+  it("leaves the company out of the line when there is none", () => {
+    render(<Harness viewing={{ ...JANE, company: null }} />);
+    expect(screen.getByText("Looking at Jane Tan")).toBeInTheDocument();
+  });
+
+  it("shows no line and sends no viewing key with nothing open", async () => {
+    const user = userEvent.setup();
+    m.askCrm.mockResolvedValueOnce(answer("Hi."));
+    render(<Harness viewing={null} />);
+    expect(screen.queryByText(/Looking at/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Tell me about ./ })).toBeNull();
+    await ask(user, "Who is hot?");
+    expect(await screen.findByText("Hi.")).toBeInTheDocument();
+    expect("viewing" in m.askCrm.mock.calls[0][0]).toBe(false);
+  });
+
+  it("reports a confirmed change once, and not a cancelled one", async () => {
+    const user = userEvent.setup();
+    const onChanged = vi.fn();
+    m.askCrm.mockResolvedValueOnce(answer("Ready.", [NOTE_PROPOSAL, NOTE_PROPOSAL]));
+    m.actOnCrm.mockResolvedValue({ status: 200, body: { status: "ok", message: "Note added to Jane Tan." } });
+    render(<Harness onChanged={onChanged} />);
+    await ask(user, "Add a note");
+    await screen.findByText("Ready.");
+    await user.click(screen.getAllByRole("button", { name: "Cancel" })[1]);
+    expect(onChanged).not.toHaveBeenCalled();
+    await user.click(screen.getAllByRole("button", { name: "Confirm" })[0]);
+    expect(await screen.findByText("Note added to Jane Tan.")).toBeInTheDocument();
+    expect(onChanged).toHaveBeenCalledTimes(1);
   });
 });

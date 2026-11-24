@@ -5,6 +5,7 @@ import type { ContactHit } from "@/lib/monsoon/contacts";
 import type { SiftHit, Sort } from "@/lib/monsoon/sift";
 import MonsoonLoader from "./MonsoonLoader";
 import { searchContacts, type EstateInfo } from "./api";
+import type { AskViewing } from "./AskPanel";
 import ProfileActions, { type ProfileDraft } from "./ProfileActions";
 import ProfileView, { roleLabel } from "./ProfileView";
 import { stageLabel } from "./labels";
@@ -91,6 +92,8 @@ export default function ContactsPanel({
   onUnauthorized,
   onBusy,
   onAsk,
+  onViewing,
+  reloadSignal,
 }: {
   estate: EstateInfo;
   state: ContactsState;
@@ -100,6 +103,10 @@ export default function ContactsPanel({
   onBusy?: (busy: boolean) => void;
   /** Switches to Ask with the given draft. */
   onAsk?: (text: string) => void;
+  /** The loaded open profile, for Ask; null when none is on screen. */
+  onViewing?: (viewing: AskViewing | null) => void;
+  /** A change to this number re-reads the open profile. */
+  reloadSignal?: number;
 }) {
   const [hits, setHits] = useState<SiftHit[]>([]);
   const [total, setTotal] = useState<number | null>(null);
@@ -166,6 +173,8 @@ export default function ContactsPanel({
         onOpen={(target) => onChange((s) => withOpen(s, target))}
         onUnauthorized={onUnauthorized}
         onLoadFailed={() => onChange((s) => (s.autoResearch ? { ...s, autoResearch: false } : s))}
+        reloadSignal={reloadSignal}
+        onLoaded={(p) => onViewing?.(p ? { target: open, name: p.name, company: p.kind === "person" ? p.company : null } : null)}
         actions={(profile, reload, setViewBusy, stagePick) => (
           <ProfileActions
             stagePick={stagePick}

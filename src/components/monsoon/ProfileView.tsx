@@ -200,6 +200,8 @@ export default function ProfileView({
   onUnauthorized,
   onLoadFailed,
   actions,
+  onLoaded,
+  reloadSignal,
 }: {
   estate: EstateInfo;
   target: ContactTarget;
@@ -210,6 +212,10 @@ export default function ProfileView({
   onLoadFailed?: () => void;
   /** Renders the profile's actions; `setBusy(true)` locks this view's own navigation until it is released. */
   actions?: (profile: Profile, reload: () => void, setBusy: (busy: boolean) => void, stagePick: StagePick) => ReactNode;
+  /** The profile now on screen, or null while there is none (loading, missing, failed, closed). */
+  onLoaded?: (profile: Profile | null) => void;
+  /** A change to this number re-reads the profile. */
+  reloadSignal?: number;
 }) {
   // The stage bubble under the name opens the stage chooser right there. The chooser itself is drawn
   // by the actions (they own the change), into `stageSlot`.
@@ -258,7 +264,15 @@ export default function ProfileView({
     return () => {
       live = false;
     };
-  }, [estate.key, memberId, personId, orgId, tick]);
+  }, [estate.key, memberId, personId, orgId, tick, reloadSignal]);
+
+  const loadedRef = useRef(onLoaded);
+  loadedRef.current = onLoaded;
+  const shownProfile = phase === "ready" ? profile : null;
+  useEffect(() => {
+    loadedRef.current?.(shownProfile);
+  }, [shownProfile]);
+  useEffect(() => () => loadedRef.current?.(null), []);
 
   const back = (
     <button

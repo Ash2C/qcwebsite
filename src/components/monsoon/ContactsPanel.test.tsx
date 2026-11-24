@@ -42,13 +42,17 @@ function Harness({
   onUnauthorized = () => {},
   estate = ESTATE,
   initial = EMPTY_CONTACTS,
+  onViewing,
+  reloadSignal,
 }: {
+  onViewing?: (v: unknown) => void;
+  reloadSignal?: number;
   onUnauthorized?: () => void;
   estate?: typeof ESTATE;
   initial?: ContactsState;
 }) {
   const [state, setState] = useState<ContactsState>(initial);
-  return <ContactsPanel estate={estate} state={state} onChange={setState} onUnauthorized={onUnauthorized} />;
+  return <ContactsPanel estate={estate} state={state} onChange={setState} onUnauthorized={onUnauthorized} onViewing={onViewing} reloadSignal={reloadSignal} />;
 }
 
 async function advance(ms: number) {
@@ -334,5 +338,55 @@ describe("ContactsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /Acme Capital/ }));
     await advance(0);
     expect(m.loadProfile).toHaveBeenCalledWith("traxo", { memberId: "m2" }, expect.any(String));
+  });
+});
+
+describe("ContactsPanel tells Ask what is open", () => {
+  const LOADED = { status: 200, body: { profile: { ...SELF, phone: null, linkedin: null, country: null, website: null, notes: null, timelineOf: null, timeline: [], timelineTotal: 0, people: [], stages: [] } } } as never;
+  const open = { query: "", open: { personId: "p1" } };
+
+  it("reports the loaded profile with its target, name and company, and null after Back", async () => {
+    m.searchContacts.mockResolvedValue(hits());
+    m.loadProfile.mockResolvedValue(LOADED);
+    const onViewing = vi.fn();
+    render(<Harness initial={open} onViewing={onViewing} />);
+    expect(onViewing.mock.calls.every(([v]) => v === null)).toBe(true);
+    await advance(0);
+    expect(onViewing).toHaveBeenLastCalledWith({ target: { personId: "p1" }, name: SELF.name, company: SELF.company });
+    fireEvent.click(screen.getByRole("button", { name: /Contacts/ }));
+    await advance(0);
+    expect(onViewing).toHaveBeenLastCalledWith(null);
+  });
+
+  it("never reports a profile that failed to load or is missing", async () => {
+    m.searchContacts.mockResolvedValue(hits());
+    m.loadProfile.mockResolvedValue({ status: 404, body: { error: "Not found" } } as never);
+    const onViewing = vi.fn();
+    render(<Harness initial={open} onViewing={onViewing} />);
+    await advance(0);
+    expect(onViewing.mock.calls.every(([v]) => v === null)).toBe(true);
+  });
+
+  it("reports null when the estate changes under an open profile", async () => {
+    m.searchContacts.mockResolvedValue(hits());
+    m.loadProfile.mockResolvedValue(LOADED);
+    const onViewing = vi.fn();
+    const { rerender } = render(<Harness initial={open} onViewing={onViewing} />);
+    await advance(0);
+    rerender(<Harness initial={open} estate={OTHER} onViewing={onViewing} />);
+    await advance(0);
+    expect(onViewing).toHaveBeenLastCalledWith(null);
+  });
+
+  it("a new reload signal reads the open profile again", async () => {
+    m.searchContacts.mockResolvedValue(hits());
+    m.loadProfile.mockResolvedValue(LOADED);
+    const { rerender } = render(<Harness initial={open} reloadSignal={0} />);
+    await advance(0);
+    expect(m.loadProfile).toHaveBeenCalledTimes(1);
+    rerender(<Harness initial={open} reloadSignal={1} />);
+    await advance(0);
+    expect(m.loadProfile).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
   });
 });

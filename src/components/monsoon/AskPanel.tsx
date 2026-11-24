@@ -22,6 +22,8 @@ export type AskTurn = {
   /** The offer's button has been tapped; it stays disabled after that. */
   researchUsed?: boolean;
 };
+/** The profile open underneath Ask: only the target is sent; the name and company are for the screen. */
+export type AskViewing = { target: ContactTarget; name: string; company: string | null };
 export type AskState = { turns: AskTurn[]; draft: string };
 export const EMPTY_ASK: AskState = { turns: [], draft: "" };
 
@@ -115,6 +117,8 @@ export default function AskPanel({
   focusOnOpen,
   onFocused,
   suggested,
+  viewing,
+  onChanged,
 }: {
   estate: EstateInfo;
   state: AskState;
@@ -129,6 +133,10 @@ export default function AskPanel({
   onFocused?: () => void;
   /** Questions the app guesses from what was just done; shown before the standing ones. */
   suggested?: string[];
+  /** The contact open underneath; "this person" in a question means them. */
+  viewing?: AskViewing | null;
+  /** A change card was confirmed: what is underneath may be out of date. */
+  onChanged?: () => void;
 }) {
   // Speaking is the iPhone keyboard's dictation into the question box; no audio is handled here.
   const [speakHint, setSpeakHint] = useState(false);
@@ -219,7 +227,7 @@ export default function AskPanel({
 ${prev.draft}`).slice(0, MAX_DRAFT),
       }));
     try {
-      const res = await askCrm({ estate: estate.key, today: localDate(), messages });
+      const res = await askCrm({ estate: estate.key, today: localDate(), messages, ...(viewing ? { viewing: viewing.target } : {}) });
       if (gen !== genRef.current) return;
       if (res.status === 401) {
         restore();
@@ -267,7 +275,10 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
     patch: patchCard,
     generation: () => genRef.current,
     onUnauthorized,
-    onDone: (_card, message) => addNote(`Change confirmed: ${message}`),
+    onDone: (_card, message) => {
+      addNote(`Change confirmed: ${message}`);
+      onChanged?.();
+    },
   });
 
   function cancel(c: AskCard) {
@@ -304,7 +315,10 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
         {shown.length === 0 && (
           <div className="flex flex-col gap-2 pt-2">
             <p className="px-1 text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Try asking</p>
-            {[...(suggested ?? []).filter((s) => !SUGGESTIONS.includes(s)), ...SUGGESTIONS].map((s) => (
+            {[...new Set([...(viewing ? [`Tell me about ${viewing.name}`] : []), ...(suggested ?? [])])]
+              .filter((s) => !SUGGESTIONS.includes(s))
+              .concat(SUGGESTIONS)
+              .map((s) => (
               <button
                 key={s}
                 type="button"
@@ -377,7 +391,13 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
         <div ref={endRef} />
       </div>
 
-      <div className="sticky bottom-0 -mx-4 mt-auto flex items-end gap-2 bg-[#f2f2f7]/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:bg-[#07090C]/90">
+      <div className="sticky bottom-0 -mx-4 mt-auto flex flex-col gap-2 bg-[#f2f2f7]/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:bg-[#07090C]/90">
+        {viewing ? (
+          <p className="break-words px-1 text-[13px] text-neutral-500 dark:text-neutral-400">
+            {viewing.company ? `Looking at ${viewing.name} · ${viewing.company}` : `Looking at ${viewing.name}`}
+          </p>
+        ) : null}
+        <div className="flex items-end gap-2">
         <button
           type="button"
           aria-label="Speak your question"
@@ -415,6 +435,7 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
         >
           Ask
         </button>
+        </div>
       </div>
     </div>
   );
