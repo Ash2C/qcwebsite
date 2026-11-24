@@ -2458,6 +2458,41 @@ describe("The user's own page", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
+  it("a different person signing in finds no Ask conversation, Ask draft or open contact from the last person", async () => {
+    const user = userEvent.setup();
+    m.askCrm.mockResolvedValue({
+      status: 200,
+      body: { answer: "Given your objective, chase Jane.", refs: [], proposals: [] },
+    } as never);
+    m.searchContacts.mockResolvedValue({ status: 200, body: { contacts: [] } } as never);
+    render(<MonsoonApp />);
+    await ready();
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await user.type(await screen.findByRole("textbox", { name: "Search contacts" }), "jane");
+    await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
+    await user.type(screen.getByRole("textbox", { name: "Your question" }), "Who?");
+    await user.click(screen.getByRole("button", { name: "Send question" }));
+    await screen.findByText("Given your objective, chase Jane.");
+    // The session ends mid-question: the question goes back in the box and the passcode screen shows.
+    m.askCrm.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never);
+    await user.type(screen.getByRole("textbox", { name: "Your question" }), "half a question");
+    await user.click(screen.getByRole("button", { name: "Send question" }));
+    as(BO);
+    await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
+    m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    await screen.findByText("Snap or choose a photo");
+    // Back on Capture with no sheet: nothing of the last person's is on screen.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText("Given your objective, chase Jane.")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
+    expect(screen.queryByText("Given your objective, chase Jane.")).toBeNull();
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    expect(await screen.findByRole("textbox", { name: "Search contacts" })).toHaveValue("");
+  });
+
   it("the name under the logo changes as soon as a new one is saved", async () => {
     const user = userEvent.setup();
     render(<MonsoonApp />);

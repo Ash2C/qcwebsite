@@ -109,7 +109,9 @@ const manyLines = (text: string) =>
   text
     .replace(/\r\n?|[\u0085\u2028\u2029]/g, "\n")
     .replace(/[\u0000-\u0009\u000b-\u001f\u007f]+/g, " ")
-    .replace(/ *\n[ \n]*/g, "\n")
+    // Any kind of space, and the zero-width characters, count as blank: a line of only those
+    // would look empty to the model.
+    .replace(/(?:[^\S\n]|[\u200b-\u200d\u2060\ufeff])*\n(?:\s|[\u200b-\u200d\u2060\ufeff])*/g, "\n")
     .trim();
 
 /** The UTC day of an ISO time. */

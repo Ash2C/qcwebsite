@@ -215,6 +215,12 @@ export default function MonsoonApp() {
         if (personIdRef.current !== null && personIdRef.current !== personId) {
           setUserOpen(false);
           setUserDraft(EMPTY_USER_DRAFT);
+          // Nor their Ask conversation (its answers can restate their page), draft or open contact.
+          setAsk(EMPTY_ASK);
+          setAskOpen(false);
+          setContacts(EMPTY_CONTACTS);
+          setMode("capture");
+          setKeyOpen(false);
         }
         personIdRef.current = personId;
         setClaude(res.body.claude?.status ?? null);
