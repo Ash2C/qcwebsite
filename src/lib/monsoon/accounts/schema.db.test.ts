@@ -28,11 +28,11 @@ describe.skipIf(!db.available)("accounts schema", () => {
     return r.rows[0].id;
   }
 
-  it("creates all nine tables and records migrations 1 to 4", async () => {
+  it("creates all nine tables and records migrations 1 to 5", async () => {
     const r = await client.query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'");
     expect(r.rows.map((x) => x.tablename).sort()).toEqual([...TABLES].sort());
     const m = await client.query("SELECT version FROM accounts_migrations");
-    expect(m.rows.map((x) => x.version).sort()).toEqual([1, 2, 3, 4]);
+    expect(m.rows.map((x) => x.version).sort()).toEqual([1, 2, 3, 4, 5]);
   });
 
   it("applies defaults to customers", async () => {
@@ -120,7 +120,7 @@ describe.skipIf(!db.available)("accounts schema", () => {
     const { join } = await import("node:path");
     await client.query(readFileSync(join(__dirname, "schema.sql"), "utf8"));
     const m = await client.query("SELECT count(*)::int AS n FROM accounts_migrations");
-    expect(m.rows[0].n).toBe(4);
+    expect(m.rows[0].n).toBe(5);
   });
 
   it("version 4: people gain phone and email, and the two page tables have their columns", async () => {
@@ -204,6 +204,57 @@ describe.skipIf(!db.available)("accounts schema", () => {
     for (const l of lists) expect(l).toContain("'profile'");
   });
 
+  it("version 5: people gain the four Granola columns, all empty by default", async () => {
+    const cols = (
+      await client.query(
+        "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'people' ORDER BY column_name",
+      )
+    ).rows.map((x) => `${x.column_name} ${x.data_type} ${x.is_nullable}`);
+    expect(cols).toContain("granola_key_enc text YES");
+    expect(cols).toContain("granola_status text YES");
+    expect(cols).toContain("granola_checked_at timestamp with time zone YES");
+    expect(cols).toContain("granola_key_set_at timestamp with time zone YES");
+    const id = await customer();
+    await client.query("INSERT INTO people (customer_id, display_name, owner_key, passcode_hash) VALUES ($1,'P','PP','h')", [id]);
+    const r = await client.query("SELECT granola_key_enc, granola_status, granola_checked_at, granola_key_set_at FROM people");
+    expect(r.rows[0]).toEqual({ granola_key_enc: null, granola_status: null, granola_checked_at: null, granola_key_set_at: null });
+  });
+
+  it("version 5: the Granola status takes only known values", async () => {
+    const id = await customer();
+    await client.query("INSERT INTO people (customer_id, display_name, owner_key, passcode_hash) VALUES ($1,'P','PP','h')", [id]);
+    for (const s of ["ok", "key_rejected", "no_access"]) await client.query("UPDATE people SET granola_status = $1", [s]);
+    await expect(client.query("UPDATE people SET granola_status = 'no_credit'")).rejects.toMatchObject({ code: "23514" });
+    await expect(client.query("UPDATE people SET granola_status = 'weird'")).rejects.toMatchObject({ code: "23514" });
+  });
+
+  it("version 5: activity accepts the granola action", async () => {
+    const id = await customer();
+    await client.query("INSERT INTO activity (customer_id, action) VALUES ($1, 'granola')", [id]);
+    await expect(client.query("INSERT INTO activity (customer_id, action) VALUES ($1, 'delete')", [id])).rejects.toMatchObject({ code: "23514" });
+  });
+
+  // The same trap as version 4: every copy of the action list must name 'granola'.
+  it("version 5: the whole file applies again with a granola activity row and a Granola status present", async () => {
+    const id = await customer();
+    await client.query(
+      "INSERT INTO people (customer_id, display_name, owner_key, passcode_hash, granola_key_enc, granola_status) VALUES ($1,'P','PP','h','k1.a.b.c','no_access')",
+      [id],
+    );
+    await client.query("INSERT INTO activity (customer_id, action) VALUES ($1, 'granola')", [id]);
+    const sql = readFileSync(join(__dirname, "schema.sql"), "utf8");
+    await client.query(sql);
+    await client.query(sql);
+    expect((await client.query("SELECT count(*)::int AS n FROM activity WHERE action = 'granola'")).rows[0].n).toBe(1);
+    expect((await client.query("SELECT granola_key_enc, granola_status FROM people")).rows[0]).toEqual({
+      granola_key_enc: "k1.a.b.c",
+      granola_status: "no_access",
+    });
+    const lists = sql.match(/action IN \([^)]*\)/g) ?? [];
+    expect(lists.length).toBeGreaterThanOrEqual(4);
+    for (const l of lists) expect(l).toContain("'granola'");
+  });
+
   it("version 3: the earliest person is named key person, and the status takes only known values", async () => {
     const id = await customer();
     const late = await client.query(
@@ -268,7 +319,7 @@ describe.skipIf(!db.available)("accounts schema", () => {
       const l = await c2.query("SELECT purpose FROM setup_links WHERE token_hash = 'v1tok'");
       expect(l.rows[0].purpose).toBe("connect");
       const m = await c2.query("SELECT max(version)::int AS v FROM accounts_migrations");
-      expect(m.rows[0].v).toBe(4);
+      expect(m.rows[0].v).toBe(5);
     } finally {
       await c2.end();
       await db.reset();

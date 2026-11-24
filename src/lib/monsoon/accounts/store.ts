@@ -18,7 +18,8 @@ export type ActivityAction =
   | "replace"
   | "host"
   | "key"
-  | "profile";
+  | "profile"
+  | "granola";
 
 export type PipelineRow = {
   id: string;

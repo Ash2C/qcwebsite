@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS activity (
   pipeline_key TEXT NULL,
   action TEXT NOT NULL CHECK (action IN (
     'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
-    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile'
+    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola'
   )),
   at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -95,7 +95,7 @@ ALTER TABLE setup_links DROP CONSTRAINT IF EXISTS setup_links_purpose_check,
 ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
   ADD CONSTRAINT activity_action_check CHECK (action IN (
     'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
-    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile'
+    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola'
   ));
 ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS project_ref TEXT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS pipelines_project_ref_key ON pipelines (project_ref);
@@ -147,10 +147,29 @@ CREATE INDEX IF NOT EXISTS person_notes_person_pipeline_at ON person_notes (pers
 ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
   ADD CONSTRAINT activity_action_check CHECK (action IN (
     'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
-    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile'
+    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola'
   ));
 
 ALTER TABLE person_work ENABLE ROW LEVEL SECURITY;
 ALTER TABLE person_notes ENABLE ROW LEVEL SECURITY;
 
 INSERT INTO accounts_migrations (version) VALUES (4) ON CONFLICT DO NOTHING;
+
+-- Version 5: a person's own Granola key (read-only, used by Ask). Encrypted like the Claude key, under
+-- the field name granola:<person id>. The status is the result of the last real Granola call (NULL
+-- with a key on file: tested when it was saved). Every action list above also names 'granola', for
+-- the same reason as 'profile'.
+ALTER TABLE people ADD COLUMN IF NOT EXISTS granola_key_enc TEXT NULL;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS granola_status TEXT NULL;
+ALTER TABLE people DROP CONSTRAINT IF EXISTS people_granola_status_check,
+  ADD CONSTRAINT people_granola_status_check CHECK (granola_status IN ('ok', 'key_rejected', 'no_access'));
+ALTER TABLE people ADD COLUMN IF NOT EXISTS granola_checked_at TIMESTAMPTZ NULL;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS granola_key_set_at TIMESTAMPTZ NULL;
+
+ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
+  ADD CONSTRAINT activity_action_check CHECK (action IN (
+    'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
+    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola'
+  ));
+
+INSERT INTO accounts_migrations (version) VALUES (5) ON CONFLICT DO NOTHING;
