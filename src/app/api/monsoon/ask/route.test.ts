@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runAsk = vi.fn();
 vi.mock("@/lib/monsoon/ask/loop", () => ({ runAsk: (...a: unknown[]) => runAsk(...a) }));
+const getProfile = vi.fn();
+vi.mock("@/lib/monsoon/contacts", () => ({ getProfile: (...a: unknown[]) => getProfile(...a) }));
 vi.mock("@/lib/monsoon/accounts/account", async () =>
   (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
 );
@@ -42,6 +44,7 @@ const valid = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   runAsk.mockReset().mockResolvedValue(RESULT);
+  getProfile.mockReset();
   account = fakeAccount({
     customer: { id: CUSTOMER },
     person: { name: "Ann Lee", ownerKey: "AL" },
@@ -282,5 +285,63 @@ describe("POST /api/monsoon/ask", () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: "claude_key_missing" });
     expect(runAsk).not.toHaveBeenCalled();
+  });
+
+  describe("viewing: the contact open on the user's screen", () => {
+    const PROFILE = {
+      kind: "person",
+      personId: M1,
+      orgId: M2,
+      name: "Jane Tan",
+      company: "Acme Capital",
+      member: { memberId: "33333333-3333-4333-8333-333333333333" },
+    };
+    const viewingOf = () => runAsk.mock.calls[0][0].viewing;
+
+    it("reads the contact from the customer's database and hands runAsk its name, company and ids", async () => {
+      getProfile.mockResolvedValue(PROFILE);
+      const res = await POST(post(valid({ viewing: { personId: M1, name: "Mallory", company: "Evil" } })));
+      expect(res.status).toBe(200);
+      expect(getProfile).toHaveBeenCalledWith(fakeDb, { personId: M1 }, "2026-11-13");
+      expect(viewingOf()).toEqual({
+        kind: "person",
+        name: "Jane Tan",
+        company: "Acme Capital",
+        personId: M1,
+        orgId: M2,
+        memberId: "33333333-3333-4333-8333-333333333333",
+      });
+    });
+
+    it("uses the first of person, company, member id and ignores the others", async () => {
+      getProfile.mockResolvedValue({ ...PROFILE, kind: "company", personId: null, member: null, company: null, name: "Acme Capital" });
+      await POST(post(valid({ viewing: { orgId: M2, memberId: M1 } })));
+      expect(getProfile).toHaveBeenCalledWith(fakeDb, { orgId: M2 }, "2026-11-13");
+      expect(viewingOf()).toEqual({ kind: "company", name: "Acme Capital", company: null, personId: null, orgId: M2, memberId: null });
+    });
+
+    it("answers as usual with no viewing when the contact is not found", async () => {
+      getProfile.mockResolvedValue(null);
+      const res = await POST(post(valid({ viewing: { personId: M1 } })));
+      expect(res.status).toBe(200);
+      expect(viewingOf()).toBeUndefined();
+    });
+
+    it("answers as usual when the lookup fails", async () => {
+      getProfile.mockRejectedValue(new Error("statement timeout"));
+      const res = await POST(post(valid({ viewing: { personId: M1 } })));
+      expect(res.status).toBe(200);
+      expect(viewingOf()).toBeUndefined();
+    });
+
+    it.each([[{ personId: "not-a-uuid" }], ["x"], [{ name: "Mallory" }], [null], [[M1]], [undefined]])(
+      "drops a malformed viewing (%j) without a lookup",
+      async (viewing) => {
+        const res = await POST(post(valid({ viewing })));
+        expect(res.status).toBe(200);
+        expect(getProfile).not.toHaveBeenCalled();
+        expect(viewingOf()).toBeUndefined();
+      },
+    );
   });
 });

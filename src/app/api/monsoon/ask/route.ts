@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
 import { claudeFailureResponse } from "@/lib/monsoon/claude-failure";
-import { runAsk, type AskMessage, type ModelClient } from "@/lib/monsoon/ask/loop";
+import type { Client } from "pg";
+import { runAsk, type AskMessage, type ModelClient, type Viewing } from "@/lib/monsoon/ask/loop";
+import { getProfile } from "@/lib/monsoon/contacts";
 import type { Ref } from "@/lib/monsoon/ask/tools";
 import { readJson } from "@/lib/monsoon/body";
 import { resolveToday } from "@/lib/monsoon/today";
@@ -75,6 +77,37 @@ function parseMessages(value: unknown): AskMessage[] | string {
   return out;
 }
 
+type ViewingTarget = { memberId?: string; personId?: string; orgId?: string };
+
+/** The one id the phone says is open on screen: the first UUID-shaped one, nothing else from the body. */
+function cleanViewing(value: unknown): ViewingTarget | null {
+  if (!isObj(value)) return null;
+  for (const key of ["personId", "orgId", "memberId"] as const) {
+    const id = value[key];
+    if (typeof id === "string" && UUID_RE.test(id)) return { [key]: id };
+  }
+  return null;
+}
+
+/** That contact as this customer's database holds it, or undefined: not found and failures are both silent. */
+async function resolveViewing(db: Client, target: ViewingTarget | null, today: string): Promise<Viewing | undefined> {
+  if (!target) return undefined;
+  try {
+    const p = await getProfile(db, target, today);
+    if (!p) return undefined;
+    return {
+      kind: p.kind,
+      name: p.name,
+      company: p.company,
+      personId: p.personId,
+      orgId: p.orgId,
+      memberId: p.member?.memberId ?? null,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export async function POST(request: Request) {
   const startedAt = Date.now(); // the loop's deadline counts from here, database connection included
   const auth = await requireAccount(request);
@@ -91,12 +124,13 @@ export async function POST(request: Request) {
   const messages = parseMessages(b.messages);
   if (typeof messages === "string") return bad(messages);
   const today = resolveToday(b.today, startedAt);
+  const viewingTarget = cleanViewing(b.viewing);
 
   try {
     // The customer's own key and model; the customer id comes from the session, never the body.
     const client = account.anthropic({ timeout: 20_000 }).messages as unknown as ModelClient;
     const model = account.model();
-    const result = await account.withDb(estate.key, (db) =>
+    const result = await account.withDb(estate.key, async (db) =>
       runAsk(
         {
           db,
@@ -110,6 +144,7 @@ export async function POST(request: Request) {
           client,
           now: () => Date.now(),
           startedAt,
+          viewing: await resolveViewing(db, viewingTarget, today),
         },
         messages,
       ),
