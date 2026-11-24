@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { actOnCrm, askCrm, researchContact, loadEstates, loadProfile, proposeChange, searchContacts, readCards, refineCard, saveCard, signIn } from "./api";
+import { actOnCrm, addUserNote, askCrm, loadUserPage, saveUserPage, researchContact, loadEstates, loadProfile, proposeChange, searchContacts, readCards, refineCard, saveCard, signIn } from "./api";
 
 // `fetch` is stubbed: nothing here touches the network.
 const fetchMock = vi.fn();
@@ -18,6 +18,8 @@ afterEach(() => {
 const refine = { fields: { name: "A", title: "", org: "", email: "", phone: "", linkedin: "" }, notes: "", spoken: "x" };
 const save = { estate: "traxo", captureId: "c", role: "r", fields: { name: "A" } };
 const act = { estate: "traxo", proposal: { kind: "add_note" } as never, signature: "s" };
+
+const PAGE_INPUT = { name: "Dana", phone: null, email: null, company: "Acme", website: null, roleObjectives: null };
 
 // The phone's local date, as the client sends it with the Contacts list.
 const NOW = new Date();
@@ -40,6 +42,9 @@ const CALLS: [string, string, number, () => Promise<unknown>][] = [
   ["loadProfile", "/api/monsoon/contact?estate=traxo&today=2026-11-13&personId=p1", 15_000, () => loadProfile("traxo", { personId: "p1" }, "2026-11-13")],
   ["proposeChange", "/api/monsoon/propose", 35_000, () => proposeChange({ estate: "traxo", kind: "add_note", target: { memberId: "m1" }, text: "hi" })],
   ["askCrm", "/api/monsoon/ask", 70_000, () => askCrm({ estate: "traxo", today: "2026-11-13", messages: [] })],
+  ["loadUserPage", "/api/monsoon/me?estate=zero+one", 15_000, () => loadUserPage("zero one")],
+  ["saveUserPage", "/api/monsoon/me", 35_000, () => saveUserPage("traxo", PAGE_INPUT)],
+  ["addUserNote", "/api/monsoon/me/notes", 35_000, () => addUserNote("traxo", "A note")],
 ];
 
 describe("client timeouts", () => {
@@ -63,6 +68,20 @@ describe("client timeouts", () => {
     expect(form.get("estate")).toBe("zeroone");
     expect(form.get("image")).toBeInstanceOf(Blob);
     expect(res.body).toEqual({ cards: [], matches: [{ match: "none", candidates: [] }] });
+  });
+
+  it("the user's page is read fresh, saved with PUT and its notes added with POST, each naming the estate", async () => {
+    await loadUserPage("traxo");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ cache: "no-store" });
+    await saveUserPage("traxo", PAGE_INPUT);
+    const put = fetchMock.mock.calls[1][1] as RequestInit;
+    expect(put.method).toBe("PUT");
+    expect(put.headers).toEqual({ "Content-Type": "application/json" });
+    expect(JSON.parse(put.body as string)).toEqual({ estate: "traxo", ...PAGE_INPUT });
+    await addUserNote("traxo", "A note");
+    const post = fetchMock.mock.calls[2][1] as RequestInit;
+    expect(post.method).toBe("POST");
+    expect(JSON.parse(post.body as string)).toEqual({ estate: "traxo", body: "A note" });
   });
 
   it("keeps each call's own method, headers and body beside the signal", async () => {

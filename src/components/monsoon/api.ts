@@ -10,6 +10,7 @@ import type { Profile } from "@/lib/monsoon/contacts";
 import type { SiftHit, Sort } from "@/lib/monsoon/sift";
 import type { SignedProposal } from "@/lib/monsoon/ask/proposal";
 import type { ClaudeKeyState } from "@/lib/monsoon/accounts/claude-key";
+import type { PageInput, UserPage } from "@/lib/monsoon/accounts/profile";
 import { claudeStatusOf, reportClaudeStatus, type ClaudeChipStatus } from "./claudeStatus";
 
 export type EstateInfo = {
@@ -45,8 +46,8 @@ export type ApiResult<T> = { status: number; body: T };
 // How long each call may take before it is aborted, in milliseconds. A little over each route's
 // own limit, so the server answers first when it can.
 const TIMEOUT_MS = {
-  quick: 15_000, // signIn, loadEstates
-  standard: 35_000, // saveCard, refineCard, actOnCrm, proposeChange
+  quick: 15_000, // signIn, loadEstates, loadUserPage
+  standard: 35_000, // saveCard, refineCard, actOnCrm, proposeChange, saveUserPage, addUserNote
   upload: 90_000, // readCards: the photo upload on a weak connection counts against the limit
   ask: 70_000, // askCrm
   research: 70_000, // researchContact: one bounded web search
@@ -103,7 +104,7 @@ export async function signIn(
 
 export async function loadEstates(): Promise<
   ApiResult<
-    | { estates: EstateInfo[]; person?: { name: string }; customer?: { name: string }; claude?: { status: ClaudeChipStatus } }
+    | { estates: EstateInfo[]; person?: { id: string; name: string }; customer?: { name: string }; claude?: { status: ClaudeChipStatus } }
     | { error: string }
   >
 > {
@@ -280,4 +281,33 @@ export function testClaudeKey(): Promise<KeyReply> {
 /** Tests a new key and replaces the one on file only if Claude accepts it. */
 export function saveClaudeKey(claudeKey: string): Promise<KeyReply> {
   return keyPost({ claudeKey });
+}
+
+type PageReply = ApiResult<{ page: UserPage } | { error: string }>;
+
+/** The signed-in person's own page for one CRM. */
+export async function loadUserPage(estate: string): Promise<PageReply> {
+  return parse(await request(`/api/monsoon/me?${new URLSearchParams({ estate })}`, { cache: "no-store" }, TIMEOUT_MS.quick));
+}
+
+/** Saves the page's fields and returns the page as it now stands. */
+export async function saveUserPage(estate: string, input: PageInput): Promise<PageReply> {
+  return parse(
+    await request(
+      "/api/monsoon/me",
+      { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ estate, ...input }) },
+      TIMEOUT_MS.standard,
+    ),
+  );
+}
+
+/** Adds one note about the person and returns the page, the new note first. */
+export async function addUserNote(estate: string, body: string): Promise<PageReply> {
+  return parse(
+    await request(
+      "/api/monsoon/me/notes",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ estate, body }) },
+      TIMEOUT_MS.standard,
+    ),
+  );
 }

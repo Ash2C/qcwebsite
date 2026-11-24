@@ -5,6 +5,7 @@ import ClaudeChip from "./ClaudeChip";
 import ClaudeKeyPanel from "./ClaudeKeyPanel";
 import { onClaudeStatus, type ClaudeChipStatus } from "./claudeStatus";
 import UpdateBanner from "./UpdateBanner";
+import UserPanel, { EMPTY_USER_DRAFT, type UserDraft } from "./UserPanel";
 import MonsoonLoader from "./MonsoonLoader";
 import MonsoonLogo from "./MonsoonLogo";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -113,6 +114,12 @@ export default function MonsoonApp() {
   const [saving, setSaving] = useState(false);
   const [code, setCode] = useState("");
   const [personName, setPersonName] = useState<string | null>(null);
+  // The user's own page: whether it is open and what is typed on it and not yet saved. Both live
+  // here so they survive the passcode screen. They belong to one person: when someone else signs in
+  // on this phone, the page is closed and the draft dropped.
+  const [userOpen, setUserOpen] = useState(false);
+  const [userDraft, setUserDraft] = useState<UserDraft>(EMPTY_USER_DRAFT);
+  const personIdRef = useRef<string | null>(null);
   const [passcode, setPasscode] = useState("");
   const [passError, setPassError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
@@ -178,6 +185,9 @@ export default function MonsoonApp() {
       askEstateRef.current = estateKey;
       setAsk(EMPTY_ASK);
       setContacts(EMPTY_CONTACTS);
+      // The user's page is about one CRM too: its work fields and notes do not carry over.
+      setUserOpen(false);
+      setUserDraft(EMPTY_USER_DRAFT);
     }
   }, [estateKey]);
   const formRef = useRef(form);
@@ -200,6 +210,13 @@ export default function MonsoonApp() {
           list[0];
         setEstates(list);
         setPersonName(res.body.person?.name ?? null);
+        // Someone else has signed in: nothing of the last person's page is left for them to see.
+        const personId = res.body.person?.id ?? null;
+        if (personIdRef.current !== null && personIdRef.current !== personId) {
+          setUserOpen(false);
+          setUserDraft(EMPTY_USER_DRAFT);
+        }
+        personIdRef.current = personId;
         setClaude(res.body.claude?.status ?? null);
         if (pick) {
           setEstateKey(pick.key);
@@ -327,6 +344,7 @@ export default function MonsoonApp() {
     if (askBusy || profileBusy) return;
     setContacts((c) => withOpen(c, target));
     setKeyOpen(false);
+    setUserOpen(false);
     setMode("contacts");
     closeAsk();
   }
@@ -336,6 +354,7 @@ export default function MonsoonApp() {
     if (askBusy || profileBusy) return;
     setContacts((c) => withOpenResearch(c, personId));
     setKeyOpen(false);
+    setUserOpen(false);
     setMode("contacts");
     closeAsk();
   }
@@ -729,6 +748,25 @@ export default function MonsoonApp() {
     );
   }
 
+  // The user's own page, for the CRM in use. A 401 keeps it open: it is there again after sign-in.
+  if (userOpen && estate?.available) {
+    return (
+      <Shell>
+        {askSheet ?? askButton}
+        <main className={`mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pt-[max(1rem,env(safe-area-inset-top))] ${askButton ? roomForAsk : "pb-4"}`}>
+          <UserPanel
+            estate={estate}
+            draft={userDraft}
+            onDraft={setUserDraft}
+            onBack={() => setUserOpen(false)}
+            onUnauthorized={() => setPhase("locked")}
+            onName={setPersonName}
+          />
+        </main>
+      </Shell>
+    );
+  }
+
   return (
     <Shell>
       {askSheet ?? askButton}
@@ -749,7 +787,24 @@ export default function MonsoonApp() {
             text beside it: the one in use is marked, a tap on another switches. One estate needs no chooser. */}
         {(personName || estates.length > 1) && (
           <div className="-my-1 flex flex-wrap items-center px-1 text-[13px] text-neutral-500 dark:text-neutral-400">
-            {personName && <p>{personName}</p>}
+            {personName &&
+              (estate?.available ? (
+                // The tap target is 44px tall; the negative margin keeps the row as slim as the text.
+                <button
+                  type="button"
+                  aria-label={`${personName}, your page`}
+                  disabled={busy || batchRunning || askBusy || profileBusy}
+                  onClick={() => setUserOpen(true)}
+                  className="-my-2 flex min-h-[44px] items-center gap-1 rounded-md pr-2 text-left text-[13px] disabled:opacity-40"
+                >
+                  <span>{personName}</span>
+                  <span aria-hidden="true" className="text-[15px] leading-none text-[#0E7FA6] dark:text-[#6AE6FF]">
+                    ›
+                  </span>
+                </button>
+              ) : (
+                <p>{personName}</p>
+              ))}
             {estates.length > 1 && (
               <div role="group" aria-label="Estate" className="flex flex-wrap items-center">
                 {personName && (

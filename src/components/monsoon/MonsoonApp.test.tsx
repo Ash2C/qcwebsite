@@ -24,6 +24,9 @@ vi.mock("./api", () => ({
   loadClaudeKey: vi.fn(),
   saveClaudeKey: vi.fn(),
   testClaudeKey: vi.fn(),
+  loadUserPage: vi.fn(),
+  saveUserPage: vi.fn(),
+  addUserNote: vi.fn(),
 }));
 vi.mock("./image", () => ({
   downsizeImage: vi.fn(),
@@ -176,7 +179,7 @@ describe("MonsoonApp", () => {
       signedIn();
       m.loadEstates.mockResolvedValue({
         status: 200,
-        body: { ...ESTATES, person: { name: "Dana Lee" }, customer: { name: "Acme" } },
+        body: { ...ESTATES, person: { id: "p1", name: "Dana Lee" }, customer: { name: "Acme" } },
       } as never);
       render(<MonsoonApp />);
       expect(await screen.findByText("Dana Lee")).toBeInTheDocument();
@@ -259,7 +262,7 @@ describe("MonsoonApp", () => {
   });
 
   it("one estate shows no estate chooser; two are small text beside the person's name", async () => {
-    m.loadEstates.mockResolvedValue({ status: 200, body: { estates: [ESTATES.estates[0]], person: { name: "Dana Lee" } } });
+    m.loadEstates.mockResolvedValue({ status: 200, body: { estates: [ESTATES.estates[0]], person: { id: "p1", name: "Dana Lee" } } });
     const one = render(<MonsoonApp />);
     await ready();
     expect(screen.queryByRole("group", { name: "Estate" })).toBeNull();
@@ -267,7 +270,7 @@ describe("MonsoonApp", () => {
     expect(screen.getByText("Dana Lee")).toBeInTheDocument();
     one.unmount();
 
-    m.loadEstates.mockResolvedValue({ status: 200, body: { ...ESTATES, person: { name: "Dana Lee" } } });
+    m.loadEstates.mockResolvedValue({ status: 200, body: { ...ESTATES, person: { id: "p1", name: "Dana Lee" } } });
     render(<MonsoonApp />);
     await ready();
     const group = screen.getByRole("group", { name: "Estate" });
@@ -2345,6 +2348,172 @@ describe("Match choice in the batch after an estate change", () => {
     await user.click(screen.getByRole("button", { name: "Save all (2)" }));
     await screen.findByText("2 saved to Zero One.");
     expect(m.saveCard.mock.calls.map((c) => c[0].samePerson)).toEqual([undefined, undefined]);
+  });
+});
+
+describe("The user's own page", () => {
+  const DANA = { id: "p-dana", name: "Dana Lee" };
+  const BO = { id: "p-bo", name: "Bo Chen" };
+  const PAGE = {
+    person: { name: "Dana Lee", phone: "+31 6 1234 5678", email: null },
+    work: { company: "Acme Ltd", website: null, roleObjectives: null },
+    notes: [{ id: "n1", body: "Prefers short answers.", at: "2026-11-20T09:00:00Z" }],
+    notesTotal: 1,
+  };
+  const as = (person: { id: string; name: string }) => m.loadEstates.mockResolvedValue({ status: 200, body: { ...ESTATES, person } });
+  const pageHeading = () => screen.queryByRole("heading", { name: "Your page" });
+
+  async function openPage(user: User, name = "Dana Lee") {
+    await user.click(await screen.findByRole("button", { name: `${name}, your page` }));
+    await screen.findByRole("heading", { name: "You" });
+  }
+
+  // A save refused with a 401 brings up the passcode screen; this signs back in from it.
+  async function lockAndUnlock(user: User) {
+    m.saveUserPage.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
+    m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+  }
+
+  beforeEach(() => {
+    as(DANA);
+    m.loadUserPage.mockResolvedValue({ status: 200, body: { page: PAGE } });
+  });
+
+  it("the name under the logo is a button that opens the page for the estate in use, and Back returns", async () => {
+    const user = userEvent.setup();
+    render(<MonsoonApp />);
+    await ready();
+    const name = screen.getByRole("button", { name: "Dana Lee, your page" });
+    expect(name).toHaveTextContent("Dana Lee");
+    expect(name.className).toContain("min-h-[44px]");
+    await user.click(name);
+    expect(await screen.findByRole("heading", { name: "Your work in Traxo" })).toBeInTheDocument();
+    expect(m.loadUserPage).toHaveBeenCalledWith("traxo");
+    // Its own screen: the capture form is not underneath, so "Phone" here is the user's own.
+    expect(screen.queryByText("Snap or choose a photo")).toBeNull();
+    expect(screen.getByLabelText("Phone")).toHaveValue("+31 6 1234 5678");
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(pageHeading()).toBeNull();
+    expect(screen.getByText("Snap or choose a photo")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Dana Lee, your page" })).toBeInTheDocument();
+  });
+
+  it("the name stays plain text when the estate in use is unavailable", async () => {
+    m.loadEstates.mockResolvedValue({
+      status: 200,
+      body: { estates: [{ ...ESTATES.estates[0], available: false }], person: DANA },
+    });
+    render(<MonsoonApp />);
+    await ready();
+    expect(screen.getByText("Dana Lee")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Dana Lee, your page" })).toBeNull();
+  });
+
+  it("the Ask button stays at the bottom of the page and opens Ask over it", async () => {
+    const user = userEvent.setup();
+    render(<MonsoonApp />);
+    await ready();
+    await openPage(user);
+    await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
+    expect(await screen.findByRole("dialog", { name: "Ask" })).toBeInTheDocument();
+    expect(pageHeading()).toBeInTheDocument();
+  });
+
+  it("the page and its unsaved edits survive the passcode screen when the same person signs back in", async () => {
+    const user = userEvent.setup();
+    render(<MonsoonApp />);
+    await ready();
+    await openPage(user);
+    await user.type(screen.getByLabelText("Phone"), "9");
+    await user.type(screen.getByLabelText("New note"), "Half a note");
+    await lockAndUnlock(user);
+    await screen.findByRole("heading", { name: "You" });
+    expect(screen.getByLabelText("Phone")).toHaveValue("+31 6 1234 56789");
+    expect(screen.getByLabelText("New note")).toHaveValue("Half a note");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("a different person signing in on the same phone finds the page closed and the draft gone", async () => {
+    const user = userEvent.setup();
+    render(<MonsoonApp />);
+    await ready();
+    await openPage(user);
+    await user.type(screen.getByLabelText("Phone"), "9");
+    await user.type(screen.getByLabelText("New note"), "Half a note");
+    as(BO);
+    m.loadUserPage.mockResolvedValue({
+      status: 200,
+      body: { page: { ...PAGE, person: { name: "Bo Chen", phone: null, email: null }, notes: [], notesTotal: 0 } },
+    });
+    await lockAndUnlock(user);
+    await screen.findByText("Snap or choose a photo");
+    expect(pageHeading()).toBeNull();
+    await openPage(user, "Bo Chen");
+    expect(screen.getByLabelText("Name")).toHaveValue("Bo Chen");
+    expect(screen.getByLabelText("Phone")).toHaveValue("");
+    expect(screen.getByLabelText("New note")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("the name under the logo changes as soon as a new one is saved", async () => {
+    const user = userEvent.setup();
+    render(<MonsoonApp />);
+    await ready();
+    await openPage(user);
+    await user.type(screen.getByLabelText("Name"), " Smith");
+    m.saveUserPage.mockResolvedValue({
+      status: 200,
+      body: { page: { ...PAGE, person: { ...PAGE.person, name: "Dana Lee Smith" } } },
+    });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved.");
+    expect(m.saveUserPage.mock.calls[0][0]).toBe("traxo");
+    expect(m.saveUserPage.mock.calls[0][1].name).toBe("Dana Lee Smith");
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("button", { name: "Dana Lee Smith, your page" })).toBeInTheDocument();
+  });
+
+  it("Back with unsaved edits asks; saying yes leaves, and the page opens clean the next time", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    try {
+      render(<MonsoonApp />);
+      await ready();
+      await openPage(user);
+      await user.type(screen.getByLabelText("Phone"), "9");
+      await user.click(screen.getByRole("button", { name: "Back" }));
+      expect(confirm).toHaveBeenCalledWith("Discard your unsaved changes?");
+      expect(pageHeading()).toBeNull();
+      await openPage(user);
+      expect(screen.getByLabelText("Phone")).toHaveValue("+31 6 1234 5678");
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it("a contact opened from Ask over the page shows in Contacts, not behind the page", async () => {
+    const user = userEvent.setup();
+    m.askCrm.mockResolvedValue({
+      status: 200,
+      body: {
+        answer: "Jane is hot.",
+        refs: [{ memberId: "m1", name: "Jane Tan", company: "Acme Capital", kind: "person", personId: "p1" }],
+        proposals: [],
+      },
+    } as never);
+    m.loadProfile.mockResolvedValue({ status: 502, body: { error: "x" } });
+    render(<MonsoonApp />);
+    await ready();
+    await openPage(user);
+    await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
+    await user.type(await screen.findByRole("textbox", { name: "Your question" }), "Who?");
+    await user.click(screen.getByRole("button", { name: "Send question" }));
+    await user.click(await screen.findByRole("button", { name: "Jane Tan" }));
+    await waitFor(() => expect(pageHeading()).toBeNull());
+    expect(screen.getByRole("button", { name: "Contacts" })).toHaveAttribute("aria-pressed", "true");
   });
 });
 
