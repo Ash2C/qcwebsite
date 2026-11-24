@@ -256,7 +256,10 @@ export async function loadAskContext(who: Who, pipelineKey: string, opts?: { tim
       const pipelineId = await findPipeline(db, who, pipelineKey);
       if (pipelineId === null) return null;
       const page = await readPage(db, who, pipelineId);
-      const people = await db.query("SELECT owner_key, display_name FROM people WHERE customer_id = $1", [who.customerId]);
+      // Active people only: a suspended person's name must not reach their colleagues' assistant.
+      const people = await db.query("SELECT owner_key, display_name FROM people WHERE customer_id = $1 AND status = 'active'", [
+        who.customerId,
+      ]);
       const ownerNames: Record<string, string> = {};
       for (const r of people.rows as { owner_key: string; display_name: string }[]) ownerNames[r.owner_key] = r.display_name;
       return { page, ownerNames };

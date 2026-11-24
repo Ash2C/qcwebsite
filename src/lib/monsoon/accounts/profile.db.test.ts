@@ -247,14 +247,16 @@ describe.skipIf(!db.available)("the user's own page", () => {
     expect(await snapshot()).toBe(before);
   });
 
-  it("loadAskContext returns the page and the owner names of that customer's people only", async () => {
+  it("loadAskContext returns the page and the owner names of that customer's active people only", async () => {
     const { ann } = await seed();
     await saveUserPage(ann, "main", INPUT);
     await addUserNote(ann, "main", "A note");
+    expect((await loadAskContext(ann, "main", { timeoutMs: 3000 }))?.ownerNames).toEqual({ AN: "Ann Lee", BO: "Bob" });
+    // A suspended colleague's name no longer reaches anyone's assistant.
     await client.query("UPDATE people SET status = 'suspended' WHERE owner_key = 'BO'");
     const ctx = await loadAskContext(ann, "main", { timeoutMs: 3000 });
     expect(ctx?.page).toEqual(await loadUserPage(ann, "main"));
-    expect(ctx?.ownerNames).toEqual({ AN: "Ann Lee", BO: "Bob" });
+    expect(ctx?.ownerNames).toEqual({ AN: "Ann Lee" });
     expect(await loadAskContext(ann, "nope")).toBeNull();
   });
 
