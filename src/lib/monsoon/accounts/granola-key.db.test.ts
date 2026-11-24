@@ -120,6 +120,8 @@ describe.skipIf(!db.available)("a person's Granola key", () => {
     expect(await readGranolaKeyForAsk(bob)).toBeNull();
     expect(await readGranolaKeyForAsk(oz)).toBeNull();
     await expect(loadGranolaKey(bob)).rejects.toThrow("Could not decrypt");
+    // The screen still loads, so the person can paste a new key or disconnect.
+    expect(await loadGranolaKeyState(bob)).toMatchObject({ status: "key_rejected", last4: null });
     expect(await readGranolaKeyForAsk(ann)).toBe(ANN_KEY);
   });
 

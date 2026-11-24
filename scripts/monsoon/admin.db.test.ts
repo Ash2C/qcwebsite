@@ -196,6 +196,23 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     expect(r.rows[0]).toMatchObject({ session_no: 3, status: "active" });
   });
 
+  it("reset disconnects the person's Granola: a seat handed on does not carry the last holder's meetings", async () => {
+    await run(["customer", "add", "acme", "Acme"]);
+    await run(["person", "add", "acme", "Ann", "AN"]);
+    await run(["person", "add", "acme", "Bob", "BO"]);
+    await client.query(
+      "UPDATE people SET granola_key_enc = 'k1.ggg.hhh.iii', granola_status = 'ok', granola_checked_at = now(), granola_key_set_at = now()",
+    );
+    await run(["person", "reset", "acme", "AN"]);
+    const r = await client.query(
+      "SELECT owner_key, granola_key_enc, granola_status, granola_checked_at IS NULL AS no_check, granola_key_set_at IS NULL AS no_set FROM people ORDER BY owner_key",
+    );
+    expect(r.rows).toEqual([
+      { owner_key: "AN", granola_key_enc: null, granola_status: null, no_check: true, no_set: true },
+      { owner_key: "BO", granola_key_enc: "k1.ggg.hhh.iii", granola_status: "ok", no_check: false, no_set: false },
+    ]);
+  });
+
   it("passcode-from-env hashes without printing the value", async () => {
     await run(["customer", "add", "acme", "Acme"]);
     const code = await run(["person", "add", "acme", "Vince", "VF", "--passcode-from-env", "MONSOON_PASSCODE"], {

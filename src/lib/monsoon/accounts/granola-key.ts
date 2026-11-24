@@ -37,9 +37,17 @@ export async function loadGranolaKeyState(who: Who): Promise<GranolaKeyState> {
   if (!row) throw new Error("Person not found");
   const enc = (row.granola_key_enc as string | null) ?? null;
   if (enc === null) return { status: "missing", last4: null, setAt: null, checkedAt: null };
+  // A key that can no longer be read is as good as refused: the screen must still load so the
+  // person can paste a new one or disconnect.
+  let last4: string | null = null;
+  try {
+    last4 = decryptSecret(enc, who.customerId, field(who)).slice(-4);
+  } catch {
+    last4 = null;
+  }
   return {
-    status: (row.granola_status as GranolaStatus | null) ?? "ok",
-    last4: decryptSecret(enc, who.customerId, field(who)).slice(-4),
+    status: last4 === null ? "key_rejected" : ((row.granola_status as GranolaStatus | null) ?? "ok"),
+    last4,
     setAt: iso(row.granola_key_set_at),
     checkedAt: iso(row.granola_checked_at),
   };

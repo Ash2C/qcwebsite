@@ -265,7 +265,8 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
           if (sub === "reset") {
             const passcode = generatePasscode();
             r = await db.query(
-              "UPDATE people SET passcode_hash = $3, session_no = session_no + 1 WHERE customer_id = $1 AND owner_key = $2 RETURNING id",
+              // A reset can hand the seat to someone else: their Granola connection does not go with it.
+              "UPDATE people SET passcode_hash = $3, session_no = session_no + 1, granola_key_enc = NULL, granola_status = NULL, granola_checked_at = NULL, granola_key_set_at = NULL WHERE customer_id = $1 AND owner_key = $2 RETURNING id",
               [c.id, owner, await hashPasscode(passcode)],
             );
             if (r.rowCount) {

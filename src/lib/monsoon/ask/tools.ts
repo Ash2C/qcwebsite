@@ -31,7 +31,12 @@ import {
  */
 export type Ref = { memberId: string; name: string; company: string | null; kind: MemberKind; personId?: string; orgId?: string };
 /** The signed-in person's own Granola key, and where a refusal of it is reported. */
-export type GranolaAccess = { key: string; onStatus?: (status: "key_rejected" | "no_access") => void };
+export type GranolaAccess = {
+  key: string;
+  onStatus?: (status: "key_rejected" | "no_access") => void;
+  /** Set once Granola fails to answer in this request; later meeting calls then skip it. */
+  down?: boolean;
+};
 export type ToolContext = {
   db: ClientBase;
   /** The signed-in customer's id; every proposal is bound to it. Never from a request body. */
@@ -468,6 +473,8 @@ const PASSAGES_PER_MEETING = 3;
  * contact refs, never a proposal. Every failure is a plain sentence the model can relay.
  */
 async function meetingTool(ctx: ToolContext, granola: GranolaAccess, name: string, a: Record<string, string | number>): Promise<ToolOutcome> {
+  // A Granola that did not answer once is not waited on again in this request: the time is the CRM's.
+  if (granola.down) return fail(GRANOLA_DOWN);
   // Eight seconds, or what is left of the request less three; with none left the client asks nothing.
   const opts = { timeoutMs: Math.min(GRANOLA_TIMEOUT_MS, (ctx.remainingMs ? ctx.remainingMs() : Infinity) - 3000) };
   const given = (key: string): string | undefined => {
@@ -489,7 +496,10 @@ async function meetingTool(ctx: ToolContext, granola: GranolaAccess, name: strin
   };
   /** `one`: the call named a single meeting, so "not found" is about that meeting. */
   const refused = (failure: GranolaFailure, one: boolean): ToolOutcome => {
-    if (failure === "busy") return fail(GRANOLA_DOWN);
+    if (failure === "busy") {
+      granola.down = true;
+      return fail(GRANOLA_DOWN);
+    }
     if (failure === "not_found") return fail(one ? NO_MEETING : GRANOLA_REFUSED);
     try {
       granola.onStatus?.(failure);

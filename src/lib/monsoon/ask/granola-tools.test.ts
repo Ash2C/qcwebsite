@@ -22,6 +22,8 @@ const NAMES = ["search_meetings", "get_meeting", "search_meeting_transcripts"];
 beforeEach(() => {
   for (const f of Object.values(g)) f.mockReset();
   onStatus.mockReset();
+  // Each test is its own request: Granola is not remembered as down.
+  delete ctx.granola!.down;
 });
 
 describe("the tool list", () => {
@@ -230,6 +232,26 @@ describe("time and failures", () => {
     }
   });
 
+  it("once Granola has failed to answer in a request, later meeting calls in it do not wait on Granola again", async () => {
+    const access = { key: KEY, onStatus };
+    const one: ToolContext = { ...base, granola: access };
+    g.searchGranolaNotes.mockResolvedValue({ ok: false, failure: "busy" });
+    const down = { result: { error: "Granola could not be reached." }, refs: [] };
+    expect(await runTool(one, "search_meetings", {})).toEqual(down);
+    expect(await runTool(one, "search_meetings", { keywords: "price" })).toEqual(down);
+    expect(await runTool({ ...one }, "get_meeting", { meeting_id: MEETING })).toEqual(down);
+    expect(await runTool(one, "search_meeting_transcripts", { keywords: "price" })).toEqual(down);
+    expect(g.searchGranolaNotes).toHaveBeenCalledTimes(1);
+    expect(g.getGranolaNote).not.toHaveBeenCalled();
+    expect(g.searchGranolaTranscripts).not.toHaveBeenCalled();
+    // The next request starts fresh.
+    g.searchGranolaNotes.mockResolvedValue({ ok: true, meetings: [] });
+    expect(await runTool({ ...base, granola: { key: KEY, onStatus } }, "search_meetings", {})).toEqual({
+      result: { source: "Granola", meetings: [] },
+      refs: [],
+    });
+  });
+
   it("a refused key is said plainly and its status passed on; a busy Granola is said plainly and nothing is recorded", async () => {
     const calls: [string, (typeof g)[keyof typeof g], Record<string, string>][] = [
       ["search_meetings", g.searchGranolaNotes, {}],
@@ -247,6 +269,7 @@ describe("time and failures", () => {
       fn.mockResolvedValue({ ok: false, failure: "busy" });
       expect(await runTool(ctx, name, input)).toEqual({ result: { error: "Granola could not be reached." }, refs: [] });
       expect(onStatus).not.toHaveBeenCalled();
+      delete ctx.granola!.down;
     }
   });
 
