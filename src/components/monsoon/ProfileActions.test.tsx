@@ -721,6 +721,32 @@ describe("Research", () => {
     expect(screen.queryByText("Research: Jane Tan")).toBeNull();
   });
 
+  it("a research result that adds nothing is a headed box, brought into view", async () => {
+    const user = userEvent.setup();
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    try {
+      m.researchContact.mockResolvedValueOnce({
+        status: 200,
+        body: { status: "none", message: "I found several people with this name and can't tell which is yours." },
+      } as never);
+      view();
+      await click(user, "Research");
+      const box = await screen.findByRole("status");
+      expect(box).toHaveTextContent("Research finished: nothing to add");
+      expect(box).toHaveTextContent("I found several people with this name and can't tell which is yours.");
+      await waitFor(() => expect(scroll).toHaveBeenCalled());
+
+      m.researchContact.mockRejectedValueOnce(new Error("net"));
+      await click(user, "Research");
+      const failed = await screen.findByRole("alert");
+      expect(failed).toHaveTextContent("Research did not run");
+      expect(failed).toHaveTextContent("Could not run research. Check signal and try again.");
+    } finally {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
   it("shows a none result as a neutral status and a failure as an alert", async () => {
     const user = userEvent.setup();
     m.researchContact.mockResolvedValueOnce({ status: 200, body: { status: "none", message: "Nothing I'd trust. No changes suggested." } } as never);

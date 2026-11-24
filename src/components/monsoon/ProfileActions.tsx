@@ -100,6 +100,11 @@ export default function ProfileActions({
   const [researching, setResearching] = useState(false);
   const [researchNote, setResearchNote] = useState<{ text: string; error: boolean } | null>(null);
   const researchingRef = useRef(false);
+  // Where a finished research run shows its result; brought into view so the outcome is not missed.
+  const resultRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!researching) resultRef.current?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+  }, [researching, researchNote]);
   const tickedRef = useRef<string[]>([]);
   // The estate and person on screen now, so a result for another one is dropped.
   const scopeRef = useRef("");
@@ -337,18 +342,29 @@ export default function ProfileActions({
         </div>
       )}
       {researching && (
-        <p role="status" className="flex items-center gap-2 break-words px-1 text-[15px] text-neutral-600 dark:text-neutral-300">
-          <MonsoonLoader className="h-8 w-8" />
+        <p
+          role="status"
+          className="flex items-center gap-3 break-words rounded-2xl border-2 border-[#0E7FA6]/40 bg-white p-4 text-[17px] font-medium text-neutral-900 dark:border-[#6AE6FF]/40 dark:bg-[#0E1822] dark:text-white"
+        >
+          <MonsoonLoader className="h-10 w-10 shrink-0" />
           {`Researching ${p.name}${p.company ? ` at ${p.company}` : ""}...`}
         </p>
       )}
       {researchNote && (
-        <p
+        <div
+          ref={resultRef}
           role={researchNote.error ? "alert" : "status"}
-          className={researchNote.error ? alertClass : "break-words px-1 text-[15px] text-neutral-600 dark:text-neutral-300"}
+          className={`flex flex-col gap-1.5 rounded-2xl border-2 p-4 ${
+            researchNote.error
+              ? "border-red-600/50 bg-red-50 text-red-900 dark:border-[#8A2F2F] dark:bg-[#2B1414] dark:text-[#F3CFCF]"
+              : "border-amber-600/50 bg-amber-50 text-amber-950 dark:border-[#8A6A1F] dark:bg-[#2B2210] dark:text-[#F3E2B8]"
+          }`}
         >
-          {researchNote.text}
-        </p>
+          <p className="text-[13px] font-semibold uppercase tracking-wide">
+            {researchNote.error ? "Research did not run" : "Research finished: nothing to add"}
+          </p>
+          <p className="break-words text-[17px] font-medium leading-snug">{researchNote.text}</p>
+        </div>
       )}
 
       {panel === "note" && (
@@ -450,6 +466,7 @@ export default function ProfileActions({
       )}
 
       {cardState && cardState.signed.proposal.kind === "apply_research" && (
+        <div ref={resultRef}>
         <ResearchCard
           key={cardState.id}
           signed={cardState.signed}
@@ -468,6 +485,7 @@ export default function ProfileActions({
             if (cardRef.current?.state === "open") setCard(null);
           }}
         />
+        </div>
       )}
       {cardState && cardState.signed.proposal.kind !== "apply_research" && (
         <ChangeCard
