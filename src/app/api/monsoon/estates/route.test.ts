@@ -49,12 +49,12 @@ describe("GET /api/monsoon/estates", () => {
     expect("claude" in (await res.json())).toBe(false);
   });
 
-  it("lists the account's pipelines with roles, plus person and customer names", async () => {
+  it("lists the account's pipelines with roles, plus the person (id and name) and the customer name", async () => {
     signInAs(fakeAccount({ pipelines: PIPELINES, db: dbWith(1) }));
     const res = await GET(request());
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.person).toEqual({ name: "Vincent" });
+    expect(body.person).toEqual({ id: "00000000-0000-4000-8000-000000000002", name: "Vincent" });
     expect(body.customer).toEqual({ name: "Test Co" });
     expect(body.estates[0]).toEqual({
       key: "a",

@@ -45,7 +45,8 @@ export async function GET(request: Request) {
   return NextResponse.json({
     estates,
     ...(claude ? { claude: { status: claude.status } } : {}),
-    person: { name: account.person.name },
+    // The id lets the app tell when a different person has signed in on the same phone.
+    person: { id: account.person.id, name: account.person.name },
     customer: { name: account.customer.name },
   });
 }
