@@ -700,35 +700,41 @@ export default function MonsoonApp() {
             onClick={() => setKeyOpen(true)}
           />
         </div>
-        {personName && <p className="px-1 text-[13px] text-neutral-500 dark:text-neutral-400">{personName}</p>}
-
-        <div
-          role="group"
-          aria-label="Estate"
-          className={`grid gap-1 rounded-xl bg-neutral-200/80 p-1 dark:bg-white/10 ${
-            estates.length === 1 ? "grid-cols-1" : "grid-cols-2"
-          }`}
-        >
-          {estates.map((e) => {
-            const selected = e.key === estateKey;
-            return (
-              <button
-                key={e.key}
-                type="button"
-                aria-pressed={selected}
-                disabled={!e.available || batchStarted || tidying || reading || batchRunning || askBusy || profileBusy}
-                onClick={() => chooseEstate(e)}
-                className={`min-h-[44px] rounded-lg px-2 text-[16px] font-semibold disabled:opacity-40 ${
-                  selected
-                    ? "bg-white text-neutral-900 shadow-sm dark:bg-[#1F3A4A] dark:text-white"
-                    : "text-neutral-600 dark:text-neutral-300"
-                }`}
-              >
-                {e.available ? e.label : `${e.label} (unavailable)`}
-              </button>
-            );
-          })}
-        </div>
+        {/* The person's name and, only for an account with more than one estate, the estates as small
+            text beside it: the one in use is marked, a tap on another switches. One estate needs no chooser. */}
+        {(personName || estates.length > 1) && (
+          <div className="-my-1 flex flex-wrap items-center px-1 text-[13px] text-neutral-500 dark:text-neutral-400">
+            {personName && <p>{personName}</p>}
+            {estates.length > 1 && (
+              <div role="group" aria-label="Estate" className="flex flex-wrap items-center">
+                {personName && (
+                  <span aria-hidden="true" className="pl-2">
+                    ·
+                  </span>
+                )}
+                {estates.map((e) => {
+                  const selected = e.key === estateKey;
+                  return (
+                    <button
+                      key={e.key}
+                      type="button"
+                      aria-pressed={selected}
+                      disabled={!e.available || batchStarted || tidying || reading || batchRunning || askBusy || profileBusy}
+                      onClick={() => chooseEstate(e)}
+                      className={`min-h-[40px] rounded-md px-2 text-[13px] disabled:opacity-40 ${
+                        selected
+                          ? "font-semibold text-[#0E7FA6] underline underline-offset-4 dark:text-[#6AE6FF]"
+                          : "text-neutral-500 dark:text-neutral-400"
+                      }`}
+                    >
+                      {e.available ? e.label : `${e.label} (unavailable)`}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
         <div
           role="group"

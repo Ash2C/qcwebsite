@@ -258,17 +258,24 @@ describe("MonsoonApp", () => {
     expect(screen.getByRole("button", { name: "Claude key needed" })).toBeInTheDocument();
   });
 
-  it("a single estate takes the full width; two share the row", async () => {
-    m.loadEstates.mockResolvedValue({ status: 200, body: { estates: [ESTATES.estates[0]] } });
+  it("one estate shows no estate chooser; two are small text beside the person's name", async () => {
+    m.loadEstates.mockResolvedValue({ status: 200, body: { estates: [ESTATES.estates[0]], person: { name: "Dana Lee" } } });
     const one = render(<MonsoonApp />);
     await ready();
-    expect(screen.getByRole("group", { name: "Estate" })).toHaveClass("grid-cols-1");
+    expect(screen.queryByRole("group", { name: "Estate" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Traxo" })).toBeNull();
+    expect(screen.getByText("Dana Lee")).toBeInTheDocument();
     one.unmount();
 
-    signedIn();
+    m.loadEstates.mockResolvedValue({ status: 200, body: { ...ESTATES, person: { name: "Dana Lee" } } });
     render(<MonsoonApp />);
     await ready();
-    expect(screen.getByRole("group", { name: "Estate" })).toHaveClass("grid-cols-2");
+    const group = screen.getByRole("group", { name: "Estate" });
+    // On the same line as the name, not a bar of its own.
+    expect(group.parentElement).toContainElement(screen.getByText("Dana Lee"));
+    expect(within(group).getByRole("button", { name: "Traxo" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.setup().click(within(group).getByRole("button", { name: "Zero One" }));
+    expect(within(group).getByRole("button", { name: "Zero One" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("fills the form from a photo", async () => {
