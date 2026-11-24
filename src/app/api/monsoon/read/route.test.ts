@@ -182,11 +182,20 @@ describe("POST /api/monsoon/read", () => {
     expect(JSON.stringify(spy.mock.calls)).not.toContain("secret detail");
   });
 
-  it("logs the numeric status when the error has one, still without the message", async () => {
+  it("answers 409 claude_no_credit when the account is out of credit", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    extractCards.mockRejectedValue(Object.assign(new Error("Your credit balance is too low"), { status: 400 }));
+    const res = await POST(await post(formWith(new Blob(["ABC"], { type: "image/png" }))));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "claude_no_credit" });
+  });
+
+  it("answers 503 claude_busy when Claude is rate-limited, logging the status without the message", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     extractCards.mockRejectedValue(Object.assign(new Error("secret detail"), { status: 429 }));
     const res = await POST(await post(formWith(new Blob(["ABC"], { type: "image/png" }))));
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "claude_busy" });
     expect(spy.mock.calls[0]).toContain(429);
     expect(JSON.stringify(spy.mock.calls)).not.toContain("secret detail");
   });

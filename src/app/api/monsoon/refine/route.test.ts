@@ -115,12 +115,20 @@ describe("POST /api/monsoon/refine", () => {
     expect(account.record).not.toHaveBeenCalled();
   });
 
-  it("502 with the generic body when the customer has no Claude key", async () => {
+  it("409 claude_no_credit when the account is out of credit", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    refineContact.mockRejectedValue(Object.assign(new Error("Your credit balance is too low"), { status: 400 }));
+    const res = await POST(req(valid()));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "claude_no_credit" });
+  });
+
+  it("409 claude_key_missing when the customer has no Claude key", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     signInAs(fakeAccount());
     const res = await POST(req(valid()));
-    expect(res.status).toBe(502);
-    expect(await res.json()).toEqual({ error: "Could not tidy the notes" });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "claude_key_missing" });
     expect(refineContact).not.toHaveBeenCalled();
   });
 

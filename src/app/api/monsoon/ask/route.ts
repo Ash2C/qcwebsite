@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
+import { claudeFailureResponse } from "@/lib/monsoon/claude-failure";
 import { runAsk, type AskMessage, type ModelClient } from "@/lib/monsoon/ask/loop";
 import type { Ref } from "@/lib/monsoon/ask/tools";
 import { readJson } from "@/lib/monsoon/body";
@@ -119,6 +120,6 @@ export async function POST(request: Request) {
     // Name and status only: messages can carry questions, contact data or connection details.
     const status = (err as { status?: unknown })?.status;
     console.error("monsoon: ask failed", err instanceof Error ? err.name : "error", ...(typeof status === "number" ? [status] : []));
-    return NextResponse.json({ error: "Could not get an answer" }, { status: 502 });
+    return claudeFailureResponse(err) ?? NextResponse.json({ error: "Could not get an answer" }, { status: 502 });
   }
 }

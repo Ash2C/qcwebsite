@@ -1,5 +1,6 @@
 "use client";
 
+import { claudeFailureText } from "./claudeFailure";
 import MonsoonLoader from "./MonsoonLoader";
 import MonsoonLogo from "./MonsoonLogo";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -363,16 +364,13 @@ export default function MonsoonApp() {
           notes: prev.notes,
         }));
       } else {
-        // The account's Claude key, not the photo, is the problem: trying again would not help.
-        const reason = res.status === 409 && "error" in res.body ? res.body.error : "";
+        // When the account's Claude key, not the photo, is the problem, say so.
+        const claude = claudeFailureText(res.body, "Photos cannot be read");
         setMessage({
           tone: "error",
-          text:
-            reason === "claude_key_missing"
-              ? "Photos cannot be read yet: this account has no Claude API key. Add it with your Monsoon setup link, or type the details."
-              : reason === "claude_key_rejected"
-                ? "Photos cannot be read: Claude did not accept this account's API key (it may have expired or been revoked). Type the details for now."
-                : "Could not read the photo. Try again or type the details.",
+          text: claude
+            ? `${claude} You can type the details instead.`
+            : "Could not read the photo. Try again or type the details.",
         });
       }
     } catch {

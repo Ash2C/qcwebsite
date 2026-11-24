@@ -107,6 +107,21 @@ describe("SpeakNotes", () => {
     expect(lastDraft).toBe("keep me");
   });
 
+  it("a Claude problem names the problem", async () => {
+    const user = userEvent.setup();
+    m.refineCard.mockResolvedValue({ status: 409, body: { error: "claude_no_credit" } });
+    render(<Harness />);
+    await openIt(user);
+    await user.type(screen.getByRole("textbox"), "call her");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    expect(
+      await screen.findByText(
+        "Notes cannot be tidied: this account's Claude API key is out of credit. Add credit in the Claude Console.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use as typed" })).toBeInTheDocument();
+  });
+
   it("a 502 shows the error and Use as typed applies notes plus the draft", async () => {
     const user = userEvent.setup();
     m.refineCard.mockResolvedValue({ status: 502, body: { error: "Could not tidy the notes" } });

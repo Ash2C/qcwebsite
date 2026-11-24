@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
+import { claudeFailureResponse } from "@/lib/monsoon/claude-failure";
 import { PROPOSAL_TTL_MS, signProposal, verifyProposal, type Proposal, type SignedProposal } from "@/lib/monsoon/ask/proposal";
 import { readJson } from "@/lib/monsoon/body";
 import { hasAnchor, runResearch, type ResearchRun } from "@/lib/monsoon/research";
@@ -75,14 +76,17 @@ export async function POST(request: Request) {
 
   let run: ResearchRun;
   try {
-    // The customer's own key and model (NotConnected without a key, refused model: both 502 here).
+    // The customer's own key and model (a missing key is named to the app; a refused model is a 502).
     const client = account.anthropic({ timeout: RESEARCH_TIMEOUT_MS });
     run = await runResearch(client, account.model(), subject, { timeoutMs: RESEARCH_TIMEOUT_MS });
   } catch (err) {
     // Class name and status only: the message can carry the query or contact data.
     const status = (err as { status?: unknown })?.status;
     console.error("monsoon: research failed", (err as object)?.constructor?.name ?? "error", typeof status === "number" ? status : "");
-    return NextResponse.json({ error: "Could not run research. Check signal and try again." }, { status: 502 });
+    return (
+      claudeFailureResponse(err) ??
+      NextResponse.json({ error: "Could not run research. Check signal and try again." }, { status: 502 })
+    );
   }
 
   // The model answered: from here every outcome but a 5xx counts as a research run.

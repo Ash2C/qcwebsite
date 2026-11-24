@@ -184,6 +184,17 @@ describe("AskPanel", () => {
     resolve(answer("late"));
   });
 
+  it("a Claude problem restores the question and names the problem instead of the signal", async () => {
+    const user = userEvent.setup();
+    m.askCrm.mockResolvedValue({ status: 409, body: { error: "claude_key_missing" } });
+    render(<Harness />);
+    await ask(user, "Why?");
+    expect(
+      await screen.findByText("Ask is not available yet: this account has no Claude API key. Add it with your Monsoon setup link."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Why?");
+  });
+
   it("a 502 restores the question and shows the failure line", async () => {
     const user = userEvent.setup();
     m.askCrm.mockResolvedValue({ status: 502, body: { error: "x" } });

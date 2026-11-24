@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
+import { claudeFailureResponse } from "@/lib/monsoon/claude-failure";
 import { readJson } from "@/lib/monsoon/body";
 import {
   MAX_FIELD,
@@ -64,6 +65,6 @@ export async function POST(request: Request) {
       err instanceof Error ? err.name : "error",
       typeof status === "number" ? status : "",
     );
-    return NextResponse.json({ error: "Could not tidy the notes" }, { status: 502 });
+    return claudeFailureResponse(err) ?? NextResponse.json({ error: "Could not tidy the notes" }, { status: 502 });
   }
 }

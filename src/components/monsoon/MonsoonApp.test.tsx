@@ -264,7 +264,7 @@ describe("MonsoonApp", () => {
     await pickPhoto(user);
     expect(
       await screen.findByText(
-        "Photos cannot be read yet: this account has no Claude API key. Add it with your Monsoon setup link, or type the details.",
+        "Photos cannot be read yet: this account has no Claude API key. Add it with your Monsoon setup link. You can type the details instead.",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Could not read the photo/)).not.toBeInTheDocument();
@@ -279,7 +279,7 @@ describe("MonsoonApp", () => {
     await pickPhoto(user);
     expect(
       await screen.findByText(
-        "Photos cannot be read: Claude did not accept this account's API key (it may have expired or been revoked). Type the details for now.",
+        "Photos cannot be read: Claude did not accept this account's API key. It may have expired, been revoked or lack permission. You can type the details instead.",
       ),
     ).toBeInTheDocument();
   });

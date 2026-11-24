@@ -659,6 +659,16 @@ describe("Research", () => {
     expect(screen.getByRole("button", { name: "Research" })).toBeEnabled();
   });
 
+  it("a Claude problem names the problem instead of the signal", async () => {
+    const user = userEvent.setup();
+    m.researchContact.mockResolvedValueOnce({ status: 503, body: { error: "claude_busy" } } as never);
+    view();
+    await click(user, "Research");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Research cannot run right now: Claude is busy or this account's rate limit was reached. Try again in a minute.",
+    );
+  });
+
   it("shows the failure copy, and goes to sign-in on a 401", async () => {
     const user = userEvent.setup();
     m.researchContact.mockRejectedValueOnce(new Error("net"));

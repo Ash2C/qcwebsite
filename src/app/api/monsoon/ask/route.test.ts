@@ -233,15 +233,32 @@ describe("POST /api/monsoon/ask", () => {
     expect((await POST(post(turn(ref(P))))).status).toBe(400);
   });
 
+  it("answers 503 claude_busy when Claude is overloaded", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    runAsk.mockRejectedValue(Object.assign(new Error("secret"), { name: "APIError", status: 529 }));
+    const res = await POST(post(valid()));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "claude_busy" });
+    expect(account.record).not.toHaveBeenCalled();
+  });
+
+  it("answers 409 claude_key_rejected when Claude refuses the key", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    runAsk.mockRejectedValue(Object.assign(new Error("secret"), { name: "APIError", status: 401 }));
+    const res = await POST(post(valid()));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "claude_key_rejected" });
+  });
+
   it("answers 502 and logs only the error name and status when the loop throws", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const err = Object.assign(new Error("secret question text postgres://u:pw@h"), { name: "APIError", status: 529 });
+    const err = Object.assign(new Error("secret question text postgres://u:pw@h"), { name: "APIError", status: 422 });
     runAsk.mockRejectedValue(err);
     const res = await POST(post(valid()));
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: "Could not get an answer" });
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy.mock.calls[0]).toEqual(["monsoon: ask failed", "APIError", 529]);
+    expect(spy.mock.calls[0]).toEqual(["monsoon: ask failed", "APIError", 422]);
     expect(JSON.stringify(spy.mock.calls)).not.toContain("secret");
     expect(account.record).not.toHaveBeenCalled();
   });
@@ -258,10 +275,12 @@ describe("POST /api/monsoon/ask", () => {
     expect(runAsk.mock.calls[0][0].customerId).toBe(CUSTOMER);
   });
 
-  it("answers 502 without a Claude key and records nothing", async () => {
+  it("answers 409 claude_key_missing without a Claude key and records nothing", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     signInAs(fakeAccount({ pipelines: PIPELINES, db: fakeDb }));
-    expect((await POST(post(valid()))).status).toBe(502);
+    const res = await POST(post(valid()));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "claude_key_missing" });
     expect(runAsk).not.toHaveBeenCalled();
   });
 });

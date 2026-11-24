@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { NotConnected, requireAccount } from "@/lib/monsoon/accounts/account";
+import { requireAccount } from "@/lib/monsoon/accounts/account";
+import { claudeFailureResponse } from "@/lib/monsoon/claude-failure";
 import { extractCards } from "@/lib/monsoon/extract";
 import { matchCards, type CardMatch } from "@/lib/monsoon/match";
 
@@ -94,15 +95,7 @@ export async function POST(request: Request) {
       err instanceof Error ? err.name : "error",
       typeof status === "number" ? status : ""
     );
-    // The account's Claude key is the problem, not the photo: say so, so the app can tell the
-    // person. 409, never 401: the app reads 401 as "signed out". (A NotConnected pipeline is
-    // caught by the match block above, so here it can only be the key.)
-    if (err instanceof NotConnected) {
-      return NextResponse.json({ error: "claude_key_missing" }, { status: 409 });
-    }
-    if (status === 401) {
-      return NextResponse.json({ error: "claude_key_rejected" }, { status: 409 });
-    }
-    return NextResponse.json({ error: "Could not read the photo" }, { status: 502 });
+    // The account's Claude key is the problem, not the photo: say so, so the app can tell the person.
+    return claudeFailureResponse(err) ?? NextResponse.json({ error: "Could not read the photo" }, { status: 502 });
   }
 }

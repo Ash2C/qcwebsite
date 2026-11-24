@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AskMessage } from "@/lib/monsoon/ask/loop";
 import type { Ref, ResearchOffer } from "@/lib/monsoon/ask/tools";
+import { claudeFailureText } from "./claudeFailure";
 import MonsoonLoader from "./MonsoonLoader";
 import { askCrm, type EstateInfo } from "./api";
 import ChangeCard, { describeChange } from "./ChangeCard";
@@ -234,7 +235,7 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
         }));
       } else {
         restore();
-        setFailure(ASK_FAILURE);
+        setFailure(claudeFailureText(res.body, "Ask is not available") ?? ASK_FAILURE);
       }
     } catch {
       if (gen !== genRef.current) return;

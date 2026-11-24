@@ -252,14 +252,14 @@ describe("POST /api/monsoon/research", () => {
     }
   });
 
-  it("answers 502 when the model call throws, logging only the class and status", async () => {
+  it("answers 503 claude_busy when Claude is rate-limited, logging only the class and status", async () => {
     class RateLimitError extends Error {
       status = 429;
     }
     runResearch.mockRejectedValue(new RateLimitError("secret query about Jane Tan"));
     const res = await POST(post({ estate: "traxo", memberId: MEMBER }));
-    expect(res.status).toBe(502);
-    expect(await res.json()).toEqual({ error: "Could not run research. Check signal and try again." });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "claude_busy" });
     expect(account.record).not.toHaveBeenCalled();
     const logged = calls(console.error);
     expect(logged).toContain("monsoon: research failed");
@@ -277,9 +277,11 @@ describe("POST /api/monsoon/research", () => {
     expect(account.record).not.toHaveBeenCalled();
   });
 
-  it("answers 502 without a Claude key", async () => {
+  it("answers 409 claude_key_missing without a Claude key", async () => {
     signInAs(fakeAccount({ pipelines: PIPELINES, db: fakeClient }));
-    expect((await POST(post({ estate: "traxo", memberId: MEMBER }))).status).toBe(502);
+    const res = await POST(post({ estate: "traxo", memberId: MEMBER }));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "claude_key_missing" });
     expect(runResearch).not.toHaveBeenCalled();
   });
 

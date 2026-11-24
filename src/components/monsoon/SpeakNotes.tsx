@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import type { ContactFields, RefineOutput } from "@/lib/monsoon/refine";
+import { claudeFailureText } from "./claudeFailure";
 import { refineCard } from "./api";
 import type { Snapshot } from "./merge";
 import { secondaryButton } from "./styles";
@@ -61,7 +62,7 @@ export default function SpeakNotes({
       } else if (res.status === 400 && typeof (res.body as { error?: unknown }).error === "string") {
         setFailure((res.body as { error: string }).error);
       } else {
-        setFailure(GENERIC_FAILURE);
+        setFailure(claudeFailureText(res.body, "Notes cannot be tidied") ?? GENERIC_FAILURE);
       }
     } catch {
       setFailure(GENERIC_FAILURE);

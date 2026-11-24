@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { Profile } from "@/lib/monsoon/contacts";
+import { claudeFailureText } from "./claudeFailure";
 import MonsoonLoader from "./MonsoonLoader";
 import { proposeChange, researchContact, type EstateInfo, type ProposeBody } from "./api";
 import ChangeCard, { DETAIL_LABELS, MAX_NOTE } from "./ChangeCard";
@@ -234,7 +235,7 @@ export default function ProfileActions({
           setResearchNote({ text: res.body.message, error: false });
         }
       } else {
-        setResearchNote({ text: RESEARCH_FAILURE, error: true });
+        setResearchNote({ text: claudeFailureText(res.body, "Research cannot run") ?? RESEARCH_FAILURE, error: true });
       }
     } catch {
       if (!stale()) setResearchNote({ text: RESEARCH_FAILURE, error: true });
