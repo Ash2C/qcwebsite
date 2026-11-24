@@ -372,6 +372,26 @@ describe("MonsoonApp", () => {
     expect(screen.getByRole("button", { name: "Unlock" })).toBeEnabled();
   });
 
+  it("the big Ask button at the bottom opens Ask, with a guess about the person just saved", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.saveCard.mockResolvedValue({
+      status: 200,
+      body: { outcome: "added", person: "6f1c2a3e-0000-4000-8000-000000000001", org: null, role: "lp_prospect", filled: [] },
+    });
+    render(<MonsoonApp />);
+    await ready();
+    await typeName(user);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByRole("button", { name: "Jane Tan added to Traxo. Open contact" });
+    await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
+    expect(screen.getByRole("button", { name: "Ask" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Tell me about Jane Tan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Speak your question" })).toBeInTheDocument();
+    // In Ask itself the big button is gone: the question box is there.
+    expect(screen.queryByRole("button", { name: "Ask Monsoon" })).toBeNull();
+  });
+
   it("the saved line opens that person's contact card", async () => {
     const user = userEvent.setup();
     signedIn();

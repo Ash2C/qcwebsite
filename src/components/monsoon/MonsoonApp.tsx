@@ -61,7 +61,7 @@ const EMPTY_CARD: CardFields = {
 
 type Phase = "loading" | "locked" | "failed" | "app";
 // `open` is the person a save line is about, in the estate it was saved to: the line then opens their contact card.
-type Message = { tone: "ok" | "info" | "error"; text: string; open?: { estate: string; personId: string } };
+type Message = { tone: "ok" | "info" | "error"; text: string; open?: { estate: string; personId: string; name: string } };
 
 function readStoredEstate(): string {
   try {
@@ -491,7 +491,8 @@ export default function MonsoonApp() {
     });
     if (out.kind === "done") {
       // Every saved outcome names the person on file, so the line can open their contact card.
-      finish(out.text, "person" in result && result.person ? { estate: e.key, personId: result.person } : undefined);
+      const onFile = "name" in result && result.name ? result.name : name;
+      finish(out.text, "person" in result && result.person ? { estate: e.key, personId: result.person, name: onFile } : undefined);
       return;
     }
     if (out.kind === "prompt") {
@@ -643,10 +644,33 @@ export default function MonsoonApp() {
         ? "text-red-600 dark:text-red-400"
         : "text-neutral-900 dark:text-white";
 
+  const askBlocked = reading || saving || tidying || batchRunning || profileBusy;
+  const askButton = estate ? (
+    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-10 flex justify-center px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+      <button
+        type="button"
+        aria-label="Ask Monsoon"
+        disabled={askBlocked}
+        onClick={() => {
+          setKeyOpen(false);
+          setMode("ask");
+        }}
+        className="pointer-events-auto flex min-h-[60px] w-[62%] max-w-[280px] items-center justify-center gap-2.5 rounded-full bg-[#0E7FA6] px-6 text-[19px] font-semibold text-white shadow-lg shadow-black/25 active:bg-[#0D6A8F] disabled:bg-neutral-400 disabled:text-white dark:bg-[#6AE6FF] dark:text-[#04121A] dark:active:bg-[#3FB8D4] dark:disabled:bg-neutral-700 dark:disabled:text-neutral-400"
+      >
+        <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 5.5h16v10.5H10.5L6 20v-4H4z" />
+        </svg>
+        Ask
+      </button>
+    </div>
+  ) : null;
+  const roomForAsk = "pb-[calc(6rem+env(safe-area-inset-bottom))]";
+
   if (keyOpen) {
     return (
       <Shell>
-        <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
+        {askButton}
+        <main className={`mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pt-[max(1rem,env(safe-area-inset-top))] ${askButton ? roomForAsk : "pb-4"}`}>
           <ClaudeKeyPanel
             onBack={() => setKeyOpen(false)}
             onUnauthorized={() => {
@@ -662,7 +686,12 @@ export default function MonsoonApp() {
 
   return (
     <Shell>
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pb-4 pt-[max(1rem,env(safe-area-inset-top))]">
+      {mode !== "ask" && askButton}
+      <main
+        className={`mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pt-[max(1rem,env(safe-area-inset-top))] ${
+          mode !== "ask" && askButton ? roomForAsk : "pb-4"
+        }`}
+      >
         <div className="flex items-center justify-between gap-3 pt-2">
           <MonsoonLogo className="h-8 px-1" />
           <ClaudeChip
@@ -748,6 +777,7 @@ export default function MonsoonApp() {
             onResearch={openAndResearch}
             focusOnOpen={focusAsk}
             onFocused={() => setFocusAsk(false)}
+            suggested={message?.open && message.open.estate === estateKey ? [`Tell me about ${message.open.name}`] : []}
           />
         ) : batch && estate ? (
           <BatchReview

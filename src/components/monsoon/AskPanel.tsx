@@ -30,7 +30,8 @@ const MAX_SENT_CHARS = 50_000;
 const MAX_DRAFT = 2000;
 const ASK_FAILURE = "Could not get an answer. Check signal and try again.";
 const MAX_CHIPS = 5;
-const SUGGESTIONS = ["Who should I chase this week?", "Summarise the pipeline", "Tell me about "];
+const SUGGESTIONS = ["Who should I chase this week?", "Who did I add most recently?", "Summarise the pipeline", "Tell me about "];
+const SPEAK_HINT = "Tap the microphone on the keyboard and talk, then press Ask.";
 
 // The phone's local date, never the UTC one.
 export function localDate(): string {
@@ -113,6 +114,7 @@ export default function AskPanel({
   onResearch,
   focusOnOpen,
   onFocused,
+  suggested,
 }: {
   estate: EstateInfo;
   state: AskState;
@@ -125,7 +127,11 @@ export default function AskPanel({
   /** Focus the question box when this panel opens, then report it through onFocused. */
   focusOnOpen?: boolean;
   onFocused?: () => void;
+  /** Questions the app guesses from what was just done; shown before the standing ones. */
+  suggested?: string[];
 }) {
+  // Speaking is the iPhone keyboard's dictation into the question box; no audio is handled here.
+  const [speakHint, setSpeakHint] = useState(false);
   const [asking, setAsking] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const askRef = useRef(false);
@@ -297,7 +303,8 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
       <div className="flex flex-1 flex-col gap-3" aria-label="Conversation">
         {shown.length === 0 && (
           <div className="flex flex-col gap-2 pt-2">
-            {SUGGESTIONS.map((s) => (
+            <p className="px-1 text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Try asking</p>
+            {[...(suggested ?? []).filter((s) => !SUGGESTIONS.includes(s)), ...SUGGESTIONS].map((s) => (
               <button
                 key={s}
                 type="button"
@@ -364,10 +371,28 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
             {failure}
           </p>
         )}
+        {speakHint && state.draft === "" && (
+          <p className="px-1 text-[15px] text-neutral-600 dark:text-neutral-300">{SPEAK_HINT}</p>
+        )}
         <div ref={endRef} />
       </div>
 
       <div className="sticky bottom-0 -mx-4 mt-auto flex items-end gap-2 bg-[#f2f2f7]/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:bg-[#07090C]/90">
+        <button
+          type="button"
+          aria-label="Speak your question"
+          disabled={busy}
+          onClick={() => {
+            setSpeakHint(true);
+            inputRef.current?.focus();
+          }}
+          className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-2xl bg-white text-[#0E7FA6] shadow-sm ring-1 ring-black/5 active:bg-neutral-100 disabled:opacity-50 dark:bg-[#0E1822] dark:text-[#6AE6FF] dark:ring-white/10"
+        >
+          <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="9" y="3" width="6" height="11" rx="3" />
+            <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" />
+          </svg>
+        </button>
         <label htmlFor="ask-input" className="sr-only">
           Your question
         </label>

@@ -88,6 +88,27 @@ describe("AskPanel", () => {
     expect(screen.getByRole("button", { name: "Who should I chase this week?" })).toBeInTheDocument();
   });
 
+  it("shows the app's guesses first, and the speak button puts the cursor in the box with a hint", async () => {
+    const user = userEvent.setup();
+    function Guessing() {
+      const [state, setState] = useState<AskState>(EMPTY_ASK);
+      return (
+        <AskPanel estate={ESTATE} state={state} onChange={setState} onUnauthorized={() => {}} suggested={["Tell me about Jane Tan"]} />
+      );
+    }
+    render(<Guessing />);
+    const guesses = screen.getAllByRole("button").map((b) => b.textContent);
+    expect(guesses.indexOf("Tell me about Jane Tan")).toBeLessThan(guesses.indexOf("Who should I chase this week?"));
+    expect(screen.queryByText("Tap the microphone on the keyboard and talk, then press Ask.")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Speak your question" }));
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveFocus();
+    expect(screen.getByText("Tap the microphone on the keyboard and talk, then press Ask.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Tell me about Jane Tan" }));
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Tell me about Jane Tan");
+    expect(m.askCrm).not.toHaveBeenCalled();
+  });
+
   it("has the estate placeholder and a disabled Ask while blank", async () => {
     render(<Harness />);
     expect(screen.getByPlaceholderText("Ask about Traxo...")).toBeInTheDocument();
