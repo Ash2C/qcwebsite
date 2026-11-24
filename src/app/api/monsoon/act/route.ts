@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { ensureOwner } from "@/lib/monsoon/owners";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
 import type { ActivityAction } from "@/lib/monsoon/accounts/store";
-import { addNote, moveStage } from "@/lib/monsoon/ask/actions";
+import { addNote, moveStage, setPriority } from "@/lib/monsoon/ask/actions";
 import { verifyProposal, type Proposal } from "@/lib/monsoon/ask/proposal";
 import { vocabulary } from "@/lib/monsoon/ask/queries";
 import { readJson } from "@/lib/monsoon/body";
@@ -23,6 +23,8 @@ const MEMBER_FK = "touches_member_id_fkey";
 const ACTIVITY: Record<Proposal["kind"], ActivityAction> = {
   add_note: "act_note",
   move_stage: "act_stage",
+  // A priority change is a detail of the contact; the accounts activity log has no kind of its own for it.
+  set_priority: "act_details",
   update_details: "act_details",
   apply_research: "act_research",
 };
@@ -121,6 +123,18 @@ export async function POST(request: Request) {
           missing: `${proposal.targetName} is no longer on file; nothing changed.`,
           unlogged: `${proposal.targetName} is no longer on the pipeline, so the change could not be logged; nothing changed.`,
           collision: `Another ${done.name} is already on file there; nothing changed.`,
+        };
+        return { status: done.status, message: messages[done.status] };
+      }
+      if (proposal.kind === "set_priority") {
+        const who = proposal.memberName;
+        const done = await setPriority(db, proposal.memberId, proposal.fromPriority, proposal.toPriority, owner);
+        const now = done.priority === "high" ? "high priority" : done.priority ? `${done.priority} priority` : "not high priority";
+        const messages = {
+          set: proposal.toPriority === "high" ? `Done. ${who} is now high priority.` : `Done. ${who} is no longer high priority.`,
+          already: `${who} is already ${now}; nothing changed.`,
+          changed: `${who} is now ${now}; nothing changed.`,
+          missing: `${who} is no longer on the pipeline; nothing changed.`,
         };
         return { status: done.status, message: messages[done.status] };
       }

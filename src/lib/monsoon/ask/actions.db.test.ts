@@ -3,7 +3,7 @@ import type { Client } from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ensureOwner } from "../owners";
 import { testDb } from "../testing/db";
-import { addNote, moveStage, proposeNote, proposeStage } from "./actions";
+import { addNote, moveStage, proposeNote, proposePriority, proposeStage, setPriority } from "./actions";
 import { verifyProposal } from "./proposal";
 
 const NOW = 1_800_000_000_000;
@@ -206,6 +206,53 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
     await proposeStage(db, ZEROONE, { memberId: id.mLi }, "client", NOW);
     await proposeStage(db, ZEROONE, { personId: id.sam }, "client", NOW);
     expect(await snapshot()).toEqual(before);
+  });
+
+  describe("high priority", () => {
+    const priority = async (member: string) => (await db.query("SELECT priority FROM members WHERE id = $1", [member])).rows[0].priority;
+
+    it("proposes turning it on for a member, signed, and reads only", async () => {
+      const before = await snapshot();
+      const r = await proposePriority(db, ZEROONE, { memberId: id.mLi }, true, NOW);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.signed.proposal).toMatchObject({ kind: "set_priority", memberId: id.mLi, memberName: "Li Wei", fromPriority: null, toPriority: "high" });
+      expect(verifyProposal(r.signed.proposal, r.signed.signature, NOW)).toBe(true);
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("a person filed under a member company sets the company's priority, and says who it is about", async () => {
+      const r = await proposePriority(db, ZEROONE, { personId: id.jane }, true, NOW);
+      expect(r.ok && r.signed.proposal).toMatchObject({ memberId: id.mNw, memberName: "Northwind Capital", about: "Jane Tan" });
+    });
+
+    it("refuses when nothing would change, or the contact is not on the pipeline", async () => {
+      expect(await proposePriority(db, ZEROONE, { memberId: id.mLi }, false, NOW)).toEqual({ ok: false, reason: "Li Wei is not high priority." });
+      await db.query("UPDATE members SET priority = 'high' WHERE id = $1", [id.mLi]);
+      expect(await proposePriority(db, ZEROONE, { memberId: id.mLi }, true, NOW)).toEqual({ ok: false, reason: "Li Wei is already high priority." });
+      expect((await proposePriority(db, ZEROONE, { personId: id.sam }, true, NOW)).ok).toBe(false);
+    });
+
+    it("sets and clears it, logging each change on the timeline as a system entry by that person", async () => {
+      expect(await setPriority(db, id.mLi, null, "high", "VF")).toEqual({ status: "set", priority: "high" });
+      expect(await priority(id.mLi)).toBe("high");
+      expect(await setPriority(db, id.mLi, "high", null, "VF")).toEqual({ status: "set", priority: null });
+      expect(await priority(id.mLi)).toBeNull();
+      const log = await db.query("SELECT kind, by_whom, summary FROM touches WHERE member_id = $1 ORDER BY at", [id.mLi]);
+      expect(log.rows).toEqual([
+        { kind: "system", by_whom: "VF", summary: "Priority: (none) → high" },
+        { kind: "system", by_whom: "VF", summary: "Priority: high → (none)" },
+      ]);
+    });
+
+    it("writes nothing when it is already so, was changed in the meantime, or the member is gone", async () => {
+      await db.query("UPDATE members SET priority = 'medium' WHERE id = $1", [id.mLi]);
+      const before = await snapshot();
+      expect(await setPriority(db, id.mLi, null, "high", "VF")).toEqual({ status: "changed", priority: "medium" });
+      expect(await setPriority(db, id.mLi, "low", "medium", "VF")).toEqual({ status: "already", priority: "medium" });
+      expect(await setPriority(db, randomUUID(), null, "high", "VF")).toEqual({ status: "missing", priority: null });
+      expect(await snapshot()).toEqual(before);
+    });
   });
 
   describe("addNote", () => {

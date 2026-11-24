@@ -1,7 +1,7 @@
 // The two changes Ask can make. A propose function only reads; the write functions run in one
 // transaction each and are called by `act` after a signed proposal has been verified.
 import type { ClientBase } from "pg";
-import { PROPOSAL_TTL_MS, signProposal, type Binding, type Proposal, type SignedProposal } from "./proposal";
+import { PROPOSAL_TTL_MS, signProposal, type Binding, type Priority, type Proposal, type SignedProposal } from "./proposal";
 import { readOnly, vocabulary, type MemberKind } from "./queries";
 
 export type Target = { memberId?: string; personId?: string };
@@ -19,10 +19,11 @@ type Resolved = {
   company: string | null;
   about: string | null;
   stage: string;
+  priority: Priority | null;
 };
 type Resolution = { ok: true; member: Resolved } | { ok: false; reason: string };
 
-const MEMBER_SELECT = `SELECT m.id, m.stage, o.name AS org_name, p.name AS person_name, po.name AS person_company
+const MEMBER_SELECT = `SELECT m.id, m.stage, m.priority, o.name AS org_name, p.name AS person_name, po.name AS person_company
                          FROM members m
                          LEFT JOIN orgs o ON o.id = m.org_id
                          LEFT JOIN people p ON p.id = m.person_id
@@ -37,6 +38,7 @@ function resolved(row: Record<string, string | null>, about: string | null): Res
     company: person ? row.person_company : null,
     about,
     stage: row.stage as string,
+    priority: (row.priority as Priority | null) ?? null,
   };
 }
 
@@ -71,7 +73,12 @@ async function resolve(db: ClientBase, target: Target): Promise<Resolution> {
   return { ok: false, reason: NO_CONTACT };
 }
 
-function sign(member: Resolved, bind: Binding, nowMs: number, extra?: { fromStage: string; toStage: string }): SignedProposal {
+function sign(
+  member: Resolved,
+  bind: Binding,
+  nowMs: number,
+  extra?: { fromStage: string; toStage: string } | { fromPriority: Priority | null; toPriority: Priority | null },
+): SignedProposal {
   const base = {
     customer: bind.customer,
     estate: bind.estate,
@@ -82,7 +89,11 @@ function sign(member: Resolved, bind: Binding, nowMs: number, extra?: { fromStag
     about: member.about,
     expires: nowMs + PROPOSAL_TTL_MS,
   };
-  const proposal: Proposal = extra ? { kind: "move_stage", ...base, ...extra } : { kind: "add_note", ...base };
+  const proposal: Proposal = !extra
+    ? { kind: "add_note", ...base }
+    : "toStage" in extra
+      ? { kind: "move_stage", ...base, ...extra }
+      : { kind: "set_priority", ...base, ...extra };
   return { proposal, signature: signProposal(proposal) };
 }
 
@@ -126,6 +137,22 @@ export async function proposeStage(
   }
   if (stage === found.member.stage) return { ok: false, reason: `${found.member.memberName} is already in ${stage}.` };
   return { ok: true, signed: sign(found.member, bind, nowMs, { fromStage: found.member.stage, toStage: stage }) };
+}
+
+/** High priority on or off for the member a contact belongs to. Off clears the priority. */
+export async function proposePriority(
+  db: ClientBase,
+  bind: Binding,
+  target: Target,
+  high: boolean,
+  nowMs: number,
+): Promise<ProposeResult> {
+  const found = await resolve(db, target);
+  if (!found.ok) return found;
+  const { memberName, priority } = found.member;
+  if (high && priority === "high") return { ok: false, reason: `${memberName} is already high priority.` };
+  if (!high && priority !== "high") return { ok: false, reason: `${memberName} is not high priority.` };
+  return { ok: true, signed: sign(found.member, bind, nowMs, { fromPriority: priority, toPriority: high ? "high" : null }) };
 }
 
 /** Run `fn` in one read-committed transaction; commit when it asks to, otherwise roll back. */
@@ -190,5 +217,35 @@ export function moveStage(
       [memberId, owner, fromStage, toStage],
     );
     return { value: { status: "moved" as const, stage: toStage }, commit: true };
+  });
+}
+
+type PriorityStatus = "set" | "already" | "changed" | "missing";
+type PriorityResult = { status: PriorityStatus; priority: Priority | null };
+
+/**
+ * Sets a member's priority when it still is what the proposal saw. The change is logged on the
+ * timeline as a system entry (so it does not count as contact), with who made it.
+ */
+export function setPriority(
+  db: ClientBase,
+  memberId: string,
+  from: Priority | null,
+  to: Priority | null,
+  owner: string,
+): Promise<PriorityResult> {
+  return transaction<PriorityResult>(db, async () => {
+    const found = await db.query("SELECT priority FROM members WHERE id = $1 FOR UPDATE", [memberId]);
+    if (found.rows.length === 0) return { value: { status: "missing" as const, priority: null }, commit: false };
+    const current: Priority | null = found.rows[0].priority ?? null;
+    if (current === to) return { value: { status: "already" as const, priority: current }, commit: false };
+    if (current !== from) return { value: { status: "changed" as const, priority: current }, commit: false };
+    await db.query("UPDATE members SET priority = $1 WHERE id = $2", [to, memberId]);
+    await db.query("INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'system', $2, $3)", [
+      memberId,
+      owner,
+      `Priority: ${from ?? "(none)"} → ${to ?? "(none)"}`,
+    ]);
+    return { value: { status: "set" as const, priority: to }, commit: true };
   });
 }

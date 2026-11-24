@@ -184,6 +184,7 @@ export default function ProfileActions({
         : { personId: p.personId ?? undefined };
   const canNote = !isCompany || p.member !== null;
   const canMove = p.memberOf !== null && p.member !== null;
+  const isHigh = p.member?.priority === "high";
   // A company that is not on the pipeline has no timeline to log to, so it offers no changes at all.
   const offline = isCompany && p.member === null;
 
@@ -321,6 +322,25 @@ export default function ProfileActions({
           Not on the pipeline. Capture or add a person here to start a timeline.
         </p>
       ) : (
+        <>
+        {p.member !== null && (
+          <button
+            type="button"
+            aria-pressed={isHigh}
+            disabled={busy || openWork}
+            onClick={() => void propose({ kind: "set_priority", target: timelineTarget, high: !isHigh })}
+            className={`flex min-h-[48px] w-full items-center justify-between gap-3 rounded-xl px-4 text-[16px] font-semibold disabled:opacity-50 ${
+              isHigh
+                ? "bg-[#0E7FA6] text-white dark:bg-[#6AE6FF] dark:text-[#04121A]"
+                : "bg-neutral-100 text-neutral-700 dark:bg-white/10 dark:text-neutral-200"
+            }`}
+          >
+            <span>High priority</span>
+            <span aria-hidden="true" className="text-[14px] font-bold uppercase tracking-wide">
+              {isHigh ? "On" : "Off"}
+            </span>
+          </button>
+        )}
         <div className={`grid gap-2 ${buttons.length + (isCompany ? 0 : 1) === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
           {buttons.map((b) => (
             <button
@@ -340,6 +360,7 @@ export default function ProfileActions({
             </button>
           )}
         </div>
+        </>
       )}
       {researching && (
         <p

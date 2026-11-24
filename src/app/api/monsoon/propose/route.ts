@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
-import { proposeNote, proposeStage } from "@/lib/monsoon/ask/actions";
+import { proposeNote, proposePriority, proposeStage } from "@/lib/monsoon/ask/actions";
 import { readJson } from "@/lib/monsoon/body";
 import { DETAIL_LABELS, proposeDetails, type DetailInput } from "@/lib/monsoon/details";
 
@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 const MAX_BODY = 16_384;
-const KINDS = ["add_note", "move_stage", "update_details"];
+const KINDS = ["add_note", "move_stage", "set_priority", "update_details"];
 
 function bad(error: string) {
   return NextResponse.json({ error }, { status: 400 });
@@ -64,6 +64,8 @@ export async function POST(request: Request) {
   } else if (b.kind === "move_stage") {
     if (typeof b.stage !== "string") return bad("Invalid stage");
     stage = b.stage;
+  } else if (b.kind === "set_priority") {
+    if (typeof b.high !== "boolean") return bad("Invalid priority");
   } else {
     changes = parseChanges(b.changes);
     if (!changes) return bad("Invalid changes");
@@ -76,6 +78,9 @@ export async function POST(request: Request) {
     const result = await account.withDb(estate.key, async (db) => {
       if (b.kind === "add_note") return proposeNote(db, bind, { memberId: target.memberId, personId: target.personId }, text, nowMs);
       if (b.kind === "move_stage") return proposeStage(db, bind, { memberId: target.memberId, personId: target.personId }, stage, nowMs);
+      if (b.kind === "set_priority") {
+        return proposePriority(db, bind, { memberId: target.memberId, personId: target.personId }, b.high === true, nowMs);
+      }
       return proposeDetails(db, bind, target, changes as DetailInput, {
         nowMs,
         defaultRole: estate.defaultRole,

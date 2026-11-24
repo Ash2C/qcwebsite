@@ -34,6 +34,19 @@ export type Proposal =
       expires: number;
     }
   | {
+      kind: "set_priority";
+      customer: string;
+      estate: string;
+      memberId: string;
+      memberKind: MemberKind;
+      memberName: string;
+      company: string | null;
+      about: string | null;
+      fromPriority: Priority | null;
+      toPriority: Priority | null;
+      expires: number;
+    }
+  | {
       kind: "update_details";
       customer: string;
       estate: string;
@@ -58,6 +71,10 @@ export type Proposal =
       addsToPipeline: string | null;
       expires: number;
     };
+
+export const PRIORITIES = ["high", "medium", "low"] as const;
+export type Priority = (typeof PRIORITIES)[number];
+const isPriorityOrNull = (v: unknown): v is Priority | null => v === null || (PRIORITIES as readonly unknown[]).includes(v);
 
 export type ResearchField = "title" | "linkedin" | "country" | "email" | "phone" | "website";
 export type ResearchFinding = {
@@ -94,6 +111,7 @@ const COMMON = ["kind", "customer", "estate", "memberId", "memberKind", "memberN
 const KEYS: Record<string, readonly string[]> = {
   add_note: COMMON,
   move_stage: [...COMMON, "fromStage", "toStage"],
+  set_priority: [...COMMON, "fromPriority", "toPriority"],
   update_details: ["kind", "customer", "estate", "target", "targetName", "company", "changes", "logMemberId", "addsToPipeline", "expires"],
   apply_research: ["kind", "customer", "estate", "person", "company", "identity", "findings", "summarySources", "logMemberId", "addsToPipeline", "expires"],
 };
@@ -214,6 +232,9 @@ function wellFormed(p: unknown): p is Proposal {
   if (!isStringOrNull(o.company) || !isStringOrNull(o.about)) return false;
   if (typeof o.expires !== "number" || !Number.isFinite(o.expires)) return false;
   if (o.kind === "move_stage" && (!isString(o.fromStage) || !isString(o.toStage))) return false;
+  if (o.kind === "set_priority" && (!isPriorityOrNull(o.fromPriority) || !isPriorityOrNull(o.toPriority) || o.fromPriority === o.toPriority)) {
+    return false;
+  }
   return true;
 }
 

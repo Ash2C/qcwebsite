@@ -75,7 +75,7 @@ describe("ProfileActions buttons", () => {
   it("shows Add note, Move stage and Edit, and Ask about this contact", () => {
     view();
     expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual([
-      "Add note", "Move stage", "Edit", "Research", "Ask about this contact",
+      "High priorityOff", "Add note", "Move stage", "Edit", "Research", "Ask about this contact",
     ]);
   });
 
@@ -203,6 +203,38 @@ describe("Add note", () => {
     await click(user, "Continue");
     expect(await screen.findByRole("alert")).toHaveTextContent("Jane is on file but not on the pipeline.");
     expect(screen.getByPlaceholderText("Type or dictate a note")).toHaveValue("Hi");
+  });
+
+  it("High priority asks to turn it on, shows the change on a card, and reloads after Confirm", async () => {
+    const user = userEvent.setup();
+    const signed = {
+      proposal: {
+        kind: "set_priority", estate: "traxo", memberId: "m1", memberKind: "person", memberName: "Jane Tan",
+        company: "Acme Capital", about: null, fromPriority: null, toPriority: "high", customer: "c", expires: 1,
+      },
+      signature: "s".repeat(64),
+    };
+    m.proposeChange.mockResolvedValue({ status: 200, body: { ok: true, signed } } as never);
+    m.actOnCrm.mockResolvedValue({ status: 200, body: { status: "set", message: "Done. Jane Tan is now high priority." } } as never);
+    const h = view();
+    const toggle = screen.getByRole("button", { name: "High priority" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await user.click(toggle);
+    expect(m.proposeChange).toHaveBeenCalledWith({ estate: "traxo", kind: "set_priority", target: { memberId: "m1" }, high: true });
+    expect(await screen.findByText("High priority: off → on")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(await screen.findByText("Done. Jane Tan is now high priority.")).toBeInTheDocument();
+    expect(h.reload).toHaveBeenCalled();
+  });
+
+  it("High priority shows on for a high-priority contact and asks to turn it off", async () => {
+    const user = userEvent.setup();
+    m.proposeChange.mockResolvedValue({ status: 200, body: { ok: false, reason: "x" } } as never);
+    view({ ...PERSON, member: { ...PERSON.member, priority: "high" } });
+    const toggle = screen.getByRole("button", { name: "High priority" });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await user.click(toggle);
+    expect(m.proposeChange).toHaveBeenCalledWith({ estate: "traxo", kind: "set_priority", target: { memberId: "m1" }, high: false });
   });
 
   it("shows a failure when the request fails", async () => {
