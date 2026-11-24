@@ -378,6 +378,17 @@ describe("ContactsPanel tells Ask what is open", () => {
     expect(onViewing).toHaveBeenLastCalledWith(null);
   });
 
+  it("a new reload signal reads the list again when no profile is open", async () => {
+    m.searchContacts.mockResolvedValue(hits(SELF));
+    const { rerender } = render(<Harness reloadSignal={0} />);
+    await advance(0);
+    expect(m.searchContacts).toHaveBeenCalledTimes(1);
+    rerender(<Harness reloadSignal={1} />);
+    await advance(0);
+    expect(m.searchContacts).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Jane Tan")).toBeInTheDocument();
+  });
+
   it("a new reload signal reads the open profile again", async () => {
     m.searchContacts.mockResolvedValue(hits());
     m.loadProfile.mockResolvedValue(LOADED);

@@ -77,6 +77,9 @@ function parseMessages(value: unknown): AskMessage[] | string {
   return out;
 }
 
+// The lookup is a hint for the model: it must not eat the time the answer needs.
+const VIEWING_TIMEOUT_MS = 3000;
+
 type ViewingTarget = { memberId?: string; personId?: string; orgId?: string };
 
 /** The one id the phone says is open on screen: the first UUID-shaped one, nothing else from the body. */
@@ -93,7 +96,7 @@ function cleanViewing(value: unknown): ViewingTarget | null {
 async function resolveViewing(db: Client, target: ViewingTarget | null, today: string): Promise<Viewing | undefined> {
   if (!target) return undefined;
   try {
-    const p = await getProfile(db, target, today);
+    const p = await getProfile(db, target, today, { timeoutMs: VIEWING_TIMEOUT_MS });
     if (!p) return undefined;
     return {
       kind: p.kind,

@@ -302,7 +302,7 @@ describe("POST /api/monsoon/ask", () => {
       getProfile.mockResolvedValue(PROFILE);
       const res = await POST(post(valid({ viewing: { personId: M1, name: "Mallory", company: "Evil" } })));
       expect(res.status).toBe(200);
-      expect(getProfile).toHaveBeenCalledWith(fakeDb, { personId: M1 }, "2026-11-13");
+      expect(getProfile).toHaveBeenCalledWith(fakeDb, { personId: M1 }, "2026-11-13", { timeoutMs: 3000 });
       expect(viewingOf()).toEqual({
         kind: "person",
         name: "Jane Tan",
@@ -316,7 +316,7 @@ describe("POST /api/monsoon/ask", () => {
     it("uses the first of person, company, member id and ignores the others", async () => {
       getProfile.mockResolvedValue({ ...PROFILE, kind: "company", personId: null, member: null, company: null, name: "Acme Capital" });
       await POST(post(valid({ viewing: { orgId: M2, memberId: M1 } })));
-      expect(getProfile).toHaveBeenCalledWith(fakeDb, { orgId: M2 }, "2026-11-13");
+      expect(getProfile).toHaveBeenCalledWith(fakeDb, { orgId: M2 }, "2026-11-13", { timeoutMs: 3000 });
       expect(viewingOf()).toEqual({ kind: "company", name: "Acme Capital", company: null, personId: null, orgId: M2, memberId: null });
     });
 

@@ -105,7 +105,7 @@ export default function ContactsPanel({
   onAsk?: (text: string) => void;
   /** The loaded open profile, for Ask; null when none is on screen. */
   onViewing?: (viewing: AskViewing | null) => void;
-  /** A change to this number re-reads the open profile. */
+  /** A change to this number re-reads what is on screen: the open profile, or the list. */
   reloadSignal?: number;
 }) {
   const [hits, setHits] = useState<SiftHit[]>([]);
@@ -159,7 +159,8 @@ export default function ContactsPanel({
       live = false;
       clearTimeout(timer);
     };
-  }, [estate.key, term, tick, listing, high, sort, sifted]);
+    // reloadSignal: a change confirmed in Ask makes the rows (stage, next and last action) stale.
+  }, [estate.key, term, tick, listing, high, sort, sifted, reloadSignal]);
 
   const rows = estateChanged ? [] : hits;
   if (state.open && !estateChanged) {
