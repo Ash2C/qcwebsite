@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Profile } from "@/lib/monsoon/contacts";
 import { claudeFailureText } from "./claudeFailure";
 import MonsoonLoader from "./MonsoonLoader";
@@ -45,6 +46,12 @@ function stored(p: Profile, field: string): string {
   return value ?? "";
 }
 
+const PRIORITY_CHOICES: { key: "high" | "medium" | "low" | null; label: string }[] = [
+  { key: "high", label: "High priority" },
+  { key: "medium", label: "Medium priority" },
+  { key: "low", label: "Low priority" },
+  { key: null, label: "No priority" },
+];
 const panelBox = `${cardClass} flex min-w-0 flex-col gap-3 p-4`;
 const alertClass = "break-words text-[15px] font-medium text-red-600 dark:text-red-400";
 
@@ -65,7 +72,10 @@ export default function ProfileActions({
   draftKey,
   initialDraft,
   onDraft,
+  stagePick,
 }: {
+  /** The stage chooser, opened by the stage bubble under the name and drawn into its slot there. */
+  stagePick?: { open: "role" | "stage" | "priority" | null; slot: HTMLElement | null; close: () => void };
   estate: EstateInfo;
   profile: Profile;
   reload: () => void;
@@ -184,7 +194,6 @@ export default function ProfileActions({
         : { personId: p.personId ?? undefined };
   const canNote = !isCompany || p.member !== null;
   const canMove = p.memberOf !== null && p.member !== null;
-  const isHigh = p.member?.priority === "high";
   // A company that is not on the pipeline has no timeline to log to, so it offers no changes at all.
   const offline = isCompany && p.member === null;
 
@@ -202,8 +211,13 @@ export default function ProfileActions({
       } else if (res.status === 200 && res.body && "ok" in res.body) {
         if (res.body.ok) {
           const signed = res.body.signed;
-          setCard({ id: crypto.randomUUID(), signed, text: signed.text ?? body.text ?? "", state: "open" });
+          const next: AskCard = { id: crypto.randomUUID(), signed, text: signed.text ?? body.text ?? "", state: "open" };
+          setCard(next);
           setPanel(null);
+          // A note, a stage move or the High priority switch is one deliberate action on this
+          // profile: it is carried out straight away, with no second step. The card shows the result,
+          // and Confirm only as a retry if the save fails. Edits to details still wait for Confirm.
+          if (signed.proposal.kind !== "update_details" && signed.proposal.kind !== "apply_research") void confirm(next);
         } else {
           setRefusal(res.body.reason);
         }
@@ -299,7 +313,6 @@ export default function ProfileActions({
   const noteTooLong = note.length > MAX_NOTE;
   const buttons: { key: Exclude<Panel, null>; label: string }[] = [
     ...(canNote ? [{ key: "note" as const, label: "Add note" }] : []),
-    ...(canMove ? [{ key: "stage" as const, label: "Move stage" }] : []),
     ...(offline ? [] : [{ key: "edit" as const, label: "Edit" }]),
   ];
   const refusalBlock = refusal ? (
@@ -323,24 +336,6 @@ export default function ProfileActions({
         </p>
       ) : (
         <>
-        {p.member !== null && (
-          <button
-            type="button"
-            aria-pressed={isHigh}
-            disabled={busy || openWork}
-            onClick={() => void propose({ kind: "set_priority", target: timelineTarget, high: !isHigh })}
-            className={`flex min-h-[48px] w-full items-center justify-between gap-3 rounded-xl px-4 text-[16px] font-semibold disabled:opacity-50 ${
-              isHigh
-                ? "bg-[#0E7FA6] text-white dark:bg-[#6AE6FF] dark:text-[#04121A]"
-                : "bg-neutral-100 text-neutral-700 dark:bg-white/10 dark:text-neutral-200"
-            }`}
-          >
-            <span>High priority</span>
-            <span aria-hidden="true" className="text-[14px] font-bold uppercase tracking-wide">
-              {isHigh ? "On" : "Off"}
-            </span>
-          </button>
-        )}
         <div className={`grid gap-2 ${buttons.length + (isCompany ? 0 : 1) === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
           {buttons.map((b) => (
             <button
@@ -410,34 +405,100 @@ export default function ProfileActions({
             disabled={busy || noteBlank || noteTooLong}
             onClick={() => void propose({ kind: "add_note", target: timelineTarget, text: note.trim() })}
           >
-            Continue
+            Save note
           </button>
         </div>
       )}
 
-      {panel === "stage" && (
-        <div className={panelBox}>
-          <p className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Move to</p>
-          <div className="flex flex-col gap-2">
-            {p.stages.map((s) => {
-              const current = s.key === p.member?.stage;
-              return (
-                <button
-                  key={s.key}
-                  type="button"
-                  disabled={busy || current}
-                  onClick={() => void propose({ kind: "move_stage", target: timelineTarget, stage: s.key })}
-                  className={`${secondaryButton} flex items-center justify-between gap-2 text-left`}
-                >
-                  <span className="break-words">{s.label}</span>
-                  {current && <span className="shrink-0 text-[14px] text-neutral-500 dark:text-neutral-400">Current</span>}
-                </button>
-              );
-            })}
-          </div>
-          {refusalBlock}
-        </div>
-      )}
+      {/* The stage chooser: opened by the stage bubble under the name and drawn right there. One tap moves the stage. */}
+      {stagePick?.open === "role" && stagePick.slot && p.memberOf === "self" && p.member
+        ? createPortal(
+            <div className={panelBox}>
+              <p className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Contact type</p>
+              <div className="flex flex-col gap-2">
+                {estate.roles.map((r) => {
+                  const current = r.key === p.member?.role;
+                  return (
+                    <button
+                      key={r.key}
+                      type="button"
+                      disabled={busy || openWork}
+                      onClick={() => {
+                        stagePick.close();
+                        // Choosing the type it already is keeps it: nothing is sent.
+                        if (!current) void propose({ kind: "set_role", target: timelineTarget, role: r.key });
+                      }}
+                      className={`${secondaryButton} flex items-center justify-between gap-2 text-left`}
+                    >
+                      <span className="break-words">{r.label}</span>
+                      {current && <span className="shrink-0 text-[14px] text-neutral-500 dark:text-neutral-400">Current</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>,
+            stagePick.slot,
+          )
+        : null}
+      {stagePick?.open === "priority" && stagePick.slot && p.memberOf === "self" && p.member
+        ? createPortal(
+            <div className={panelBox}>
+              <p className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Priority</p>
+              <div className="flex flex-col gap-2">
+                {PRIORITY_CHOICES.map((c) => {
+                  const current = (p.member?.priority ?? null) === c.key;
+                  return (
+                    <button
+                      key={c.label}
+                      type="button"
+                      disabled={busy || openWork}
+                      onClick={() => {
+                        stagePick.close();
+                        // Choosing the priority it already has keeps it: nothing is sent.
+                        if (!current) void propose({ kind: "set_priority", target: timelineTarget, priority: c.key });
+                      }}
+                      className={`${secondaryButton} flex items-center justify-between gap-2 text-left`}
+                    >
+                      <span className="break-words">{c.label}</span>
+                      {current && <span className="shrink-0 text-[14px] text-neutral-500 dark:text-neutral-400">Current</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>,
+            stagePick.slot,
+          )
+        : null}
+      {stagePick?.open === "stage" && stagePick.slot && canMove
+        ? createPortal(
+            <div className={panelBox}>
+              <p className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Move to</p>
+              <div className="flex flex-col gap-2">
+                {p.stages.map((s) => {
+                  const current = s.key === p.member?.stage;
+                  return (
+                    <button
+                      key={s.key}
+                      type="button"
+                      disabled={busy || openWork || current}
+                      onClick={() => {
+                        stagePick.close();
+                        void propose({ kind: "move_stage", target: timelineTarget, stage: s.key });
+                      }}
+                      className={`${secondaryButton} flex items-center justify-between gap-2 text-left`}
+                    >
+                      <span className="break-words">{s.label}</span>
+                      {current && <span className="shrink-0 text-[14px] text-neutral-500 dark:text-neutral-400">Current</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>,
+            stagePick.slot,
+          )
+        : null}
+      {/* A stage move that was refused has no panel of its own to say so. */}
+      {panel === null && refusal && !cardState ? refusalBlock : null}
 
       {panel === "edit" && (
         <div className={panelBox}>

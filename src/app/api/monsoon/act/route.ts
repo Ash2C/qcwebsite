@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { ensureOwner } from "@/lib/monsoon/owners";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
 import type { ActivityAction } from "@/lib/monsoon/accounts/store";
-import { addNote, moveStage, setPriority } from "@/lib/monsoon/ask/actions";
+import { addNote, moveStage, setPriority, setRole } from "@/lib/monsoon/ask/actions";
 import { verifyProposal, type Proposal } from "@/lib/monsoon/ask/proposal";
 import { vocabulary } from "@/lib/monsoon/ask/queries";
 import { readJson } from "@/lib/monsoon/body";
@@ -25,6 +25,7 @@ const ACTIVITY: Record<Proposal["kind"], ActivityAction> = {
   move_stage: "act_stage",
   // A priority change is a detail of the contact; the accounts activity log has no kind of its own for it.
   set_priority: "act_details",
+  set_role: "act_details",
   update_details: "act_details",
   apply_research: "act_research",
 };
@@ -126,14 +127,27 @@ export async function POST(request: Request) {
         };
         return { status: done.status, message: messages[done.status] };
       }
+      if (proposal.kind === "set_role") {
+        const who = proposal.memberName;
+        const { roles } = await vocabulary(db);
+        const label = (key: string | null) => roles.find((r) => r.key === key)?.label ?? key ?? "";
+        const done = await setRole(db, proposal.memberId, proposal.fromRole, proposal.toRole, owner);
+        const messages = {
+          set: `Done. ${who} is now ${label(proposal.toRole)}.`,
+          already: `${who} is already ${label(proposal.toRole)}; nothing changed.`,
+          changed: `${who} is now ${label(done.role)}; nothing changed.`,
+          missing: `${who} is no longer on the pipeline; nothing changed.`,
+        };
+        return { status: done.status, message: messages[done.status] };
+      }
       if (proposal.kind === "set_priority") {
         const who = proposal.memberName;
         const done = await setPriority(db, proposal.memberId, proposal.fromPriority, proposal.toPriority, owner);
-        const now = done.priority === "high" ? "high priority" : done.priority ? `${done.priority} priority` : "not high priority";
+        const words = (v: string | null) => (v ? `${v} priority` : "without a priority");
         const messages = {
-          set: proposal.toPriority === "high" ? `Done. ${who} is now high priority.` : `Done. ${who} is no longer high priority.`,
-          already: `${who} is already ${now}; nothing changed.`,
-          changed: `${who} is now ${now}; nothing changed.`,
+          set: `Done. ${who} is now ${words(proposal.toPriority)}.`,
+          already: `${who} is already ${words(done.priority)}; nothing changed.`,
+          changed: `${who} is now ${words(done.priority)}; nothing changed.`,
           missing: `${who} is no longer on the pipeline; nothing changed.`,
         };
         return { status: done.status, message: messages[done.status] };

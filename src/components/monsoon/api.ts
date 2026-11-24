@@ -180,11 +180,12 @@ export async function actOnCrm(body: {
 
 export type ProposeBody = {
   estate: string;
-  kind: "add_note" | "move_stage" | "set_priority" | "update_details";
+  kind: "add_note" | "move_stage" | "set_priority" | "set_role" | "update_details";
   target: { memberId?: string; personId?: string; orgId?: string };
   text?: string;
   stage?: string;
-  high?: boolean; // set_priority: true turns high priority on, false turns it off
+  priority?: "high" | "medium" | "low" | null; // set_priority: the new priority; null clears it
+  role?: string; // set_role: the new contact type's key
   changes?: Record<string, string>; // field -> new value; an empty string clears the field
   newCompany?: boolean;
 };

@@ -183,6 +183,15 @@ function ExternalLink({ value }: { value: string }) {
   );
 }
 
+/** Which chooser is open (the type bubble's or the stage bubble's) and where it is drawn: right under the bubbles. */
+export type StagePick = { open: Picking; slot: HTMLElement | null; close: () => void };
+type Picking = "role" | "stage" | "priority" | null;
+
+/** "High priority", "Medium priority", "Low priority" or "No priority". */
+export function priorityLabel(priority: string | null | undefined): string {
+  return priority ? `${priority.charAt(0).toUpperCase()}${priority.slice(1)} priority` : "No priority";
+}
+
 export default function ProfileView({
   estate,
   target,
@@ -200,8 +209,14 @@ export default function ProfileView({
   /** Called when the profile load ends in sign-in (401), not found or a failure. */
   onLoadFailed?: () => void;
   /** Renders the profile's actions; `setBusy(true)` locks this view's own navigation until it is released. */
-  actions?: (profile: Profile, reload: () => void, setBusy: (busy: boolean) => void) => ReactNode;
+  actions?: (profile: Profile, reload: () => void, setBusy: (busy: boolean) => void, stagePick: StagePick) => ReactNode;
 }) {
+  // The stage bubble under the name opens the stage chooser right there. The chooser itself is drawn
+  // by the actions (they own the change), into `stageSlot`.
+  const [picking, setPicking] = useState<Picking>(null);
+  const stageOpen = picking === "stage";
+  const [stageSlot, setStageSlot] = useState<HTMLDivElement | null>(null);
+  const closeStage = useCallback(() => setPicking(null), []);
   const [actionBusy, setActionBusy] = useState(false);
   const [phase, setPhase] = useState<Phase>("loading");
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -336,17 +351,86 @@ export default function ProfileView({
         <div className="flex flex-wrap items-center gap-2">
           {member && p.memberOf === "self" ? (
             <>
-              <span className={chip}>{roleLabel(estate, member.role)}</span>
-              <span className={chip}>{p.stages?.find((s) => s.key === member.stage)?.label ?? stageLabel(member.stage)}</span>
+              {actions && estate.roles.length > 1 ? (
+                <button
+                  type="button"
+                  aria-expanded={picking === "role"}
+                  aria-label={`Type: ${roleLabel(estate, member.role)}. Change type`}
+                  disabled={actionBusy}
+                  onClick={() => setPicking((o) => (o === "role" ? null : "role"))}
+                  className={`${chip} flex min-h-[36px] items-center gap-1 ring-1 ring-[#0E7FA6]/50 disabled:opacity-50 dark:ring-[#6AE6FF]/50`}
+                >
+                  {roleLabel(estate, member.role)}
+                  <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d={picking === "role" ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6"} />
+                  </svg>
+                </button>
+              ) : (
+                <span className={chip}>{roleLabel(estate, member.role)}</span>
+              )}
+              {actions ? (
+                <button
+                  type="button"
+                  aria-expanded={stageOpen}
+                  aria-label={`Stage: ${p.stages?.find((s) => s.key === member.stage)?.label ?? stageLabel(member.stage)}. Change stage`}
+                  disabled={actionBusy}
+                  onClick={() => setPicking((o) => (o === "stage" ? null : "stage"))}
+                  className={`${chip} flex min-h-[36px] items-center gap-1 ring-1 ring-[#0E7FA6]/50 disabled:opacity-50 dark:ring-[#6AE6FF]/50`}
+                >
+                  {p.stages?.find((s) => s.key === member.stage)?.label ?? stageLabel(member.stage)}
+                  <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d={stageOpen ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6"} />
+                  </svg>
+                </button>
+              ) : (
+                <span className={chip}>{p.stages?.find((s) => s.key === member.stage)?.label ?? stageLabel(member.stage)}</span>
+              )}
+              {actions ? (
+                <button
+                  type="button"
+                  aria-expanded={picking === "priority"}
+                  aria-label={`${priorityLabel(member.priority)}. Change priority`}
+                  disabled={actionBusy}
+                  onClick={() => setPicking((o) => (o === "priority" ? null : "priority"))}
+                  className={`${chip} flex min-h-[36px] items-center gap-1 ring-1 ring-[#0E7FA6]/50 disabled:opacity-50 dark:ring-[#6AE6FF]/50 ${
+                    member.priority === "high" ? "!bg-[#0E7FA6] !text-white dark:!bg-[#6AE6FF] dark:!text-[#04121A]" : ""
+                  }`}
+                >
+                  {priorityLabel(member.priority)}
+                  <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d={picking === "priority" ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6"} />
+                  </svg>
+                </button>
+              ) : member.priority ? (
+                <span className={chip}>{priorityLabel(member.priority)}</span>
+              ) : null}
             </>
           ) : p.memberOf === "company" ? (
-            <span className="break-words text-[15px] text-neutral-600 dark:text-neutral-300">
-              filed under {companyName ?? "its company"}
-            </span>
+            <>
+              <span className="break-words text-[15px] text-neutral-600 dark:text-neutral-300">
+                filed under {companyName ?? "its company"}
+              </span>
+              {actions && member ? (
+                <button
+                  type="button"
+                  aria-expanded={stageOpen}
+                  aria-label={`${companyName ?? "Company"} stage: ${p.stages?.find((s) => s.key === member.stage)?.label ?? stageLabel(member.stage)}. Change stage`}
+                  disabled={actionBusy}
+                  onClick={() => setPicking((o) => (o === "stage" ? null : "stage"))}
+                  className={`${chip} flex min-h-[36px] items-center gap-1 ring-1 ring-[#0E7FA6]/50 disabled:opacity-50 dark:ring-[#6AE6FF]/50`}
+                >
+                  {p.stages?.find((s) => s.key === member.stage)?.label ?? stageLabel(member.stage)}
+                  <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d={stageOpen ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6"} />
+                  </svg>
+                </button>
+              ) : null}
+            </>
           ) : (
             <span className="text-[15px] text-neutral-600 dark:text-neutral-300">Not on the pipeline</span>
           )}
         </div>
+        <div ref={setStageSlot} />
       </header>
 
       <dl className={`${card} divide-y divide-black/5 dark:divide-white/10`}>
@@ -390,7 +474,7 @@ export default function ProfileView({
         ) : null}
       </dl>
 
-      {actions ? actions(p, reload, setActionBusy) : null}
+      {actions ? actions(p, reload, setActionBusy, { open: picking, slot: stageSlot, close: closeStage }) : null}
 
       {notes.length > 0 ? (
         <section className="flex flex-col gap-2">

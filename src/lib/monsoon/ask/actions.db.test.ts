@@ -3,7 +3,7 @@ import type { Client } from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ensureOwner } from "../owners";
 import { testDb } from "../testing/db";
-import { addNote, moveStage, proposeNote, proposePriority, proposeStage, setPriority } from "./actions";
+import { addNote, moveStage, proposeNote, proposePriority, proposeRole, proposeStage, setPriority, setRole } from "./actions";
 import { verifyProposal } from "./proposal";
 
 const NOW = 1_800_000_000_000;
@@ -208,12 +208,45 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
     expect(await snapshot()).toEqual(before);
   });
 
+  describe("contact type", () => {
+    const role = async (member: string) => (await db.query("SELECT role FROM members WHERE id = $1", [member])).rows[0].role;
+
+    it("proposes another of the estate's types, signed, and reads only", async () => {
+      const before = await snapshot();
+      const r = await proposeRole(db, ZEROONE, { memberId: id.mLi }, "introducer", NOW);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.signed.proposal).toMatchObject({ kind: "set_role", memberId: id.mLi, fromRole: "investor", toRole: "introducer" });
+      expect(verifyProposal(r.signed.proposal, r.signed.signature, NOW)).toBe(true);
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("refuses an unknown type and the type it already is", async () => {
+      const unknown = await proposeRole(db, ZEROONE, { memberId: id.mLi }, "wizard", NOW);
+      expect(unknown.ok).toBe(false);
+      expect(!unknown.ok && unknown.reason).toContain("Unknown contact type");
+      expect(await proposeRole(db, ZEROONE, { memberId: id.mLi }, "investor", NOW)).toEqual({ ok: false, reason: "Li Wei is already investor." });
+    });
+
+    it("sets it and logs the change as a system entry by that person; writes nothing when it moved meanwhile", async () => {
+      expect(await setRole(db, id.mLi, "investor", "introducer", "VF")).toEqual({ status: "set", role: "introducer" });
+      expect(await role(id.mLi)).toBe("introducer");
+      const log = await db.query("SELECT kind, by_whom, summary FROM touches WHERE member_id = $1", [id.mLi]);
+      expect(log.rows).toEqual([{ kind: "system", by_whom: "VF", summary: "Type: investor → introducer" }]);
+      const before = await snapshot();
+      expect(await setRole(db, id.mLi, "investor", "client", "VF")).toEqual({ status: "changed", role: "introducer" });
+      expect(await setRole(db, id.mLi, "investor", "introducer", "VF")).toEqual({ status: "already", role: "introducer" });
+      expect(await setRole(db, randomUUID(), "investor", "introducer", "VF")).toEqual({ status: "missing", role: null });
+      expect(await snapshot()).toEqual(before);
+    });
+  });
+
   describe("high priority", () => {
     const priority = async (member: string) => (await db.query("SELECT priority FROM members WHERE id = $1", [member])).rows[0].priority;
 
     it("proposes turning it on for a member, signed, and reads only", async () => {
       const before = await snapshot();
-      const r = await proposePriority(db, ZEROONE, { memberId: id.mLi }, true, NOW);
+      const r = await proposePriority(db, ZEROONE, { memberId: id.mLi }, "high", NOW);
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       expect(r.signed.proposal).toMatchObject({ kind: "set_priority", memberId: id.mLi, memberName: "Li Wei", fromPriority: null, toPriority: "high" });
@@ -222,15 +255,17 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
     });
 
     it("a person filed under a member company sets the company's priority, and says who it is about", async () => {
-      const r = await proposePriority(db, ZEROONE, { personId: id.jane }, true, NOW);
+      const r = await proposePriority(db, ZEROONE, { personId: id.jane }, "medium", NOW);
       expect(r.ok && r.signed.proposal).toMatchObject({ memberId: id.mNw, memberName: "Northwind Capital", about: "Jane Tan" });
     });
 
     it("refuses when nothing would change, or the contact is not on the pipeline", async () => {
-      expect(await proposePriority(db, ZEROONE, { memberId: id.mLi }, false, NOW)).toEqual({ ok: false, reason: "Li Wei is not high priority." });
+      expect(await proposePriority(db, ZEROONE, { memberId: id.mLi }, null, NOW)).toEqual({ ok: false, reason: "Li Wei has no priority set." });
       await db.query("UPDATE members SET priority = 'high' WHERE id = $1", [id.mLi]);
-      expect(await proposePriority(db, ZEROONE, { memberId: id.mLi }, true, NOW)).toEqual({ ok: false, reason: "Li Wei is already high priority." });
-      expect((await proposePriority(db, ZEROONE, { personId: id.sam }, true, NOW)).ok).toBe(false);
+      expect(await proposePriority(db, ZEROONE, { memberId: id.mLi }, "high", NOW)).toEqual({ ok: false, reason: "Li Wei is already high priority." });
+      const down = await proposePriority(db, ZEROONE, { memberId: id.mLi }, "low", NOW);
+      expect(down.ok && down.signed.proposal).toMatchObject({ fromPriority: "high", toPriority: "low" });
+      expect((await proposePriority(db, ZEROONE, { personId: id.sam }, "high", NOW)).ok).toBe(false);
     });
 
     it("sets and clears it, logging each change on the timeline as a system entry by that person", async () => {

@@ -19,11 +19,12 @@ type Resolved = {
   company: string | null;
   about: string | null;
   stage: string;
+  role: string;
   priority: Priority | null;
 };
 type Resolution = { ok: true; member: Resolved } | { ok: false; reason: string };
 
-const MEMBER_SELECT = `SELECT m.id, m.stage, m.priority, o.name AS org_name, p.name AS person_name, po.name AS person_company
+const MEMBER_SELECT = `SELECT m.id, m.stage, m.role, m.priority, o.name AS org_name, p.name AS person_name, po.name AS person_company
                          FROM members m
                          LEFT JOIN orgs o ON o.id = m.org_id
                          LEFT JOIN people p ON p.id = m.person_id
@@ -38,6 +39,7 @@ function resolved(row: Record<string, string | null>, about: string | null): Res
     company: person ? row.person_company : null,
     about,
     stage: row.stage as string,
+    role: row.role as string,
     priority: (row.priority as Priority | null) ?? null,
   };
 }
@@ -77,7 +79,10 @@ function sign(
   member: Resolved,
   bind: Binding,
   nowMs: number,
-  extra?: { fromStage: string; toStage: string } | { fromPriority: Priority | null; toPriority: Priority | null },
+  extra?:
+    | { fromStage: string; toStage: string }
+    | { fromRole: string; toRole: string }
+    | { fromPriority: Priority | null; toPriority: Priority | null },
 ): SignedProposal {
   const base = {
     customer: bind.customer,
@@ -93,7 +98,9 @@ function sign(
     ? { kind: "add_note", ...base }
     : "toStage" in extra
       ? { kind: "move_stage", ...base, ...extra }
-      : { kind: "set_priority", ...base, ...extra };
+      : "toRole" in extra
+        ? { kind: "set_role", ...base, ...extra }
+        : { kind: "set_priority", ...base, ...extra };
   return { proposal, signature: signProposal(proposal) };
 }
 
@@ -139,20 +146,33 @@ export async function proposeStage(
   return { ok: true, signed: sign(found.member, bind, nowMs, { fromStage: found.member.stage, toStage: stage }) };
 }
 
-/** High priority on or off for the member a contact belongs to. Off clears the priority. */
+/** A different contact type (role) for the member a contact belongs to; it must be one of the estate's roles. */
+export async function proposeRole(db: ClientBase, bind: Binding, target: Target, role: string, nowMs: number): Promise<ProposeResult> {
+  const found = await resolve(db, target);
+  if (!found.ok) return found;
+  const { roles } = await vocabulary(db);
+  if (!roles.some((r) => r.key === role)) {
+    return { ok: false, reason: `Unknown contact type. Types are: ${roles.map((r) => r.key).join(", ")}.` };
+  }
+  if (role === found.member.role) return { ok: false, reason: `${found.member.memberName} is already ${role.replace(/_/g, " ")}.` };
+  return { ok: true, signed: sign(found.member, bind, nowMs, { fromRole: found.member.role, toRole: role }) };
+}
+
+/** A priority (high, medium or low) for the member a contact belongs to; null clears it. */
 export async function proposePriority(
   db: ClientBase,
   bind: Binding,
   target: Target,
-  high: boolean,
+  to: Priority | null,
   nowMs: number,
 ): Promise<ProposeResult> {
   const found = await resolve(db, target);
   if (!found.ok) return found;
   const { memberName, priority } = found.member;
-  if (high && priority === "high") return { ok: false, reason: `${memberName} is already high priority.` };
-  if (!high && priority !== "high") return { ok: false, reason: `${memberName} is not high priority.` };
-  return { ok: true, signed: sign(found.member, bind, nowMs, { fromPriority: priority, toPriority: high ? "high" : null }) };
+  if (to === priority) {
+    return { ok: false, reason: to ? `${memberName} is already ${to} priority.` : `${memberName} has no priority set.` };
+  }
+  return { ok: true, signed: sign(found.member, bind, nowMs, { fromPriority: priority, toPriority: to }) };
 }
 
 /** Run `fn` in one read-committed transaction; commit when it asks to, otherwise roll back. */
@@ -247,5 +267,29 @@ export function setPriority(
       `Priority: ${from ?? "(none)"} → ${to ?? "(none)"}`,
     ]);
     return { value: { status: "set" as const, priority: to }, commit: true };
+  });
+}
+
+type RoleStatus = "set" | "already" | "changed" | "missing";
+type RoleResult = { status: RoleStatus; role: string | null };
+
+/**
+ * Sets a member's contact type (role) when it still is what the proposal saw. Logged on the
+ * timeline as a system entry, with who made the change.
+ */
+export function setRole(db: ClientBase, memberId: string, from: string, to: string, owner: string): Promise<RoleResult> {
+  return transaction<RoleResult>(db, async () => {
+    const found = await db.query("SELECT role FROM members WHERE id = $1 FOR UPDATE", [memberId]);
+    if (found.rows.length === 0) return { value: { status: "missing" as const, role: null }, commit: false };
+    const current: string = found.rows[0].role;
+    if (current === to) return { value: { status: "already" as const, role: current }, commit: false };
+    if (current !== from) return { value: { status: "changed" as const, role: current }, commit: false };
+    await db.query("UPDATE members SET role = $1 WHERE id = $2", [to, memberId]);
+    await db.query("INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'system', $2, $3)", [
+      memberId,
+      owner,
+      `Type: ${from} → ${to}`,
+    ]);
+    return { value: { status: "set" as const, role: to }, commit: true };
   });
 }

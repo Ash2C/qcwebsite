@@ -10,7 +10,10 @@ import * as api from "./api";
 vi.mock("./api", () => ({ proposeChange: vi.fn(), actOnCrm: vi.fn(), researchContact: vi.fn() }));
 const m = vi.mocked(api);
 
-const ESTATE = { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", available: true, roles: [] };
+const ESTATE = {
+  key: "traxo", label: "Traxo", defaultRole: "lp_prospect", available: true,
+  roles: [{ key: "lp_prospect", label: "LP prospect" }, { key: "introducer", label: "Introducer" }],
+};
 const STAGES = [
   { key: "lead", label: "Lead", terminal: false },
   { key: "in_talks", label: "In talks", terminal: false },
@@ -67,15 +70,22 @@ function view(profile: object = PERSON, props: Props = {}) {
   return { ...handlers, ...result };
 }
 const click = (user: User, name: string | RegExp) => user.click(screen.getByRole("button", { name }));
+const failed = { status: 500, body: { error: "x" } } as never;
+/** What the profile hands the actions when a bubble under the name is open: the chooser is drawn into the slot. */
+function picking(open: "role" | "stage" | "priority") {
+  const slot = document.createElement("div");
+  document.body.appendChild(slot);
+  return { stagePick: { open, slot, close: vi.fn() } };
+}
 
 beforeEach(() => vi.resetAllMocks());
 afterEach(cleanup);
 
 describe("ProfileActions buttons", () => {
-  it("shows Add note, Move stage and Edit, and Ask about this contact", () => {
+  it("shows Add note, Edit, Research and Ask about this contact (type, stage and priority are the bubbles under the name)", () => {
     view();
     expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual([
-      "High priorityOff", "Add note", "Move stage", "Edit", "Research", "Ask about this contact",
+      "Add note", "Edit", "Research", "Ask about this contact",
     ]);
   });
 
@@ -85,9 +95,9 @@ describe("ProfileActions buttons", () => {
     expect(screen.getByRole("button", { name: "Add note" })).toBeInTheDocument();
   });
 
-  it("keeps Move stage for a person filed under a company", () => {
-    view({ ...PERSON, memberOf: "company" });
-    expect(screen.getByRole("button", { name: "Move stage" })).toBeInTheDocument();
+  it("a person filed under a company can still move the company's stage from the chooser", () => {
+    view({ ...PERSON, memberOf: "company" }, picking("stage"));
+    expect(screen.getByRole("button", { name: "Won" })).toBeEnabled();
   });
 
   it("offers a company that is not on the pipeline no changes, and says why in one line", () => {
@@ -109,20 +119,18 @@ describe("ProfileActions buttons", () => {
 });
 
 describe("Add note", () => {
-  it("proposes with the member, shows the card, and Confirm sends the proposal, signature and text, then reloads", async () => {
+  it("Save note saves straight away, with no Confirm step: it sends the proposal, signature and text, then reloads", async () => {
     const user = userEvent.setup();
     m.proposeChange.mockResolvedValue(proposed(NOTE_SIGNED));
     m.actOnCrm.mockResolvedValue(acted("Done. Note added to Jane Tan."));
     const { reload } = view();
     await click(user, "Add note");
-    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save note" })).toBeDisabled();
     await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Called her");
-    await click(user, "Continue");
+    await click(user, "Save note");
     expect(m.proposeChange).toHaveBeenCalledWith({
       estate: "traxo", kind: "add_note", target: { memberId: "m1" }, text: "Called her",
     });
-    expect(await screen.findByText("Jane Tan")).toBeInTheDocument();
-    await click(user, "Confirm");
     expect(await screen.findByText("Done. Note added to Jane Tan.")).toBeInTheDocument();
     expect(m.actOnCrm).toHaveBeenCalledWith({
       estate: "traxo", proposal: NOTE_SIGNED.proposal, signature: "sig-note", text: "Called her",
@@ -131,22 +139,22 @@ describe("Add note", () => {
     expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
   });
 
-  it("keeps the note in the box while its card is open, puts it back on Cancel, and empties it only after a confirmed save", async () => {
+  it("a note that fails to save stays on a card to retry or cancel; the box empties only after it is saved", async () => {
     const user = userEvent.setup();
     m.proposeChange.mockResolvedValue(proposed({ ...NOTE_SIGNED, text: undefined }));
-    m.actOnCrm.mockResolvedValue(acted("Done. Note added to Jane Tan."));
+    m.actOnCrm.mockResolvedValueOnce(failed);
     view();
     await click(user, "Add note");
     await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Called her");
-    await click(user, "Continue");
-    await screen.findByText("Confirm");
-    // The card is open and the note box is closed; Cancel on the card brings the note back.
+    await click(user, "Save note");
+    // The save failed: the card says so and offers Confirm as the retry. Cancel brings the note back.
+    expect(await screen.findByText("Could not save. Check signal and try again.")).toBeInTheDocument();
     await user.click(screen.getAllByRole("button", { name: "Cancel" })[0]);
     expect(screen.getByPlaceholderText("Type or dictate a note")).toHaveValue("Called her");
-    await click(user, "Continue");
-    await screen.findByText("Confirm");
-    await click(user, "Confirm");
+    m.actOnCrm.mockResolvedValue(acted("Done. Note added to Jane Tan."));
+    await click(user, "Save note");
     await screen.findByText("Done. Note added to Jane Tan.");
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
     await click(user, "Add note");
     expect(screen.getByPlaceholderText("Type or dictate a note")).toHaveValue("");
   });
@@ -154,10 +162,11 @@ describe("Add note", () => {
   it("puts the note back as it was edited on the card", async () => {
     const user = userEvent.setup();
     m.proposeChange.mockResolvedValue(proposed({ ...NOTE_SIGNED, text: undefined }));
+    m.actOnCrm.mockResolvedValue(failed);
     view();
     await click(user, "Add note");
     await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Called");
-    await click(user, "Continue");
+    await click(user, "Save note");
     await user.type(await screen.findByRole("textbox", { name: "Note text" }), " her");
     await user.click(screen.getAllByRole("button", { name: "Cancel" })[0]);
     expect(screen.getByPlaceholderText("Type or dictate a note")).toHaveValue("Called her");
@@ -169,7 +178,7 @@ describe("Add note", () => {
     view();
     await click(user, "Add note");
     await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Keep me");
-    await click(user, "Continue");
+    await click(user, "Save note");
     await screen.findByText("nope");
     expect(screen.getByPlaceholderText("Type or dictate a note")).toHaveValue("Keep me");
   });
@@ -180,7 +189,7 @@ describe("Add note", () => {
     view({ ...PERSON, memberOf: "company" });
     await click(user, "Add note");
     await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Hi");
-    await click(user, "Continue");
+    await click(user, "Save note");
     expect(m.proposeChange.mock.calls[0][0].target).toEqual({ personId: "p1" });
   });
 
@@ -190,7 +199,7 @@ describe("Add note", () => {
     view(COMPANY);
     await click(user, "Add note");
     await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Hi");
-    await click(user, "Continue");
+    await click(user, "Save note");
     expect(m.proposeChange.mock.calls[0][0].target).toEqual({ memberId: "m9" });
   });
 
@@ -200,41 +209,67 @@ describe("Add note", () => {
     view();
     await click(user, "Add note");
     await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Hi");
-    await click(user, "Continue");
+    await click(user, "Save note");
     expect(await screen.findByRole("alert")).toHaveTextContent("Jane is on file but not on the pipeline.");
     expect(screen.getByPlaceholderText("Type or dictate a note")).toHaveValue("Hi");
   });
 
-  it("High priority asks to turn it on, shows the change on a card, and reloads after Confirm", async () => {
+  it("the priority chooser sets High, Medium, Low or none in one tap, and reloads", async () => {
     const user = userEvent.setup();
     const signed = {
       proposal: {
         kind: "set_priority", estate: "traxo", memberId: "m1", memberKind: "person", memberName: "Jane Tan",
-        company: "Acme Capital", about: null, fromPriority: null, toPriority: "high", customer: "c", expires: 1,
+        company: "Acme Capital", about: null, fromPriority: null, toPriority: "medium", customer: "c", expires: 1,
       },
       signature: "s".repeat(64),
     };
     m.proposeChange.mockResolvedValue({ status: 200, body: { ok: true, signed } } as never);
-    m.actOnCrm.mockResolvedValue({ status: 200, body: { status: "set", message: "Done. Jane Tan is now high priority." } } as never);
-    const h = view();
-    const toggle = screen.getByRole("button", { name: "High priority" });
-    expect(toggle).toHaveAttribute("aria-pressed", "false");
-    await user.click(toggle);
-    expect(m.proposeChange).toHaveBeenCalledWith({ estate: "traxo", kind: "set_priority", target: { memberId: "m1" }, high: true });
-    expect(await screen.findByText("High priority: off → on")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Confirm" }));
-    expect(await screen.findByText("Done. Jane Tan is now high priority.")).toBeInTheDocument();
+    m.actOnCrm.mockResolvedValue({ status: 200, body: { status: "set", message: "Done. Jane Tan is now medium priority." } } as never);
+    const pick = picking("priority");
+    const h = view(PERSON, pick);
+    expect(["High priority", "Medium priority", "Low priority", "No priority Current"].map((n) => screen.getByRole("button", { name: n })).length).toBe(4);
+    await click(user, "Medium priority");
+    expect(pick.stagePick.close).toHaveBeenCalled();
+    expect(m.proposeChange).toHaveBeenCalledWith({ estate: "traxo", kind: "set_priority", target: { memberId: "m1" }, priority: "medium" });
+    expect(await screen.findByText("Done. Jane Tan is now medium priority.")).toBeInTheDocument();
+    expect(m.actOnCrm).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
     expect(h.reload).toHaveBeenCalled();
   });
 
-  it("High priority shows on for a high-priority contact and asks to turn it off", async () => {
+  it("choosing the priority or type it already has keeps it and sends nothing", async () => {
     const user = userEvent.setup();
-    m.proposeChange.mockResolvedValue({ status: 200, body: { ok: false, reason: "x" } } as never);
-    view({ ...PERSON, member: { ...PERSON.member, priority: "high" } });
-    const toggle = screen.getByRole("button", { name: "High priority" });
-    expect(toggle).toHaveAttribute("aria-pressed", "true");
-    await user.click(toggle);
-    expect(m.proposeChange).toHaveBeenCalledWith({ estate: "traxo", kind: "set_priority", target: { memberId: "m1" }, high: false });
+    const pick = picking("priority");
+    const h = view({ ...PERSON, member: { ...PERSON.member, priority: "high" } }, pick);
+    await click(user, "High priority Current");
+    expect(pick.stagePick.close).toHaveBeenCalled();
+    expect(m.proposeChange).not.toHaveBeenCalled();
+    h.unmount();
+
+    const role = picking("role");
+    view(PERSON, role);
+    await click(user, "LP prospect Current");
+    expect(role.stagePick.close).toHaveBeenCalled();
+    expect(m.proposeChange).not.toHaveBeenCalled();
+  });
+
+  it("the type chooser lists the estate's contact types and changes it in one tap", async () => {
+    const user = userEvent.setup();
+    const signed = {
+      proposal: {
+        kind: "set_role", estate: "traxo", memberId: "m1", memberKind: "person", memberName: "Jane Tan",
+        company: "Acme Capital", about: null, fromRole: "lp_prospect", toRole: "introducer", customer: "c", expires: 1,
+      },
+      signature: "s".repeat(64),
+    };
+    m.proposeChange.mockResolvedValue({ status: 200, body: { ok: true, signed } } as never);
+    m.actOnCrm.mockResolvedValue({ status: 200, body: { status: "set", message: "Done. Jane Tan is now Introducer." } } as never);
+    const h = view(PERSON, picking("role"));
+    await click(user, "Introducer");
+    expect(m.proposeChange).toHaveBeenCalledWith({ estate: "traxo", kind: "set_role", target: { memberId: "m1" }, role: "introducer" });
+    expect(await screen.findByText("Done. Jane Tan is now Introducer.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+    expect(h.reload).toHaveBeenCalled();
   });
 
   it("shows a failure when the request fails", async () => {
@@ -243,7 +278,7 @@ describe("Add note", () => {
     view();
     await click(user, "Add note");
     await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Hi");
-    await click(user, "Continue");
+    await click(user, "Save note");
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not reach the server");
   });
 
@@ -253,7 +288,7 @@ describe("Add note", () => {
     const { onUnauthorized } = view();
     await click(user, "Add note");
     await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Hi");
-    await click(user, "Continue");
+    await click(user, "Save note");
     await waitFor(() => expect(onUnauthorized).toHaveBeenCalledTimes(1));
   });
 });
@@ -262,16 +297,24 @@ describe("Move stage", () => {
   it("lists the profile's stages in order with the current one disabled, and picking one proposes", async () => {
     const user = userEvent.setup();
     m.proposeChange.mockResolvedValue(proposed(STAGE_SIGNED));
-    view();
-    await click(user, "Move stage");
+    m.actOnCrm.mockResolvedValue(acted("Done. Jane Tan moved to Won."));
+    // There is no Move stage button: the stage bubble under the name opens this chooser.
+    const pick = picking("stage");
+    const h = view(PERSON, pick);
+    expect(screen.queryByRole("button", { name: "Move stage" })).toBeNull();
     const labels = ["Lead", "In talks Current", "Won"];
     const list = labels.map((l) => screen.getByRole("button", { name: l }));
     expect(list[1]).toBeDisabled();
     await user.click(list[2]);
+    expect(pick.stagePick.close).toHaveBeenCalled();
     expect(m.proposeChange).toHaveBeenCalledWith({
       estate: "traxo", kind: "move_stage", target: { memberId: "m1" }, stage: "won",
     });
-    expect(await screen.findByText("in talks → won")).toBeInTheDocument();
+    // One tap: the move is carried out with no Confirm step.
+    expect(await screen.findByText("Done. Jane Tan moved to Won.")).toBeInTheDocument();
+    expect(m.actOnCrm).toHaveBeenCalledWith({ estate: "traxo", proposal: STAGE_SIGNED.proposal, signature: "sig-stage" });
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+    expect(h.reload).toHaveBeenCalled();
   });
 });
 
@@ -479,10 +522,12 @@ describe("the change card", () => {
     await openEditCard(user);
     await click(user, "Confirm");
     await screen.findByText("Done. Jane Tan updated.");
-    m.proposeChange.mockResolvedValue(proposed(STAGE_SIGNED));
-    await click(user, "Move stage");
-    await click(user, "Won");
-    expect(await screen.findByText("in talks → won")).toBeInTheDocument();
+    m.proposeChange.mockResolvedValue(proposed(NOTE_SIGNED));
+    m.actOnCrm.mockResolvedValue(acted("Done. Note added to Jane Tan."));
+    await click(user, "Add note");
+    await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Hi");
+    await click(user, "Save note");
+    expect(await screen.findByText("Done. Note added to Jane Tan.")).toBeInTheDocument();
     expect(screen.queryByText("Done. Jane Tan updated.")).toBeNull();
     expect(screen.queryByText("Edit details")).toBeNull();
   });
@@ -494,8 +539,7 @@ describe("the change card", () => {
     view();
     await click(user, "Add note");
     await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Fresh");
-    await click(user, "Continue");
-    await click(user, "Confirm");
+    await click(user, "Save note");
     await screen.findByText("Done.");
     expect(m.actOnCrm.mock.calls[0][0].text).toBe("Fresh");
   });
@@ -805,7 +849,6 @@ describe("Research", () => {
   it.each([
     ["note", "Add note"],
     ["edit", "Edit"],
-    ["stage", "Move stage"],
   ])("disables Research while the %s panel is open and keeps what was typed", async (_p, button) => {
     const user = userEvent.setup();
     view();
@@ -818,10 +861,11 @@ describe("Research", () => {
   it("disables Research while a note card is open", async () => {
     const user = userEvent.setup();
     m.proposeChange.mockResolvedValue(proposed(NOTE_SIGNED));
+    m.actOnCrm.mockResolvedValue(failed);
     view();
     await click(user, "Add note");
     await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Called her");
-    await click(user, "Continue");
+    await click(user, "Save note");
     await screen.findByRole("button", { name: "Confirm" });
     expect(screen.getByRole("button", { name: "Research" })).toBeDisabled();
   });

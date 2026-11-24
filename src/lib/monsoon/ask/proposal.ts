@@ -34,6 +34,19 @@ export type Proposal =
       expires: number;
     }
   | {
+      kind: "set_role";
+      customer: string;
+      estate: string;
+      memberId: string;
+      memberKind: MemberKind;
+      memberName: string;
+      company: string | null;
+      about: string | null;
+      fromRole: string;
+      toRole: string;
+      expires: number;
+    }
+  | {
       kind: "set_priority";
       customer: string;
       estate: string;
@@ -112,6 +125,7 @@ const KEYS: Record<string, readonly string[]> = {
   add_note: COMMON,
   move_stage: [...COMMON, "fromStage", "toStage"],
   set_priority: [...COMMON, "fromPriority", "toPriority"],
+  set_role: [...COMMON, "fromRole", "toRole"],
   update_details: ["kind", "customer", "estate", "target", "targetName", "company", "changes", "logMemberId", "addsToPipeline", "expires"],
   apply_research: ["kind", "customer", "estate", "person", "company", "identity", "findings", "summarySources", "logMemberId", "addsToPipeline", "expires"],
 };
@@ -232,6 +246,7 @@ function wellFormed(p: unknown): p is Proposal {
   if (!isStringOrNull(o.company) || !isStringOrNull(o.about)) return false;
   if (typeof o.expires !== "number" || !Number.isFinite(o.expires)) return false;
   if (o.kind === "move_stage" && (!isString(o.fromStage) || !isString(o.toStage))) return false;
+  if (o.kind === "set_role" && (!isString(o.fromRole) || !isString(o.toRole) || o.fromRole === o.toRole)) return false;
   if (o.kind === "set_priority" && (!isPriorityOrNull(o.fromPriority) || !isPriorityOrNull(o.toPriority) || o.fromPriority === o.toPriority)) {
     return false;
   }

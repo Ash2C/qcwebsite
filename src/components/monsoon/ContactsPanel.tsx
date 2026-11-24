@@ -166,8 +166,9 @@ export default function ContactsPanel({
         onOpen={(target) => onChange((s) => withOpen(s, target))}
         onUnauthorized={onUnauthorized}
         onLoadFailed={() => onChange((s) => (s.autoResearch ? { ...s, autoResearch: false } : s))}
-        actions={(profile, reload, setViewBusy) => (
+        actions={(profile, reload, setViewBusy, stagePick) => (
           <ProfileActions
+            stagePick={stagePick}
             estate={estate}
             profile={profile}
             reload={reload}

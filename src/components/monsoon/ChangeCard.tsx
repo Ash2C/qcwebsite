@@ -27,7 +27,8 @@ export function describeChange(c: AskCard): string {
   const p = c.signed.proposal;
   if (p.kind === "update_details") return `change the details of ${p.targetName}`;
   if (p.kind === "apply_research") return `save research about ${p.person.name}`;
-  if (p.kind === "set_priority") return `turn high priority ${p.toPriority === "high" ? "on" : "off"} for ${p.memberName}`;
+  if (p.kind === "set_role") return `change the type of ${p.memberName} from ${stageLabel(p.fromRole)} to ${stageLabel(p.toRole)}`;
+  if (p.kind === "set_priority") return `change the priority of ${p.memberName} from ${p.fromPriority ?? "none"} to ${p.toPriority ?? "none"}`;
   return p.kind === "add_note"
     ? `add a note to ${p.memberName}`
     : `move ${p.memberName} from ${stageLabel(p.fromStage)} to ${stageLabel(p.toStage)}`;
@@ -119,16 +120,21 @@ export default function ChangeCard({
   return (
     <div className={`${cardClass} flex min-w-0 flex-col gap-3 p-4`}>
       <p className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-        {isNote ? "Add note" : p.kind === "set_priority" ? "Priority" : "Move stage"}
+        {isNote ? "Add note" : p.kind === "set_priority" ? "Priority" : p.kind === "set_role" ? "Contact type" : "Move stage"}
       </p>
       <div className="flex min-w-0 flex-col">
         <p className="break-words text-[17px] font-semibold leading-snug">{p.memberName}</p>
         {second && <p className="break-words text-[15px] text-neutral-500 dark:text-neutral-400">{second}</p>}
         {p.about && <p className="break-words text-[15px] text-neutral-500 dark:text-neutral-400">About {p.about}</p>}
       </div>
+      {p.kind === "set_role" && (
+        <p className="break-words text-[17px]">
+          {stageLabel(p.fromRole)} → {stageLabel(p.toRole)}
+        </p>
+      )}
       {p.kind === "set_priority" && (
         <p className="break-words text-[17px]">
-          {`High priority: ${p.fromPriority === "high" ? "on" : "off"} → ${p.toPriority === "high" ? "on" : "off"}`}
+          {`${p.fromPriority ?? "none"} → ${p.toPriority ?? "none"}`}
         </p>
       )}
       {p.kind === "move_stage" && (

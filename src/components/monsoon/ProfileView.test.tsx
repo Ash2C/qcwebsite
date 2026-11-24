@@ -58,6 +58,39 @@ beforeEach(() => vi.resetAllMocks());
 afterEach(cleanup);
 
 describe("ProfileView", () => {
+  it("the type, stage and priority bubbles each open their chooser under the name, one at a time", async () => {
+    m.loadProfile.mockResolvedValue(profile({ member: MEMBER, memberOf: "self" }));
+    const roles = [{ key: "lp_prospect", label: "LP prospect" }, { key: "introducer", label: "Introducer" }];
+    view({
+      estate: { ...ESTATE, roles },
+      actions: (_profile, _reload, _busy, pick) => <div data-testid="acts">{`${String(pick.open)}${pick.slot ? " with slot" : ""}`}</div>,
+    });
+    await flush();
+    const acts = screen.getByTestId("acts");
+    expect(acts).toHaveTextContent("null with slot");
+    const stage = screen.getByRole("button", { name: "Stage: In talks. Change stage" });
+    fireEvent.click(stage);
+    expect(acts).toHaveTextContent("stage");
+    expect(stage).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: "No priority. Change priority" }));
+    expect(acts).toHaveTextContent("priority");
+    expect(stage).toHaveAttribute("aria-expanded", "false");
+    const type = screen.getByRole("button", { name: "Type: LP prospect. Change type" });
+    fireEvent.click(type);
+    expect(acts).toHaveTextContent("role");
+    fireEvent.click(type);
+    expect(acts).toHaveTextContent("null");
+  });
+
+  it("an estate with one contact type shows the type as plain text; the priority bubble names the priority", async () => {
+    m.loadProfile.mockResolvedValue(profile({ member: { ...MEMBER, priority: "high" }, memberOf: "self" }));
+    view({ estate: { ...ESTATE, roles: [{ key: "lp_prospect", label: "LP prospect" }] }, actions: () => null });
+    await flush();
+    expect(screen.queryByRole("button", { name: /Change type/ })).toBeNull();
+    expect(screen.getByText("LP prospect")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "High priority. Change priority" })).toBeInTheDocument();
+  });
+
   it("shows Loading first, then a person on the pipeline", async () => {
     m.loadProfile.mockResolvedValue(profile({ member: MEMBER, memberOf: "self" }));
     view();

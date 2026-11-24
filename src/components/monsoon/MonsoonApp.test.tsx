@@ -1696,13 +1696,13 @@ describe("Profile actions and links", () => {
     expect(await screen.findByLabelText("Title")).toHaveValue("Partnerx");
   });
 
-  it("keeps the note's text through a 401 at Continue and at Confirm", async () => {
+  it("keeps the note's text through a 401 at Save note", async () => {
     const user = userEvent.setup();
     await openJane(user);
     await user.click(screen.getByRole("button", { name: "Add note" }));
     await user.type(screen.getByPlaceholderText("Type or dictate a note"), "Called her");
     m.proposeChange.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never);
-    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.click(screen.getByRole("button", { name: "Save note" }));
     await user.type(await screen.findByLabelText("Passcode"), "a-long-passcode-here");
     m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
     await user.click(screen.getByRole("button", { name: "Unlock" }));
