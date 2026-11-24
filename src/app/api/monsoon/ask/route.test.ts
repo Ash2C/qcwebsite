@@ -5,6 +5,8 @@ const runAsk = vi.fn();
 vi.mock("@/lib/monsoon/ask/loop", () => ({ runAsk: (...a: unknown[]) => runAsk(...a) }));
 const getProfile = vi.fn();
 vi.mock("@/lib/monsoon/contacts", () => ({ getProfile: (...a: unknown[]) => getProfile(...a) }));
+const loadAskContext = vi.fn();
+vi.mock("@/lib/monsoon/accounts/profile", () => ({ loadAskContext: (...a: unknown[]) => loadAskContext(...a) }));
 vi.mock("@/lib/monsoon/accounts/account", async () =>
   (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
 );
@@ -45,6 +47,7 @@ const valid = (over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   runAsk.mockReset().mockResolvedValue(RESULT);
   getProfile.mockReset();
+  loadAskContext.mockReset().mockResolvedValue(null);
   account = fakeAccount({
     customer: { id: CUSTOMER },
     person: { name: "Ann Lee", ownerKey: "AL" },
@@ -343,5 +346,107 @@ describe("POST /api/monsoon/ask", () => {
         expect(viewingOf()).toBeUndefined();
       },
     );
+  });
+
+  describe("about: the user's own page", () => {
+    const PERSON = "00000000-0000-4000-8000-000000000002";
+    const OTHER = "99999999-9999-4999-8999-999999999999";
+    const PAGE = {
+      person: { name: "Ann Lee", phone: "+65 1234", email: "ann@example.com" },
+      work: { company: "Acme Capital", website: "https://acme.example", roleObjectives: "Raise Fund II" },
+      notes: [
+        { id: "n2", body: "Focus on Asia", at: "2026-11-12T09:00:00.000Z" },
+        { id: "n1", body: "Short answers", at: "2026-11-10T09:00:00.000Z" },
+      ],
+      notesTotal: 7,
+    };
+    const ABOUT = {
+      phone: "+65 1234",
+      email: "ann@example.com",
+      company: "Acme Capital",
+      website: "https://acme.example",
+      roleObjectives: "Raise Fund II",
+      notes: [
+        { body: "Focus on Asia", at: "2026-11-12T09:00:00.000Z" },
+        { body: "Short answers", at: "2026-11-10T09:00:00.000Z" },
+      ],
+      notesTotal: 7,
+    };
+    const NAMES = { AL: "Ann Lee", VF: "Vincent F" };
+    const depsOf = () => runAsk.mock.calls[0][0];
+
+    it("looks the page up for the session's person and this estate, capped at 3 seconds", async () => {
+      await POST(post(valid({ estate: "zeroone", personId: OTHER, customerId: OTHER, person: { id: OTHER } })));
+      expect(loadAskContext).toHaveBeenCalledTimes(1);
+      expect(loadAskContext).toHaveBeenCalledWith({ customerId: CUSTOMER, personId: PERSON }, "zeroone", { timeoutMs: 3000 });
+    });
+
+    it("hands runAsk the page as about, and the account names", async () => {
+      loadAskContext.mockResolvedValue({ page: PAGE, ownerNames: NAMES });
+      const res = await POST(post(valid()));
+      expect(res.status).toBe(200);
+      expect(depsOf().about).toEqual(ABOUT);
+      expect(depsOf().ownerNames).toEqual(NAMES);
+      // The name in the prompt's first line stays the session's.
+      expect(depsOf().person).toEqual({ name: "Ann Lee", ownerKey: "AL" });
+    });
+
+    it("answers as usual, with neither, when the pipeline is unknown to the accounts database", async () => {
+      loadAskContext.mockResolvedValue(null);
+      const res = await POST(post(valid()));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(RESULT);
+      expect(depsOf().about).toBeUndefined();
+      expect(depsOf().ownerNames).toBeUndefined();
+    });
+
+    it("answers as usual, with neither and no log line, when the lookup fails or times out", async () => {
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      loadAskContext.mockRejectedValue(new Error("Accounts lookup timed out"));
+      const res = await POST(post(valid()));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(RESULT);
+      expect(depsOf().about).toBeUndefined();
+      expect(depsOf().ownerNames).toBeUndefined();
+      expect(log).not.toHaveBeenCalled();
+    });
+
+    it("answers as usual when the lookup throws before returning a promise", async () => {
+      loadAskContext.mockImplementation(() => {
+        throw new Error("no accounts database configured");
+      });
+      const res = await POST(post(valid()));
+      expect(res.status).toBe(200);
+      expect(depsOf().about).toBeUndefined();
+    });
+
+    it("starts the lookup before connecting to the CRM, so the two overlap", async () => {
+      let finish: (value: unknown) => void = () => {};
+      loadAskContext.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+      const pending = POST(post(valid()));
+      // The CRM connection is asked for while the accounts lookup is still unanswered.
+      await vi.waitFor(() => expect(withDb).toHaveBeenCalledTimes(1));
+      expect(loadAskContext.mock.invocationCallOrder[0]).toBeLessThan(withDb.mock.invocationCallOrder[0]);
+      expect(runAsk).not.toHaveBeenCalled();
+      finish({ page: PAGE, ownerNames: NAMES });
+      expect((await pending).status).toBe(200);
+      expect(depsOf().about).toEqual(ABOUT);
+    });
+
+    it("runs alongside the contact lookup, not after it", async () => {
+      let finish: (value: unknown) => void = () => {};
+      loadAskContext.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+      getProfile.mockResolvedValue(null);
+      const pending = POST(post(valid({ viewing: { personId: M1 } })));
+      await vi.waitFor(() => expect(getProfile).toHaveBeenCalledTimes(1));
+      finish(null);
+      expect((await pending).status).toBe(200);
+    });
+
+    it("does no lookup without a session or for an unknown estate", async () => {
+      expect((await POST(post(valid({ estate: "nope" })))).status).toBe(400);
+      expect((await POST(post(valid(), false))).status).toBe(401);
+      expect(loadAskContext).not.toHaveBeenCalled();
+    });
   });
 });

@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
 import { claudeFailureResponse } from "@/lib/monsoon/claude-failure";
 import type { Client } from "pg";
-import { runAsk, type AskMessage, type ModelClient, type Viewing } from "@/lib/monsoon/ask/loop";
+import { runAsk, type AboutUser, type AskMessage, type ModelClient, type Viewing } from "@/lib/monsoon/ask/loop";
+import { loadAskContext, type AskContext, type UserPage, type Who } from "@/lib/monsoon/accounts/profile";
 import { getProfile } from "@/lib/monsoon/contacts";
 import type { Ref } from "@/lib/monsoon/ask/tools";
 import { readJson } from "@/lib/monsoon/body";
@@ -111,6 +112,35 @@ async function resolveViewing(db: Client, target: ViewingTarget | null, today: s
   }
 }
 
+// Like the contact lookup, the user's own page is a help, not a need: capped, and silent when it fails.
+const ABOUT_TIMEOUT_MS = 3000;
+
+/**
+ * The user's own page and their colleagues' account names, or null. Never rejects: a slow or
+ * unreachable accounts database must not stop the answer, and nothing is logged (an error from
+ * there can carry what the person wrote).
+ */
+async function askContext(who: Who, estateKey: string): Promise<AskContext | null> {
+  try {
+    return await loadAskContext(who, estateKey, { timeoutMs: ABOUT_TIMEOUT_MS });
+  } catch {
+    return null;
+  }
+}
+
+/** What the prompt is told about the user. Their name is not here: it comes from the session. */
+function aboutOf(page: UserPage): AboutUser {
+  return {
+    phone: page.person.phone,
+    email: page.person.email,
+    company: page.work.company,
+    website: page.work.website,
+    roleObjectives: page.work.roleObjectives,
+    notes: page.notes.map((n) => ({ body: n.body, at: n.at })),
+    notesTotal: page.notesTotal,
+  };
+}
+
 export async function POST(request: Request) {
   const startedAt = Date.now(); // the loop's deadline counts from here, database connection included
   const auth = await requireAccount(request);
@@ -133,8 +163,12 @@ export async function POST(request: Request) {
     // The customer's own key and model; the customer id comes from the session, never the body.
     const client = account.anthropic({ timeout: 20_000 }).messages as unknown as ModelClient;
     const model = account.model();
-    const result = await account.withDb(estate.key, async (db) =>
-      runAsk(
+    // Started before the CRM connection and awaited inside it, so the two waits overlap. The person
+    // and customer come from the session, never the body.
+    const pendingContext = askContext({ customerId: account.customer.id, personId: account.person.id }, estate.key);
+    const result = await account.withDb(estate.key, async (db) => {
+      const [viewing, context] = await Promise.all([resolveViewing(db, viewingTarget, today), pendingContext]);
+      return runAsk(
         {
           db,
           customerId: account.customer.id,
@@ -147,11 +181,12 @@ export async function POST(request: Request) {
           client,
           now: () => Date.now(),
           startedAt,
-          viewing: await resolveViewing(db, viewingTarget, today),
+          viewing,
+          ...(context ? { about: aboutOf(context.page), ownerNames: context.ownerNames } : {}),
         },
         messages,
-      ),
-    );
+      );
+    });
     await account.noteClaude();
     await account.record("ask", estate.key);
     return NextResponse.json(result);
