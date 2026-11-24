@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React, { useState } from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AskPanel, { EMPTY_ASK, type AskState, type AskTurn, type AskViewing } from "./AskPanel";
@@ -855,5 +855,146 @@ describe("the profile open underneath", () => {
     await user.click(screen.getAllByRole("button", { name: "Confirm" })[0]);
     expect(await screen.findByText("Note added to Jane Tan.")).toBeInTheDocument();
     expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("speaking a question", () => {
+  type Heard = { transcript: string; isFinal?: boolean };
+  class FakeRecognition {
+    static last: FakeRecognition | null = null;
+    continuous = false;
+    interimResults = false;
+    lang = "";
+    onresult: ((e: unknown) => void) | null = null;
+    onerror: ((e: unknown) => void) | null = null;
+    onend: (() => void) | null = null;
+    start = vi.fn();
+    stop = vi.fn(() => this.onend?.());
+    abort = vi.fn(() => this.onend?.());
+    constructor() {
+      FakeRecognition.last = this;
+    }
+    hear(parts: Heard[]) {
+      const results = parts.map((x) => Object.assign([{ transcript: x.transcript }], { isFinal: x.isFinal ?? true }));
+      act(() => this.onresult?.({ results }));
+    }
+    fail(error: string) {
+      act(() => {
+        this.onerror?.({ error });
+        this.onend?.();
+      });
+    }
+  }
+  const w = window as unknown as Record<string, unknown>;
+  beforeEach(() => {
+    FakeRecognition.last = null;
+    w.webkitSpeechRecognition = FakeRecognition;
+  });
+  afterEach(() => {
+    delete w.webkitSpeechRecognition;
+    delete w.SpeechRecognition;
+  });
+  const box = () => screen.getByRole("textbox", { name: "Your question" });
+
+  it("the microphone listens, and what is said appears in the question box", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "Speak your question" }));
+    const rec = FakeRecognition.last!;
+    expect(rec.start).toHaveBeenCalledTimes(1);
+    expect(rec.continuous).toBe(true);
+    expect(rec.interimResults).toBe(true);
+    expect(screen.getByRole("status")).toHaveTextContent("Listening");
+    // The keyboard is not raised: it would cover the sheet on a phone.
+    expect(box()).not.toHaveFocus();
+    expect(screen.queryByText("Tap the microphone on the keyboard and talk, then press Ask.")).toBeNull();
+    rec.hear([{ transcript: "who should I", isFinal: false }]);
+    expect(box()).toHaveValue("who should I");
+    rec.hear([{ transcript: "Who should I chase" }, { transcript: " this week", isFinal: false }]);
+    expect(box()).toHaveValue("Who should I chase this week");
+    await user.click(screen.getByRole("button", { name: "Stop listening" }));
+    expect(rec.stop).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Speak your question" })).toBeInTheDocument();
+    expect(screen.queryByText("Listening...")).toBeNull();
+    expect(box()).toHaveValue("Who should I chase this week");
+  });
+
+  it("speech is added after what is already typed, and never past the length limit", async () => {
+    const user = userEvent.setup();
+    render(<Harness initial={{ turns: [], draft: "About Jane:" }} />);
+    await user.click(screen.getByRole("button", { name: "Speak your question" }));
+    const rec = FakeRecognition.last!;
+    rec.hear([{ transcript: "when did we last talk" }]);
+    expect(box()).toHaveValue("About Jane: when did we last talk");
+    rec.hear([{ transcript: "x".repeat(3000) }]);
+    expect((box() as HTMLTextAreaElement).value).toHaveLength(2000);
+  });
+
+  it("sending the question stops the listening", async () => {
+    const user = userEvent.setup();
+    m.askCrm.mockResolvedValue(answer("Chase Jane."));
+    render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "Speak your question" }));
+    const rec = FakeRecognition.last!;
+    rec.hear([{ transcript: "who should I chase" }]);
+    await user.click(screen.getByRole("button", { name: "Send question" }));
+    expect(rec.abort).toHaveBeenCalled();
+    await screen.findByText("Chase Jane.");
+    // A late result from the stopped session does not refill the box.
+    rec.hear([{ transcript: "who should I chase" }]);
+    expect(box()).toHaveValue("");
+  });
+
+  it("says so when the microphone is not allowed", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "Speak your question" }));
+    FakeRecognition.last!.fail("not-allowed");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Monsoon is not allowed to use the microphone. Allow it in the browser settings, or use the microphone on the keyboard.",
+    );
+    expect(screen.getByRole("button", { name: "Speak your question" })).toBeInTheDocument();
+  });
+
+  it("says nothing when it simply heard no speech, and says so on any other failure", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "Speak your question" }));
+    FakeRecognition.last!.fail("no-speech");
+    expect(screen.queryByRole("alert")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Speak your question" }));
+    FakeRecognition.last!.fail("network");
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not listen. Try again, or use the microphone on the keyboard.");
+  });
+
+  it("a browser that refuses to start falls back to the keyboard hint", async () => {
+    const user = userEvent.setup();
+    w.webkitSpeechRecognition = class extends FakeRecognition {
+      start = vi.fn(() => {
+        throw new Error("no");
+      });
+    };
+    render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "Speak your question" }));
+    expect(screen.getByText("Tap the microphone on the keyboard and talk, then press Ask.")).toBeInTheDocument();
+    expect(box()).toHaveFocus();
+  });
+
+  it("stops listening when the panel goes away", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<Harness />);
+    await user.click(screen.getByRole("button", { name: "Speak your question" }));
+    const rec = FakeRecognition.last!;
+    unmount();
+    expect(rec.abort).toHaveBeenCalled();
+  });
+
+  it("without speech recognition the hint still shows, next to the question box", async () => {
+    delete w.webkitSpeechRecognition;
+    const user = userEvent.setup();
+    render(<Harness initial={{ turns: [], draft: "typed" }} />);
+    await user.click(screen.getByRole("button", { name: "Speak your question" }));
+    expect(screen.getByText("Tap the microphone on the keyboard and talk, then press Ask.")).toBeInTheDocument();
+    expect(box()).toHaveFocus();
   });
 });

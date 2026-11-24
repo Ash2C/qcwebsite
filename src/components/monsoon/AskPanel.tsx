@@ -10,6 +10,7 @@ import ChangeCard, { describeChange } from "./ChangeCard";
 import type { ContactTarget } from "./ContactsPanel";
 import { card as cardClass, primaryButton, secondaryButton } from "./styles";
 import { useCardConfirm, type AskCard } from "./useCardConfirm";
+import { useDictation } from "./useDictation";
 
 export type { AskCard };
 export type AskTurn = {
@@ -34,6 +35,9 @@ const ASK_FAILURE = "Could not get an answer. Check signal and try again.";
 const MAX_CHIPS = 5;
 const SUGGESTIONS = ["Who should I chase this week?", "Who did I add most recently?", "Summarise the pipeline", "Tell me about "];
 const SPEAK_HINT = "Tap the microphone on the keyboard and talk, then press Ask.";
+const MIC_DENIED =
+  "Monsoon is not allowed to use the microphone. Allow it in the browser settings, or use the microphone on the keyboard.";
+const MIC_FAILED = "Could not listen. Try again, or use the microphone on the keyboard.";
 
 // The phone's local date, never the UTC one.
 export function localDate(): string {
@@ -138,8 +142,15 @@ export default function AskPanel({
   /** A change card was confirmed: what is underneath may be out of date. */
   onChanged?: () => void;
 }) {
-  // Speaking is the iPhone keyboard's dictation into the question box; no audio is handled here.
+  // The microphone uses the browser's speech recognition, which hands over text only. Where the
+  // browser has none, the hint points at the keyboard's own dictation.
   const [speakHint, setSpeakHint] = useState(false);
+  // What was in the box when listening began; speech is added after it.
+  const spokenBaseRef = useRef("");
+  const dictation = useDictation((spoken) => {
+    const base = spokenBaseRef.current.trim() === "" ? "" : `${spokenBaseRef.current.trimEnd()} `;
+    onChange((prev) => ({ ...prev, draft: `${base}${spoken.trimStart()}`.slice(0, MAX_DRAFT) }));
+  });
   const [asking, setAsking] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const askRef = useRef(false);
@@ -212,6 +223,7 @@ export default function AskPanel({
   async function send() {
     const question = state.draft;
     if (askRef.current || busy || question.trim() === "" || question.length > MAX_DRAFT) return;
+    dictation.cancel();
     askRef.current = true;
     setAsking(true);
     setFailure(null);
@@ -385,9 +397,6 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
             {failure}
           </p>
         )}
-        {speakHint && state.draft === "" && (
-          <p className="px-1 text-[15px] text-neutral-600 dark:text-neutral-300">{SPEAK_HINT}</p>
-        )}
         <div ref={endRef} />
       </div>
 
@@ -397,16 +406,42 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
             {viewing.company ? `Looking at ${viewing.name} · ${viewing.company}` : `Looking at ${viewing.name}`}
           </p>
         ) : null}
+        {dictation.listening ? (
+          <p role="status" className="px-1 text-[15px] font-medium text-red-600 dark:text-red-400">
+            Listening... Tap the microphone to stop.
+          </p>
+        ) : dictation.error ? (
+          <p role="alert" className="px-1 text-[15px] font-medium text-red-600 dark:text-red-400">
+            {dictation.error === "denied" ? MIC_DENIED : MIC_FAILED}
+          </p>
+        ) : speakHint ? (
+          <p className="px-1 text-[15px] text-neutral-600 dark:text-neutral-300">{SPEAK_HINT}</p>
+        ) : null}
         <div className="flex items-end gap-2">
         <button
           type="button"
-          aria-label="Speak your question"
+          aria-label={dictation.listening ? "Stop listening" : "Speak your question"}
+          aria-pressed={dictation.listening}
           disabled={busy}
           onClick={() => {
+            if (dictation.listening) {
+              dictation.stop();
+              return;
+            }
+            spokenBaseRef.current = state.draft;
+            if (dictation.start()) {
+              setSpeakHint(false);
+              return;
+            }
+            // This browser cannot listen: the keyboard's microphone can.
             setSpeakHint(true);
             inputRef.current?.focus();
           }}
-          className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-2xl bg-white text-[#0E7FA6] shadow-sm ring-1 ring-black/5 active:bg-neutral-100 disabled:opacity-50 dark:bg-[#0E1822] dark:text-[#6AE6FF] dark:ring-white/10"
+          className={`flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-2xl shadow-sm ring-1 disabled:opacity-50 ${
+            dictation.listening
+              ? "bg-red-600 text-white ring-red-600 active:bg-red-700"
+              : "bg-white text-[#0E7FA6] ring-black/5 active:bg-neutral-100 dark:bg-[#0E1822] dark:text-[#6AE6FF] dark:ring-white/10"
+          }`}
         >
           <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <rect x="9" y="3" width="6" height="11" rx="3" />
@@ -423,7 +458,11 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
           maxLength={2000}
           value={state.draft}
           placeholder={`Ask about ${estate.label}...`}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            // Typing takes over from speaking, so the next words heard cannot overwrite the edit.
+            dictation.cancel();
+            setDraft(e.target.value);
+          }}
           className="block min-h-[44px] flex-1 resize-none rounded-2xl bg-white px-4 py-2.5 text-[17px] text-neutral-900 shadow-sm ring-1 ring-black/5 placeholder:text-neutral-400 focus:outline-none dark:bg-[#0E1822] dark:text-white dark:ring-white/10 dark:placeholder:text-neutral-500"
         />
         <button
