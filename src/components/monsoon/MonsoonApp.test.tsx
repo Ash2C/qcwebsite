@@ -255,6 +255,35 @@ describe("MonsoonApp", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   });
 
+  it("a read refused for a missing Claude key says so instead of blaming the photo", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.readCards.mockResolvedValue({ status: 409, body: { error: "claude_key_missing" } });
+    render(<MonsoonApp />);
+    await ready();
+    await pickPhoto(user);
+    expect(
+      await screen.findByText(
+        "Photos cannot be read yet: this account has no Claude API key. Add it with your Monsoon setup link, or type the details.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Could not read the photo/)).not.toBeInTheDocument();
+  });
+
+  it("a read refused because Claude rejected the key says so", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.readCards.mockResolvedValue({ status: 409, body: { error: "claude_key_rejected" } });
+    render(<MonsoonApp />);
+    await ready();
+    await pickPhoto(user);
+    expect(
+      await screen.findByText(
+        "Photos cannot be read: Claude did not accept this account's API key (it may have expired or been revoked). Type the details for now.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("a photo read that fails by network or timeout shows the failure and releases the locks", async () => {
     const user = userEvent.setup();
     signedIn();

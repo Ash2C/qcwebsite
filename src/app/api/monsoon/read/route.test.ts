@@ -141,13 +141,23 @@ describe("POST /api/monsoon/read", () => {
     });
   });
 
-  it("returns 502 with the generic body when the customer has no Claude key, without reading", async () => {
+  it("answers 409 claude_key_missing when the customer has no Claude key, without reading", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     signInAs(fakeAccount({ pipelines: PIPELINES, db: FAKE_DB }));
     const res = await POST(await post(formWith(new Blob(["ABC"], { type: "image/png" }))));
-    expect(res.status).toBe(502);
-    expect(await res.json()).toEqual({ error: "Could not read the photo" });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "claude_key_missing" });
     expect(extractCards).not.toHaveBeenCalled();
+  });
+
+  it("answers 409 claude_key_rejected when Claude refuses the customer's key", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    extractCards.mockRejectedValue(Object.assign(new Error("invalid x-api-key secret detail"), { status: 401 }));
+    const res = await POST(await post(formWith(new Blob(["ABC"], { type: "image/png" }))));
+    // Never 401: the app reads that as "signed out".
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "claude_key_rejected" });
+    expect(JSON.stringify(spy.mock.calls)).not.toContain("secret detail");
   });
 
   it("returns 502 with the generic body when the model is refused", async () => {
