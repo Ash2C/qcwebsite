@@ -34,6 +34,21 @@ export type Proposal =
       expires: number;
     }
   | {
+      kind: "set_next_action";
+      customer: string;
+      estate: string;
+      memberId: string;
+      memberKind: MemberKind;
+      memberName: string;
+      company: string | null;
+      about: string | null;
+      fromAction: string | null;
+      fromDate: string | null; // YYYY-MM-DD
+      toAction: string | null; // null clears the next action (and its date)
+      toDate: string | null;
+      expires: number;
+    }
+  | {
       kind: "set_role";
       customer: string;
       estate: string;
@@ -105,6 +120,8 @@ export type DetailChange = { field: DetailField; from: string | null; to: string
 const PERSON_FIELDS: readonly string[] = ["name", "title", "email", "phone", "linkedin", "country", "company"];
 const COMPANY_FIELDS: readonly string[] = ["website", "country"];
 const MAX_DETAIL = 300;
+export const MAX_NEXT_ACTION = 300;
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_FROM = 2000;
 const MAX_IDENTITY = 400;
 const MAX_URL = 500;
@@ -126,6 +143,7 @@ const KEYS: Record<string, readonly string[]> = {
   move_stage: [...COMMON, "fromStage", "toStage"],
   set_priority: [...COMMON, "fromPriority", "toPriority"],
   set_role: [...COMMON, "fromRole", "toRole"],
+  set_next_action: [...COMMON, "fromAction", "fromDate", "toAction", "toDate"],
   update_details: ["kind", "customer", "estate", "target", "targetName", "company", "changes", "logMemberId", "addsToPipeline", "expires"],
   apply_research: ["kind", "customer", "estate", "person", "company", "identity", "findings", "summarySources", "logMemberId", "addsToPipeline", "expires"],
 };
@@ -246,6 +264,14 @@ function wellFormed(p: unknown): p is Proposal {
   if (!isStringOrNull(o.company) || !isStringOrNull(o.about)) return false;
   if (typeof o.expires !== "number" || !Number.isFinite(o.expires)) return false;
   if (o.kind === "move_stage" && (!isString(o.fromStage) || !isString(o.toStage))) return false;
+  if (o.kind === "set_next_action") {
+    const day = (v: unknown) => v === null || (isString(v) && DAY_RE.test(v));
+    if (!isStringOrNull(o.fromAction) || !isStringOrNull(o.toAction) || !day(o.fromDate) || !day(o.toDate)) return false;
+    if ((o.fromAction?.length ?? 0) > MAX_FROM) return false;
+    if (o.toAction !== null && (o.toAction.trim() === "" || o.toAction.length > MAX_NEXT_ACTION)) return false;
+    if (o.toAction === null && o.toDate !== null) return false;
+    if (o.fromAction === o.toAction && o.fromDate === o.toDate) return false;
+  }
   if (o.kind === "set_role" && (!isString(o.fromRole) || !isString(o.toRole) || o.fromRole === o.toRole)) return false;
   if (o.kind === "set_priority" && (!isPriorityOrNull(o.fromPriority) || !isPriorityOrNull(o.toPriority) || o.fromPriority === o.toPriority)) {
     return false;

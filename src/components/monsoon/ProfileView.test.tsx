@@ -82,6 +82,23 @@ describe("ProfileView", () => {
     expect(acts).toHaveTextContent("null");
   });
 
+  it("the next action is a row to tap: it shows what is set, or that none is, and opens its form there", async () => {
+    m.loadProfile.mockResolvedValue(profile({ member: MEMBER, memberOf: "self" }));
+    const first = view({ actions: (_p, _r, _b, pick) => <div data-testid="acts">{`${String(pick.open)}${pick.slot ? " with slot" : ""}`}</div> });
+    await flush();
+    const row = screen.getByRole("button", { name: "Next action: Send deck, due 20 Nov 2026. Change next action" });
+    expect(row).toHaveTextContent("Send deck · due 20 Nov 2026");
+    fireEvent.click(row);
+    expect(screen.getByTestId("acts")).toHaveTextContent("next with slot");
+    expect(first.onBack).not.toHaveBeenCalled();
+    cleanup();
+
+    m.loadProfile.mockResolvedValue(profile({ member: { ...MEMBER, nextAction: null, nextActionDate: null }, memberOf: "self" }));
+    view({ actions: () => null });
+    await flush();
+    expect(screen.getByRole("button", { name: "Next action: none set. Set next action" })).toHaveTextContent("None set. Tap to add one.");
+  });
+
   it("an estate with one contact type shows the type as plain text; the priority bubble names the priority", async () => {
     m.loadProfile.mockResolvedValue(profile({ member: { ...MEMBER, priority: "high" }, memberOf: "self" }));
     view({ estate: { ...ESTATE, roles: [{ key: "lp_prospect", label: "LP prospect" }] }, actions: () => null });

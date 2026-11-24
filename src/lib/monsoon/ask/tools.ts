@@ -239,6 +239,9 @@ function describeChange(p: SignedProposal): string {
   if (x.kind === "apply_research") return clip(`Save research about ${x.person.name}`, 600) as string;
   const who = x.company ? `${x.memberName} (${x.company})` : x.memberKind === "company" ? `${x.memberName} (company)` : x.memberName;
   const via = x.about ? ` for ${x.about}` : "";
+  if (x.kind === "set_next_action") {
+    return clip(x.toAction ? `Set the next action for ${who}${via}: ${x.toAction}${x.toDate ? ` (due ${x.toDate})` : ""}` : `Clear the next action for ${who}${via}`, 600) as string;
+  }
   if (x.kind === "set_role") return `Change the type of ${who}${via} from ${x.fromRole} to ${x.toRole}`;
   if (x.kind === "set_priority") return `Change the priority of ${who}${via} from ${x.fromPriority ?? "none"} to ${x.toPriority ?? "none"}`;
   return x.kind === "add_note"

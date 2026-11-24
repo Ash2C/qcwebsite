@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProfileActions from "./ProfileActions";
@@ -72,7 +72,7 @@ function view(profile: object = PERSON, props: Props = {}) {
 const click = (user: User, name: string | RegExp) => user.click(screen.getByRole("button", { name }));
 const failed = { status: 500, body: { error: "x" } } as never;
 /** What the profile hands the actions when a bubble under the name is open: the chooser is drawn into the slot. */
-function picking(open: "role" | "stage" | "priority") {
+function picking(open: "role" | "stage" | "priority" | "next") {
   const slot = document.createElement("div");
   document.body.appendChild(slot);
   return { stagePick: { open, slot, close: vi.fn() } };
@@ -251,6 +251,50 @@ describe("Add note", () => {
     await click(user, "LP prospect Current");
     expect(role.stagePick.close).toHaveBeenCalled();
     expect(m.proposeChange).not.toHaveBeenCalled();
+  });
+
+  it("the next action form saves the action and its date in one tap, and reloads", async () => {
+    const user = userEvent.setup();
+    const signed = {
+      proposal: {
+        kind: "set_next_action", estate: "traxo", memberId: "m1", memberKind: "person", memberName: "Jane Tan", company: "Acme Capital",
+        about: null, fromAction: null, fromDate: null, toAction: "Send the deck", toDate: "2026-12-01", customer: "c", expires: 1,
+      },
+      signature: "s".repeat(64),
+    };
+    m.proposeChange.mockResolvedValue({ status: 200, body: { ok: true, signed } } as never);
+    m.actOnCrm.mockResolvedValue({ status: 200, body: { status: "set", message: "Done. Next action set for Jane Tan." } } as never);
+    const pick = picking("next");
+    const h = view(PERSON, pick);
+    expect(screen.getByRole("button", { name: "Save next action" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Clear next action" })).toBeNull();
+    await user.type(screen.getByLabelText("Next action"), "Send the deck");
+    fireEvent.change(screen.getByLabelText("Due date (optional)"), { target: { value: "2026-12-01" } });
+    await click(user, "Save next action");
+    expect(pick.stagePick.close).toHaveBeenCalled();
+    expect(m.proposeChange).toHaveBeenCalledWith({
+      estate: "traxo", kind: "set_next_action", target: { memberId: "m1" }, action: "Send the deck", date: "2026-12-01",
+    });
+    expect(await screen.findByText("Done. Next action set for Jane Tan.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+    expect(h.reload).toHaveBeenCalled();
+  });
+
+  it("the next action form starts from what is on file, can clear it, and Cancel sends nothing", async () => {
+    const user = userEvent.setup();
+    m.proposeChange.mockResolvedValue(refused("x"));
+    const withNext = { ...PERSON, member: { ...PERSON.member, nextAction: "Call her", nextActionDate: "2026-11-30" } };
+    const pick = picking("next");
+    const h = view(withNext, pick);
+    expect(screen.getByLabelText("Next action")).toHaveValue("Call her");
+    expect(screen.getByLabelText("Due date (optional)")).toHaveValue("2026-11-30");
+    expect(screen.getByRole("button", { name: "Save next action" })).toBeDisabled();
+    await click(user, "Cancel");
+    expect(pick.stagePick.close).toHaveBeenCalledTimes(1);
+    expect(m.proposeChange).not.toHaveBeenCalled();
+    await click(user, "Clear next action");
+    expect(m.proposeChange).toHaveBeenCalledWith({ estate: "traxo", kind: "set_next_action", target: { memberId: "m1" }, action: "", date: null });
+    h.unmount();
   });
 
   it("the type chooser lists the estate's contact types and changes it in one tap", async () => {

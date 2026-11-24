@@ -185,7 +185,7 @@ function ExternalLink({ value }: { value: string }) {
 
 /** Which chooser is open (the type bubble's or the stage bubble's) and where it is drawn: right under the bubbles. */
 export type StagePick = { open: Picking; slot: HTMLElement | null; close: () => void };
-type Picking = "role" | "stage" | "priority" | null;
+type Picking = "role" | "stage" | "priority" | "next" | null;
 
 /** "High priority", "Medium priority", "Low priority" or "No priority". */
 export function priorityLabel(priority: string | null | undefined): string {
@@ -430,6 +430,33 @@ export default function ProfileView({
             <span className="text-[15px] text-neutral-600 dark:text-neutral-300">Not on the pipeline</span>
           )}
         </div>
+        {/* The next action: always shown for a contact on the pipeline, and tapped to set or change it. */}
+        {actions && member ? (
+          <button
+            type="button"
+            aria-expanded={picking === "next"}
+            aria-label={
+              member.nextAction
+                ? `Next action: ${member.nextAction}${member.nextActionDate ? `, due ${formatDate(member.nextActionDate)}` : ""}. Change next action`
+                : "Next action: none set. Set next action"
+            }
+            disabled={actionBusy}
+            onClick={() => setPicking((o) => (o === "next" ? null : "next"))}
+            className={`${card} flex min-h-[52px] w-full items-center justify-between gap-3 px-4 py-2 text-left ring-1 ring-[#0E7FA6]/50 disabled:opacity-50 dark:ring-[#6AE6FF]/50`}
+          >
+            <span className="flex min-w-0 flex-col">
+              <span className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Next action</span>
+              <span className={`break-words text-[17px] ${member.nextAction ? "text-neutral-900 dark:text-white" : "text-neutral-500 dark:text-neutral-400"}`}>
+                {member.nextAction
+                  ? `${member.nextAction}${member.nextActionDate ? ` · due ${formatDate(member.nextActionDate)}` : ""}`
+                  : "None set. Tap to add one."}
+              </span>
+            </span>
+            <svg aria-hidden="true" className="shrink-0 text-[#0E7FA6] dark:text-[#6AE6FF]" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d={picking === "next" ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6"} />
+            </svg>
+          </button>
+        ) : null}
         <div ref={setStageSlot} />
       </header>
 
@@ -467,7 +494,7 @@ export default function ProfileView({
         <Detail label="LinkedIn">{p.linkedin ? <ExternalLink value={p.linkedin} /> : "(none)"}</Detail>
         <Detail label="Country">{p.country || "(none)"}</Detail>
         <Detail label="Website">{p.website ? <ExternalLink value={p.website} /> : "(none)"}</Detail>
-        {member?.nextAction ? (
+        {member?.nextAction && !actions ? (
           <Detail label="Next">
             {`${member.nextAction}${member.nextActionDate ? ` · due ${formatDate(member.nextActionDate)}` : ""}`}
           </Detail>

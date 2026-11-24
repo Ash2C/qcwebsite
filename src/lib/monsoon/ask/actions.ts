@@ -1,7 +1,15 @@
 // The two changes Ask can make. A propose function only reads; the write functions run in one
 // transaction each and are called by `act` after a signed proposal has been verified.
 import type { ClientBase } from "pg";
-import { PROPOSAL_TTL_MS, signProposal, type Binding, type Priority, type Proposal, type SignedProposal } from "./proposal";
+import {
+  MAX_NEXT_ACTION,
+  PROPOSAL_TTL_MS,
+  signProposal,
+  type Binding,
+  type Priority,
+  type Proposal,
+  type SignedProposal,
+} from "./proposal";
 import { readOnly, vocabulary, type MemberKind } from "./queries";
 
 export type Target = { memberId?: string; personId?: string };
@@ -21,14 +29,22 @@ type Resolved = {
   stage: string;
   role: string;
   priority: Priority | null;
+  nextAction: string | null;
+  nextDate: string | null;
 };
 type Resolution = { ok: true; member: Resolved } | { ok: false; reason: string };
 
-const MEMBER_SELECT = `SELECT m.id, m.stage, m.role, m.priority, o.name AS org_name, p.name AS person_name, po.name AS person_company
+const MEMBER_SELECT = `SELECT m.id, m.stage, m.role, m.priority, m.next_action, m.next_action_date::text AS next_action_date, o.name AS org_name, p.name AS person_name, po.name AS person_company
                          FROM members m
                          LEFT JOIN orgs o ON o.id = m.org_id
                          LEFT JOIN people p ON p.id = m.person_id
                          LEFT JOIN orgs po ON po.id = p.org_id`;
+
+/** A member's next action as stored, normalised: a blank action is none, and none has no date. */
+function nextOf(action: unknown, date: unknown): { nextAction: string | null; nextDate: string | null } {
+  const nextAction = typeof action === "string" && action.trim() !== "" ? action : null;
+  return { nextAction, nextDate: nextAction && date ? String(date).slice(0, 10) : null };
+}
 
 function resolved(row: Record<string, string | null>, about: string | null): Resolved {
   const person = row.person_name !== null;
@@ -41,6 +57,7 @@ function resolved(row: Record<string, string | null>, about: string | null): Res
     stage: row.stage as string,
     role: row.role as string,
     priority: (row.priority as Priority | null) ?? null,
+    ...nextOf(row.next_action, row.next_action_date),
   };
 }
 
@@ -82,6 +99,7 @@ function sign(
   extra?:
     | { fromStage: string; toStage: string }
     | { fromRole: string; toRole: string }
+    | { fromAction: string | null; fromDate: string | null; toAction: string | null; toDate: string | null }
     | { fromPriority: Priority | null; toPriority: Priority | null },
 ): SignedProposal {
   const base = {
@@ -98,6 +116,8 @@ function sign(
     ? { kind: "add_note", ...base }
     : "toStage" in extra
       ? { kind: "move_stage", ...base, ...extra }
+      : "toAction" in extra
+        ? { kind: "set_next_action", ...base, ...extra }
       : "toRole" in extra
         ? { kind: "set_role", ...base, ...extra }
         : { kind: "set_priority", ...base, ...extra };
@@ -144,6 +164,37 @@ export async function proposeStage(
   }
   if (stage === found.member.stage) return { ok: false, reason: `${found.member.memberName} is already in ${stage}.` };
   return { ok: true, signed: sign(found.member, bind, nowMs, { fromStage: found.member.stage, toStage: stage }) };
+}
+
+/** True for a YYYY-MM-DD string that names a real calendar day. */
+function realDay(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const t = Date.parse(`${value}T00:00:00Z`);
+  return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === value;
+}
+
+/**
+ * The next action for the member a contact belongs to, with an optional due date. Blank text
+ * clears it, and its date with it.
+ */
+export async function proposeNextAction(
+  db: ClientBase,
+  bind: Binding,
+  target: Target,
+  action: string,
+  date: string | null,
+  nowMs: number,
+): Promise<ProposeResult> {
+  const text = typeof action === "string" ? action.trim() : "";
+  if (text.length > MAX_NEXT_ACTION) return { ok: false, reason: `The next action is too long (limit ${MAX_NEXT_ACTION} characters).` };
+  if (date !== null && !realDay(date)) return { ok: false, reason: "That date is not a real day." };
+  const found = await resolve(db, target);
+  if (!found.ok) return found;
+  const toAction = text === "" ? null : text;
+  const toDate = toAction ? date : null;
+  const { nextAction, nextDate } = found.member;
+  if (toAction === nextAction && toDate === nextDate) return { ok: false, reason: "Nothing to change." };
+  return { ok: true, signed: sign(found.member, bind, nowMs, { fromAction: nextAction, fromDate: nextDate, toAction, toDate }) };
 }
 
 /** A different contact type (role) for the member a contact belongs to; it must be one of the estate's roles. */
@@ -291,5 +342,33 @@ export function setRole(db: ClientBase, memberId: string, from: string, to: stri
       `Type: ${from} → ${to}`,
     ]);
     return { value: { status: "set" as const, role: to }, commit: true };
+  });
+}
+
+type NextStatus = "set" | "already" | "changed" | "missing";
+type Next = { action: string | null; date: string | null };
+
+/**
+ * Sets a member's next action and its due date when they still are what the proposal saw. Logged
+ * on the timeline as a system entry (so it does not count as contact), with who made the change.
+ */
+export function setNextAction(db: ClientBase, memberId: string, from: Next, to: Next, owner: string): Promise<{ status: NextStatus }> {
+  return transaction<{ status: NextStatus }>(db, async () => {
+    const found = await db.query(
+      "SELECT next_action, next_action_date::text AS next_action_date FROM members WHERE id = $1 FOR UPDATE",
+      [memberId],
+    );
+    if (found.rows.length === 0) return { value: { status: "missing" as const }, commit: false };
+    const now = nextOf(found.rows[0].next_action, found.rows[0].next_action_date);
+    const same = (n: Next) => n.action === now.nextAction && n.date === now.nextDate;
+    if (same(to)) return { value: { status: "already" as const }, commit: false };
+    if (!same(from)) return { value: { status: "changed" as const }, commit: false };
+    await db.query("UPDATE members SET next_action = $1, next_action_date = $2::date WHERE id = $3", [to.action, to.date, memberId]);
+    await db.query("INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'system', $2, $3)", [
+      memberId,
+      owner,
+      to.action ? `Next action: ${to.action}${to.date ? ` (due ${to.date})` : ""}` : "Next action cleared",
+    ]);
+    return { value: { status: "set" as const }, commit: true };
   });
 }

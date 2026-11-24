@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
-import { proposeNote, proposePriority, proposeRole, proposeStage } from "@/lib/monsoon/ask/actions";
+import { proposeNextAction, proposeNote, proposePriority, proposeRole, proposeStage } from "@/lib/monsoon/ask/actions";
 import { PRIORITIES, type Priority } from "@/lib/monsoon/ask/proposal";
 import { readJson } from "@/lib/monsoon/body";
 import { DETAIL_LABELS, proposeDetails, type DetailInput } from "@/lib/monsoon/details";
@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 const MAX_BODY = 16_384;
-const KINDS = ["add_note", "move_stage", "set_priority", "set_role", "update_details"];
+const KINDS = ["add_note", "move_stage", "set_next_action", "set_priority", "set_role", "update_details"];
 
 function bad(error: string) {
   return NextResponse.json({ error }, { status: 400 });
@@ -69,6 +69,8 @@ export async function POST(request: Request) {
     if (b.priority !== null && !(PRIORITIES as readonly unknown[]).includes(b.priority)) return bad("Invalid priority");
   } else if (b.kind === "set_role") {
     if (typeof b.role !== "string") return bad("Invalid type");
+  } else if (b.kind === "set_next_action") {
+    if (typeof b.action !== "string" || (b.date !== null && typeof b.date !== "string")) return bad("Invalid next action");
   } else {
     changes = parseChanges(b.changes);
     if (!changes) return bad("Invalid changes");
@@ -81,6 +83,16 @@ export async function POST(request: Request) {
     const result = await account.withDb(estate.key, async (db) => {
       if (b.kind === "add_note") return proposeNote(db, bind, { memberId: target.memberId, personId: target.personId }, text, nowMs);
       if (b.kind === "move_stage") return proposeStage(db, bind, { memberId: target.memberId, personId: target.personId }, stage, nowMs);
+      if (b.kind === "set_next_action") {
+        return proposeNextAction(
+          db,
+          bind,
+          { memberId: target.memberId, personId: target.personId },
+          b.action as string,
+          b.date as string | null,
+          nowMs,
+        );
+      }
       if (b.kind === "set_role") {
         return proposeRole(db, bind, { memberId: target.memberId, personId: target.personId }, b.role as string, nowMs);
       }

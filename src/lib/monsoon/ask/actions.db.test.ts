@@ -3,7 +3,18 @@ import type { Client } from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ensureOwner } from "../owners";
 import { testDb } from "../testing/db";
-import { addNote, moveStage, proposeNote, proposePriority, proposeRole, proposeStage, setPriority, setRole } from "./actions";
+import {
+  addNote,
+  moveStage,
+  proposeNextAction,
+  proposeNote,
+  proposePriority,
+  proposeRole,
+  proposeStage,
+  setNextAction,
+  setPriority,
+  setRole,
+} from "./actions";
 import { verifyProposal } from "./proposal";
 
 const NOW = 1_800_000_000_000;
@@ -206,6 +217,66 @@ describe.skipIf(!testDb.available)("Ask writes (real Postgres)", () => {
     await proposeStage(db, ZEROONE, { memberId: id.mLi }, "client", NOW);
     await proposeStage(db, ZEROONE, { personId: id.sam }, "client", NOW);
     expect(await snapshot()).toEqual(before);
+  });
+
+  describe("next action", () => {
+    const next = async (member: string) =>
+      (await db.query("SELECT next_action, next_action_date::text AS d FROM members WHERE id = $1", [member])).rows[0];
+
+    it("proposes a next action with or without a date, signed, and reads only", async () => {
+      const before = await snapshot();
+      const r = await proposeNextAction(db, ZEROONE, { memberId: id.mLi }, "  Send the deck  ", "2026-12-01", NOW);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.signed.proposal).toMatchObject({
+        kind: "set_next_action", memberId: id.mLi, fromAction: null, fromDate: null, toAction: "Send the deck", toDate: "2026-12-01",
+      });
+      expect(verifyProposal(r.signed.proposal, r.signed.signature, NOW)).toBe(true);
+      const undated = await proposeNextAction(db, ZEROONE, { memberId: id.mLi }, "Call", null, NOW);
+      expect(undated.ok && undated.signed.proposal).toMatchObject({ toAction: "Call", toDate: null });
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("refuses a date that is not a real day, text that is too long, and no change", async () => {
+      for (const bad of ["2026-02-30", "tomorrow", "2026-13-01"]) {
+        expect(await proposeNextAction(db, ZEROONE, { memberId: id.mLi }, "Call", bad, NOW)).toEqual({ ok: false, reason: "That date is not a real day." });
+      }
+      expect((await proposeNextAction(db, ZEROONE, { memberId: id.mLi }, "x".repeat(301), null, NOW)).ok).toBe(false);
+      // Nothing set and nothing asked: no change. A date with no action is no change either.
+      expect(await proposeNextAction(db, ZEROONE, { memberId: id.mLi }, "   ", "2026-12-01", NOW)).toEqual({ ok: false, reason: "Nothing to change." });
+      await db.query("UPDATE members SET next_action = 'Call', next_action_date = '2026-12-01' WHERE id = $1", [id.mLi]);
+      expect(await proposeNextAction(db, ZEROONE, { memberId: id.mLi }, "Call", "2026-12-01", NOW)).toEqual({ ok: false, reason: "Nothing to change." });
+      const cleared = await proposeNextAction(db, ZEROONE, { memberId: id.mLi }, "", null, NOW);
+      expect(cleared.ok && cleared.signed.proposal).toMatchObject({ fromAction: "Call", fromDate: "2026-12-01", toAction: null, toDate: null });
+    });
+
+    it("sets, changes and clears it, logging each change as a system entry by that person", async () => {
+      const none = { action: null, date: null };
+      const first = { action: "Send the deck", date: "2026-12-01" };
+      const second = { action: "Send the deck", date: null };
+      expect((await setNextAction(db, id.mLi, none, first, "VF")).status).toBe("set");
+      expect(await next(id.mLi)).toEqual({ next_action: "Send the deck", d: "2026-12-01" });
+      expect((await setNextAction(db, id.mLi, first, second, "VF")).status).toBe("set");
+      expect(await next(id.mLi)).toEqual({ next_action: "Send the deck", d: null });
+      expect((await setNextAction(db, id.mLi, second, none, "VF")).status).toBe("set");
+      expect(await next(id.mLi)).toEqual({ next_action: null, d: null });
+      const log = await db.query("SELECT kind, by_whom, summary FROM touches WHERE member_id = $1 ORDER BY at", [id.mLi]);
+      expect(log.rows).toEqual([
+        { kind: "system", by_whom: "VF", summary: "Next action: Send the deck (due 2026-12-01)" },
+        { kind: "system", by_whom: "VF", summary: "Next action: Send the deck" },
+        { kind: "system", by_whom: "VF", summary: "Next action cleared" },
+      ]);
+    });
+
+    it("writes nothing when it is already so, changed in the meantime, or the member is gone", async () => {
+      await db.query("UPDATE members SET next_action = 'Call', next_action_date = '2026-12-01' WHERE id = $1", [id.mLi]);
+      const before = await snapshot();
+      const none = { action: null, date: null };
+      expect((await setNextAction(db, id.mLi, none, { action: "Email", date: null }, "VF")).status).toBe("changed");
+      expect((await setNextAction(db, id.mLi, none, { action: "Call", date: "2026-12-01" }, "VF")).status).toBe("already");
+      expect((await setNextAction(db, randomUUID(), none, { action: "Call", date: null }, "VF")).status).toBe("missing");
+      expect(await snapshot()).toEqual(before);
+    });
   });
 
   describe("contact type", () => {
