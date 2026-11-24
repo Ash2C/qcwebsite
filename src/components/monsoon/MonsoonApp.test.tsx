@@ -240,12 +240,12 @@ describe("MonsoonApp", () => {
     });
     render(<MonsoonApp />);
     await ready();
-    await user.click(screen.getByRole("button", { name: "Claude connected" }));
+    await user.click(screen.getByRole("button", { name: "Connected" }));
     expect(await screen.findByRole("heading", { name: "Claude key" })).toBeInTheDocument();
     expect(await screen.findByText("Not connected")).toBeInTheDocument();
     // What the key screen learned is what the chip shows after Back.
     await user.click(screen.getByRole("button", { name: "Back" }));
-    expect(screen.getByRole("button", { name: "Claude key refused" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Key refused" })).toBeInTheDocument();
     expect(screen.getByText("Snap or choose a photo")).toBeInTheDocument();
   });
 
@@ -253,9 +253,9 @@ describe("MonsoonApp", () => {
     signedIn();
     render(<MonsoonApp />);
     await ready();
-    expect(screen.getByRole("button", { name: "Claude key" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "API key" })).toBeInTheDocument();
     act(() => reportClaudeStatus("missing"));
-    expect(screen.getByRole("button", { name: "Claude key needed" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Key needed" })).toBeInTheDocument();
   });
 
   it("one estate shows no estate chooser; two are small text beside the person's name", async () => {

@@ -4,27 +4,27 @@ import type { ClaudeChipStatus } from "./claudeStatus";
 // the problem. Tapping it opens the Claude key screen. The mark differs by state as well as the colour.
 const LOOK: Record<ClaudeChipStatus | "unknown", { label: string; tone: string; mark: "dot" | "cross" | "bang" }> = {
   ok: {
-    label: "Claude connected",
+    label: "Connected",
     tone: "border-green-600/40 bg-green-50 text-green-800 dark:border-[#1F6B43] dark:bg-[#0F2A1C] dark:text-[#6EE7A0]",
     mark: "dot",
   },
   missing: {
-    label: "Claude key needed",
+    label: "Key needed",
     tone: "border-red-600/40 bg-red-50 text-red-800 dark:border-[#8A2F2F] dark:bg-[#2B1414] dark:text-[#FFA3A3]",
     mark: "cross",
   },
   key_rejected: {
-    label: "Claude key refused",
+    label: "Key refused",
     tone: "border-red-600/40 bg-red-50 text-red-800 dark:border-[#8A2F2F] dark:bg-[#2B1414] dark:text-[#FFA3A3]",
     mark: "cross",
   },
   no_credit: {
-    label: "Claude out of credit",
+    label: "Out of credit",
     tone: "border-amber-600/40 bg-amber-50 text-amber-900 dark:border-[#8A6A1F] dark:bg-[#2B2210] dark:text-[#FFD27A]",
     mark: "bang",
   },
   unknown: {
-    label: "Claude key",
+    label: "API key",
     tone: "border-neutral-400/50 bg-white text-neutral-700 dark:border-white/20 dark:bg-white/5 dark:text-neutral-200",
     mark: "dot",
   },
