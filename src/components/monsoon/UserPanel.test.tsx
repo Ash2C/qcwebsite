@@ -9,7 +9,15 @@ import * as api from "./api";
 import { shortDay } from "./ContactsPanel";
 import UserPanel, { EMPTY_USER_DRAFT, type UserDraft } from "./UserPanel";
 
-vi.mock("./api", () => ({ loadUserPage: vi.fn(), saveUserPage: vi.fn(), addUserNote: vi.fn() }));
+vi.mock("./api", () => ({
+  loadUserPage: vi.fn(),
+  saveUserPage: vi.fn(),
+  addUserNote: vi.fn(),
+  loadGranolaKey: vi.fn(),
+  saveGranolaKey: vi.fn(),
+  testGranolaKey: vi.fn(),
+  disconnectGranolaKey: vi.fn(),
+}));
 const m = vi.mocked(api);
 
 const ESTATE = { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", available: true, roles: [] };
@@ -23,6 +31,9 @@ const PAGE: UserPage = {
   notesTotal: 2,
 };
 const reply = (page: UserPage) => ({ status: 200, body: { page } }) as never;
+const GRANOLA_OFF = { status: "missing" as const, last4: null, setAt: null, checkedAt: null };
+const GRANOLA_ON = { status: "ok" as const, last4: "4f2A", setAt: "2025-03-02T09:00:00Z", checkedAt: "2025-03-05T09:00:00Z" };
+const granola = (key: object) => ({ status: 200, body: { key } }) as never;
 
 let onBack: ReturnType<typeof vi.fn>;
 let onUnauthorized: ReturnType<typeof vi.fn>;
@@ -60,6 +71,7 @@ beforeEach(() => {
   onName = vi.fn();
   drafts = [];
   m.loadUserPage.mockResolvedValue(reply(PAGE));
+  m.loadGranolaKey.mockResolvedValue(granola(GRANOLA_OFF));
 });
 afterEach(() => {
   cleanup();
@@ -296,5 +308,118 @@ describe("UserPanel", () => {
     await user.click(screen.getByRole("button", { name: "Back" }));
     expect(confirm).toHaveBeenCalledTimes(1);
     expect(onBack).not.toHaveBeenCalled();
+  });
+
+  describe("Connections", () => {
+    it("has a Granola row that says the state it loaded", async () => {
+      await view();
+      expect(screen.getByRole("heading", { name: "Connections" })).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Granola, Not connected" })).toBeEnabled();
+      expect(m.loadGranolaKey).toHaveBeenCalledTimes(1);
+      cleanup();
+      for (const [status, words] of [
+        ["ok", "Connected"],
+        ["key_rejected", "Key refused"],
+        ["no_access", "No access"],
+      ]) {
+        m.loadGranolaKey.mockResolvedValue(granola({ ...GRANOLA_ON, status }));
+        await view();
+        expect(await screen.findByRole("button", { name: `Granola, ${words}` })).toBeInTheDocument();
+        cleanup();
+      }
+    });
+
+    it("a Granola state that will not load leaves the row as Granola alone and the page usable", async () => {
+      const user = userEvent.setup();
+      m.loadGranolaKey.mockRejectedValue(new Error("net"));
+      await view();
+      await waitFor(() => expect(m.loadGranolaKey).toHaveBeenCalledTimes(1));
+      expect(screen.getByRole("button", { name: "Granola" })).toBeEnabled();
+      expect(screen.queryByRole("alert")).toBeNull();
+      await user.type(screen.getByLabelText("Phone"), "9");
+      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+      cleanup();
+
+      // Signed out as far as Granola's route is concerned: still only an unknown row.
+      m.loadGranolaKey.mockResolvedValue({ status: 401, body: { error: "unauthorized" } });
+      await view();
+      await waitFor(() => expect(m.loadGranolaKey).toHaveBeenCalledTimes(2));
+      expect(screen.getByRole("button", { name: "Granola" })).toBeEnabled();
+      expect(onUnauthorized).not.toHaveBeenCalled();
+      cleanup();
+
+      m.loadGranolaKey.mockResolvedValue({ status: 502, body: null } as never);
+      await view();
+      await waitFor(() => expect(m.loadGranolaKey).toHaveBeenCalledTimes(3));
+      expect(screen.getByRole("button", { name: "Granola" })).toBeEnabled();
+    });
+
+    it("the row opens the Granola screen without asking, and Back returns with the edits and the new state", async () => {
+      const user = userEvent.setup();
+      const confirm = vi.spyOn(window, "confirm");
+      await view();
+      await user.clear(screen.getByLabelText("Name"));
+      await user.type(screen.getByLabelText("Name"), "Dana L.");
+      await user.type(screen.getByLabelText("Phone"), "9");
+      await user.type(screen.getByLabelText("Role and objectives"), " More.");
+      await user.type(screen.getByLabelText("New note"), "Half a note");
+      const draftsBefore = drafts.length;
+
+      await user.click(await screen.findByRole("button", { name: "Granola, Not connected" }));
+      expect(confirm).not.toHaveBeenCalled();
+      expect(await screen.findByRole("heading", { name: "Granola" })).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "Your page" })).toBeNull();
+      expect(screen.queryByLabelText("Name")).toBeNull();
+
+      m.saveGranolaKey.mockResolvedValue(granola(GRANOLA_ON));
+      await user.type(await screen.findByLabelText("Granola API key"), "grn_fake_key_for_tests");
+      await user.click(screen.getByRole("button", { name: "Test and save" }));
+      expect(await screen.findByText("Connected")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Back" }));
+      expect(onBack).not.toHaveBeenCalled();
+      expect(confirm).not.toHaveBeenCalled();
+      expect(screen.getByRole("heading", { name: "Your page" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Granola, Connected" })).toBeInTheDocument();
+      expect(screen.getByLabelText("Name")).toHaveValue("Dana L.");
+      expect(screen.getByLabelText("Phone")).toHaveValue("+31 6 1234 56789");
+      expect(screen.getByLabelText("Role and objectives")).toHaveValue("Partner.\nRaise the next fund. More.");
+      expect(screen.getByLabelText("New note")).toHaveValue("Half a note");
+      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+      expect(drafts.length).toBe(draftsBefore);
+      // The page itself was not fetched again.
+      expect(m.loadUserPage).toHaveBeenCalledTimes(1);
+    });
+
+    it("a 401 on the Granola screen hands over to the passcode screen", async () => {
+      const user = userEvent.setup();
+      await view();
+      await user.click(await screen.findByRole("button", { name: "Granola, Not connected" }));
+      m.saveGranolaKey.mockResolvedValue({ status: 401, body: { error: "unauthorized" } });
+      await user.type(await screen.findByLabelText("Granola API key"), "grn_fake_key_for_tests");
+      await user.click(screen.getByRole("button", { name: "Test and save" }));
+      await waitFor(() => expect(onUnauthorized).toHaveBeenCalledTimes(1));
+    });
+
+    it("the row is off while a save or an add is away", async () => {
+      const user = userEvent.setup();
+      await view();
+      const rowButton = await screen.findByRole("button", { name: "Granola, Not connected" });
+      let finishSave: (v: never) => void = () => {};
+      m.saveUserPage.mockReturnValue(new Promise((resolve) => (finishSave = resolve)));
+      await user.type(screen.getByLabelText("Phone"), "9");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(rowButton).toBeDisabled();
+      finishSave(reply(PAGE));
+      await waitFor(() => expect(rowButton).toBeEnabled());
+
+      let finishAdd: (v: never) => void = () => {};
+      m.addUserNote.mockReturnValue(new Promise((resolve) => (finishAdd = resolve)));
+      await user.type(screen.getByLabelText("New note"), "A note");
+      await user.click(screen.getByRole("button", { name: "Add" }));
+      expect(rowButton).toBeDisabled();
+      finishAdd(reply(PAGE));
+      await waitFor(() => expect(rowButton).toBeEnabled());
+    });
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { actOnCrm, addUserNote, askCrm, loadUserPage, saveUserPage, researchContact, loadEstates, loadProfile, proposeChange, searchContacts, readCards, refineCard, saveCard, signIn } from "./api";
+import { actOnCrm, addUserNote, askCrm, disconnectGranolaKey, loadGranolaKey, saveGranolaKey, testGranolaKey, loadUserPage, saveUserPage, researchContact, loadEstates, loadProfile, proposeChange, searchContacts, readCards, refineCard, saveCard, signIn } from "./api";
 
 // `fetch` is stubbed: nothing here touches the network.
 const fetchMock = vi.fn();
@@ -43,6 +43,10 @@ const CALLS: [string, string, number, () => Promise<unknown>][] = [
   ["proposeChange", "/api/monsoon/propose", 35_000, () => proposeChange({ estate: "traxo", kind: "add_note", target: { memberId: "m1" }, text: "hi" })],
   ["askCrm", "/api/monsoon/ask", 70_000, () => askCrm({ estate: "traxo", today: "2026-11-13", messages: [] })],
   ["loadUserPage", "/api/monsoon/me?estate=zero+one", 15_000, () => loadUserPage("zero one")],
+  ["loadGranolaKey", "/api/monsoon/granola-key", 15_000, () => loadGranolaKey()],
+  ["testGranolaKey", "/api/monsoon/granola-key", 35_000, () => testGranolaKey()],
+  ["saveGranolaKey", "/api/monsoon/granola-key", 35_000, () => saveGranolaKey("grn_fake_key_for_tests")],
+  ["disconnectGranolaKey", "/api/monsoon/granola-key", 35_000, () => disconnectGranolaKey()],
   ["saveUserPage", "/api/monsoon/me", 35_000, () => saveUserPage("traxo", PAGE_INPUT)],
   ["addUserNote", "/api/monsoon/me/notes", 35_000, () => addUserNote("traxo", "A note")],
 ];
@@ -82,6 +86,23 @@ describe("client timeouts", () => {
     const post = fetchMock.mock.calls[2][1] as RequestInit;
     expect(post.method).toBe("POST");
     expect(JSON.parse(post.body as string)).toEqual({ estate: "traxo", body: "A note" });
+  });
+
+  it("the Granola key is read fresh, and tested, saved and disconnected with POST", async () => {
+    await loadGranolaKey();
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/monsoon/granola-key");
+    expect(fetchMock.mock.calls[0][1].cache).toBe("no-store");
+    expect(fetchMock.mock.calls[0][1].method).toBeUndefined();
+    await testGranolaKey();
+    await saveGranolaKey("grn_fake_key_for_tests");
+    await disconnectGranolaKey();
+    const bodies = fetchMock.mock.calls.slice(1).map(([url, init]) => {
+      expect(url).toBe("/api/monsoon/granola-key");
+      expect(init.method).toBe("POST");
+      expect(init.headers).toEqual({ "Content-Type": "application/json" });
+      return JSON.parse(init.body);
+    });
+    expect(bodies).toEqual([{ test: true }, { granolaKey: "grn_fake_key_for_tests" }, { disconnect: true }]);
   });
 
   it("keeps each call's own method, headers and body beside the signal", async () => {

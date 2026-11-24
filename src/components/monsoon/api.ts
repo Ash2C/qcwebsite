@@ -10,6 +10,7 @@ import type { Profile } from "@/lib/monsoon/contacts";
 import type { SiftHit, Sort } from "@/lib/monsoon/sift";
 import type { SignedProposal } from "@/lib/monsoon/ask/proposal";
 import type { ClaudeKeyState } from "@/lib/monsoon/accounts/claude-key";
+import type { GranolaKeyState } from "@/lib/monsoon/accounts/granola-key";
 import type { PageInput, UserPage } from "@/lib/monsoon/accounts/profile";
 import { claudeStatusOf, reportClaudeStatus, type ClaudeChipStatus } from "./claudeStatus";
 
@@ -46,8 +47,8 @@ export type ApiResult<T> = { status: number; body: T };
 // How long each call may take before it is aborted, in milliseconds. A little over each route's
 // own limit, so the server answers first when it can.
 const TIMEOUT_MS = {
-  quick: 15_000, // signIn, loadEstates, loadUserPage
-  standard: 35_000, // saveCard, refineCard, actOnCrm, proposeChange, saveUserPage, addUserNote
+  quick: 15_000, // signIn, loadEstates, loadUserPage, loadGranolaKey
+  standard: 35_000, // saveCard, refineCard, actOnCrm, proposeChange, saveUserPage, addUserNote, the Granola key posts
   upload: 90_000, // readCards: the photo upload on a weak connection counts against the limit
   ask: 70_000, // askCrm
   research: 70_000, // researchContact: one bounded web search
@@ -281,6 +282,36 @@ export function testClaudeKey(): Promise<KeyReply> {
 /** Tests a new key and replaces the one on file only if Claude accepts it. */
 export function saveClaudeKey(claudeKey: string): Promise<KeyReply> {
   return keyPost({ claudeKey });
+}
+
+type GranolaReply = ApiResult<{ key: GranolaKeyState } | { error: string }>;
+const granolaPost = async (body: Record<string, unknown>): Promise<GranolaReply> =>
+  parse(
+    await request(
+      "/api/monsoon/granola-key",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+      TIMEOUT_MS.standard,
+    ),
+  );
+
+/** The signed-in person's own Granola key state (never the key). */
+export async function loadGranolaKey(): Promise<GranolaReply> {
+  return parse(await request("/api/monsoon/granola-key", { cache: "no-store" }, TIMEOUT_MS.quick));
+}
+
+/** Tests the Granola key on file with one real call. */
+export function testGranolaKey(): Promise<GranolaReply> {
+  return granolaPost({ test: true });
+}
+
+/** Tests a new Granola key and stores it only if Granola accepts it. */
+export function saveGranolaKey(granolaKey: string): Promise<GranolaReply> {
+  return granolaPost({ granolaKey });
+}
+
+/** Removes the person's Granola key. */
+export function disconnectGranolaKey(): Promise<GranolaReply> {
+  return granolaPost({ disconnect: true });
 }
 
 type PageReply = ApiResult<{ page: UserPage } | { error: string }>;

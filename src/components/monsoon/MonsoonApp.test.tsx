@@ -27,6 +27,10 @@ vi.mock("./api", () => ({
   loadUserPage: vi.fn(),
   saveUserPage: vi.fn(),
   addUserNote: vi.fn(),
+  loadGranolaKey: vi.fn(),
+  saveGranolaKey: vi.fn(),
+  testGranolaKey: vi.fn(),
+  disconnectGranolaKey: vi.fn(),
 }));
 vi.mock("./image", () => ({
   downsizeImage: vi.fn(),

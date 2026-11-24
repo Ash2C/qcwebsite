@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { GranolaKeyState } from "@/lib/monsoon/accounts/granola-key";
 import type { PageInput, UserPage } from "@/lib/monsoon/accounts/profile";
-import { addUserNote, loadUserPage, saveUserPage, type EstateInfo } from "./api";
+import { addUserNote, loadGranolaKey, loadUserPage, saveUserPage, type EstateInfo } from "./api";
 import { shortDay } from "./ContactsPanel";
+import GranolaKeyPanel, { GRANOLA_STATE } from "./GranolaKeyPanel";
 import MonsoonLoader from "./MonsoonLoader";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
 
@@ -79,6 +81,11 @@ export default function UserPanel({
   const [adding, setAdding] = useState(false);
   const [saveNote, setSaveNote] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
   const [noteError, setNoteError] = useState<string | null>(null);
+  // Granola: null until its state is known. While `granolaOpen`, its screen stands in for this page;
+  // this component stays mounted, so the page it loaded and the draft in MonsoonApp are untouched.
+  const [granola, setGranola] = useState<GranolaKeyState["status"] | null>(null);
+  const [granolaOpen, setGranolaOpen] = useState(false);
+  const unauthorized = useCallback(() => calls.current.onUnauthorized(), []);
 
   // The latest props, for the moment a request returns: the parent re-renders while it is away.
   const draftRef = useRef(draft);
@@ -115,6 +122,18 @@ export default function UserPanel({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // The Granola row's state. A failure of any kind leaves it unknown and the page as it is.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await loadGranolaKey();
+        if (alive.current && res.status === 200 && res.body && "key" in res.body) setGranola(res.body.key.status);
+      } catch {
+        // unknown: the row says "Granola" alone
+      }
+    })();
+  }, []);
 
   const onFile = page ? fromPage(page) : null;
   const values = onFile ? (draft.fields ?? onFile) : null;
@@ -209,6 +228,10 @@ export default function UserPanel({
       />
     </div>
   );
+
+  if (granolaOpen) {
+    return <GranolaKeyPanel onBack={() => setGranolaOpen(false)} onUnauthorized={unauthorized} onStatus={setGranola} />;
+  }
 
   return (
     <section aria-labelledby="user-page-title" className="flex flex-col gap-4">
@@ -334,6 +357,29 @@ export default function UserPanel({
                 ))}
               </ul>
             )}
+          </section>
+
+          <section aria-labelledby="user-connections" className="flex flex-col gap-2">
+            <h3 id="user-connections" className={sectionTitle}>
+              Connections
+            </h3>
+            <div className={`${card} overflow-hidden`}>
+              <button
+                type="button"
+                aria-label={granola ? `Granola, ${GRANOLA_STATE[granola]}` : "Granola"}
+                onClick={() => setGranolaOpen(true)}
+                disabled={saving || adding}
+                className="flex min-h-[52px] w-full items-center justify-between gap-3 px-4 py-3 text-left text-[17px] active:bg-neutral-100 disabled:opacity-50 dark:active:bg-white/10"
+              >
+                <span className="font-medium">Granola</span>
+                <span className="flex items-center gap-2 text-[15px] text-neutral-600 dark:text-neutral-400">
+                  {granola ? GRANOLA_STATE[granola] : ""}
+                  <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M9 5l7 7-7 7" />
+                  </svg>
+                </span>
+              </button>
+            </div>
           </section>
         </>
       )}
