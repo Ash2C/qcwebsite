@@ -123,8 +123,18 @@ const PROBE_LITERALS = [
   "has_table_privilege($1, 'public.' || quote_ident(t.name), 'TRUNCATE')",
 ];
 
+// The admin tool's `forget`: an administrator erasing a customer's people blanks their user pages
+// (docs/superpowers/specs/2026-11-24-monsoon-user-page-design.md, "forget blanks the page"). The app
+// itself still never deletes a note. Allowed by file AND exact statement, as complete string
+// literals: the same statement in server code, or any other delete in the admin tool, is flagged.
+const FORGET_FILE = "../scripts/monsoon/admin-commands.ts";
+const FORGET_LITERALS = ["person_notes", "person_work"].map(
+  (t) => `"DELETE FROM ${t} WHERE person_id IN (SELECT id FROM people WHERE customer_id = $1)"`,
+);
+
 function violations(source: string, file?: string): string[] {
   if (file === PRUNE_FILE) for (const lit of PRUNE_LITERALS) source = source.split(lit).join(" ");
+  if (file === FORGET_FILE) for (const lit of FORGET_LITERALS) source = source.split(lit).join(" ");
   if (file === PROBE_FILE) for (const lit of PROBE_LITERALS) source = source.split(lit).join(" ");
   // raw and comments blanked, and each again with escaped quotes (a \" inside a TypeScript
   // string) turned into plain ones, so an escaped quoted identifier is seen as one.
@@ -288,6 +298,24 @@ describe("never delete", () => {
     expect(violations("await db.query(`${'TRUNCATE'} touches`);", PROBE_FILE)).toContain("TRUNCATE");
     expect(violations("has_table_privilege($1, t, 'TRUNCATE')", PROBE_FILE)).toContain("TRUNCATE");
     expect(violations(probe, PRUNE_FILE)).toContain("DELETE FROM");
+  });
+
+  it("allows only forget's two user-page deletes, and only in the admin commands file", () => {
+    const stmt = (t: string) => `DELETE FROM ${t} WHERE person_id IN (SELECT id FROM people WHERE customer_id = $1)`;
+    for (const t of ["person_notes", "person_work"]) {
+      const call = `await db.query("${stmt(t)}", [c.id]);`;
+      expect(violations(call, FORGET_FILE)).toEqual([]);
+      expect(violations(call)).toContain("DELETE FROM");
+      expect(violations(call, "../scripts/monsoon/admin.ts")).toContain("DELETE FROM");
+      expect(violations(call, "lib/monsoon/accounts/profile.ts")).toContain("DELETE FROM");
+      expect(violations(call, PRUNE_FILE)).toContain("DELETE FROM");
+      expect(violations(`await db.query("${stmt(t)} OR true", [c.id]);`, FORGET_FILE)).toContain("DELETE FROM");
+      expect(violations(`// ${stmt(t)}`, FORGET_FILE)).toContain("DELETE FROM");
+      expect(violations(`await db.query("DELETE FROM ${t}");`, FORGET_FILE)).toContain("DELETE FROM");
+      expect(violations(`await db.query("DELETE FROM ${t} WHERE person_id = $1");`, FORGET_FILE)).toContain("DELETE FROM");
+    }
+    expect(violations('await db.query("DELETE FROM people WHERE customer_id = $1");', FORGET_FILE)).toContain("DELETE FROM");
+    expect(violations('await db.query("DELETE FROM customers WHERE id = $1");', FORGET_FILE)).toContain("DELETE FROM");
   });
 
   it("finds the Monsoon server files to scan", () => {

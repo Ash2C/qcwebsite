@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { makeAccountsTestDb } from "../testing/db";
 
 const db = makeAccountsTestDb();
-const TABLES = ["accounts_migrations", "customers", "people", "pipelines", "setup_links", "sign_in_attempts", "activity"];
+const TABLES = [
+  "accounts_migrations", "customers", "people", "pipelines", "setup_links", "sign_in_attempts", "activity",
+  "person_work", "person_notes",
+];
 
 describe.skipIf(!db.available)("accounts schema", () => {
   let client: Client;
@@ -25,11 +28,11 @@ describe.skipIf(!db.available)("accounts schema", () => {
     return r.rows[0].id;
   }
 
-  it("creates all seven tables and records migrations 1 to 3", async () => {
+  it("creates all nine tables and records migrations 1 to 4", async () => {
     const r = await client.query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'");
     expect(r.rows.map((x) => x.tablename).sort()).toEqual([...TABLES].sort());
     const m = await client.query("SELECT version FROM accounts_migrations");
-    expect(m.rows.map((x) => x.version)).toEqual([1, 2, 3]);
+    expect(m.rows.map((x) => x.version).sort()).toEqual([1, 2, 3, 4]);
   });
 
   it("applies defaults to customers", async () => {
@@ -106,7 +109,7 @@ describe.skipIf(!db.available)("accounts schema", () => {
     const r = await client.query(
       "SELECT relname, relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r'",
     );
-    expect(r.rows).toHaveLength(7);
+    expect(r.rows.map((x) => x.relname).sort()).toEqual([...TABLES].sort());
     for (const row of r.rows) expect(row.relrowsecurity).toBe(true);
     const p = await client.query("SELECT count(*)::int AS n FROM pg_policies WHERE schemaname = 'public'");
     expect(p.rows[0].n).toBe(0);
@@ -117,7 +120,88 @@ describe.skipIf(!db.available)("accounts schema", () => {
     const { join } = await import("node:path");
     await client.query(readFileSync(join(__dirname, "schema.sql"), "utf8"));
     const m = await client.query("SELECT count(*)::int AS n FROM accounts_migrations");
-    expect(m.rows[0].n).toBe(3);
+    expect(m.rows[0].n).toBe(4);
+  });
+
+  it("version 4: people gain phone and email, and the two page tables have their columns", async () => {
+    const cols = async (table: string) =>
+      (
+        await client.query(
+          "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY column_name",
+          [table],
+        )
+      ).rows.map((x) => `${x.column_name} ${x.data_type} ${x.is_nullable}`);
+    const people = await cols("people");
+    expect(people).toContain("phone text YES");
+    expect(people).toContain("email text YES");
+    expect(await cols("person_work")).toEqual([
+      "company text YES",
+      "person_id uuid NO",
+      "pipeline_id uuid NO",
+      "role_objectives text YES",
+      "updated_at timestamp with time zone NO",
+      "website text YES",
+    ]);
+    expect(await cols("person_notes")).toEqual([
+      "body text NO",
+      "created_at timestamp with time zone NO",
+      "id uuid NO",
+      "person_id uuid NO",
+      "pipeline_id uuid NO",
+    ]);
+    const idx = await client.query("SELECT indexdef FROM pg_indexes WHERE tablename = 'person_notes'");
+    expect(idx.rows.map((x) => x.indexdef).join("\n")).toContain("(person_id, pipeline_id, created_at DESC)");
+  });
+
+  it("version 4: one work row per person and pipeline, and both tables point at real rows", async () => {
+    const id = await customer();
+    const person = (
+      await client.query("INSERT INTO people (customer_id, display_name, owner_key, passcode_hash) VALUES ($1,'P','PP','h') RETURNING id", [id])
+    ).rows[0].id;
+    const pipe = (
+      await client.query("INSERT INTO pipelines (customer_id, key, label, default_role, position) VALUES ($1,'main','L','investor',0) RETURNING id", [id])
+    ).rows[0].id;
+    const work = (p: string, l: string) => client.query("INSERT INTO person_work (person_id, pipeline_id, company) VALUES ($1,$2,'Acme')", [p, l]);
+    const note = (p: string, l: string) => client.query("INSERT INTO person_notes (person_id, pipeline_id, body) VALUES ($1,$2,'n')", [p, l]);
+    const NONE = "00000000-0000-0000-0000-000000000000";
+    await work(person, pipe);
+    await expect(work(person, pipe)).rejects.toMatchObject({ code: "23505" });
+    await expect(work(NONE, pipe)).rejects.toMatchObject({ code: "23503" });
+    await expect(work(person, NONE)).rejects.toMatchObject({ code: "23503" });
+    await note(person, pipe);
+    await note(person, pipe);
+    await expect(note(NONE, pipe)).rejects.toMatchObject({ code: "23503" });
+    await expect(note(person, NONE)).rejects.toMatchObject({ code: "23503" });
+    const w = await client.query("SELECT website, role_objectives, updated_at FROM person_work");
+    expect(w.rows[0].website).toBeNull();
+    expect(w.rows[0].role_objectives).toBeNull();
+    expect(w.rows[0].updated_at).toBeInstanceOf(Date);
+    const n = await client.query("SELECT id, created_at FROM person_notes");
+    expect(n.rows).toHaveLength(2);
+    expect(n.rows[0].created_at).toBeInstanceOf(Date);
+  });
+
+  it("version 4: activity accepts the profile action", async () => {
+    const id = await customer();
+    await client.query("INSERT INTO activity (customer_id, action) VALUES ($1, 'profile')", [id]);
+    await expect(client.query("INSERT INTO activity (customer_id, action) VALUES ($1, 'delete')", [id])).rejects.toMatchObject({ code: "23514" });
+  });
+
+  // The trap: the earlier version blocks re-add the action check on every run. Any of them with a
+  // list that lacks 'profile' fails here, because the row already in the table breaks the check.
+  it("version 4: the whole file applies again with a profile activity row already present", async () => {
+    const id = await customer();
+    await client.query("INSERT INTO activity (customer_id, action) VALUES ($1, 'profile')", [id]);
+    expect((await client.query("SELECT count(*)::int AS n FROM activity WHERE action = 'profile'")).rows[0].n).toBe(1);
+    const sql = readFileSync(join(__dirname, "schema.sql"), "utf8");
+    await client.query(sql);
+    await client.query(sql);
+    expect((await client.query("SELECT count(*)::int AS n FROM activity WHERE action = 'profile'")).rows[0].n).toBe(1);
+    await client.query("INSERT INTO activity (customer_id, action) VALUES ($1, 'profile')", [id]);
+    // Every list in the file names it, so no block can narrow the check part-way through a run.
+    const lists = sql.match(/action IN \([^)]*\)/g) ?? [];
+    expect(lists.length).toBeGreaterThanOrEqual(3);
+    for (const l of lists) expect(l).toContain("'profile'");
   });
 
   it("version 3: the earliest person is named key person, and the status takes only known values", async () => {
@@ -184,7 +268,7 @@ describe.skipIf(!db.available)("accounts schema", () => {
       const l = await c2.query("SELECT purpose FROM setup_links WHERE token_hash = 'v1tok'");
       expect(l.rows[0].purpose).toBe("connect");
       const m = await c2.query("SELECT max(version)::int AS v FROM accounts_migrations");
-      expect(m.rows[0].v).toBe(3);
+      expect(m.rows[0].v).toBe(4);
     } finally {
       await c2.end();
       await db.reset();

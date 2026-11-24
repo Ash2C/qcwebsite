@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS activity (
   pipeline_key TEXT NULL,
   action TEXT NOT NULL CHECK (action IN (
     'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
-    'act_details', 'act_research', 'research', 'setup', 'replace'
+    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile'
   )),
   at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -95,7 +95,7 @@ ALTER TABLE setup_links DROP CONSTRAINT IF EXISTS setup_links_purpose_check,
 ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
   ADD CONSTRAINT activity_action_check CHECK (action IN (
     'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
-    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key'
+    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile'
   ));
 ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS project_ref TEXT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS pipelines_project_ref_key ON pipelines (project_ref);
@@ -117,3 +117,40 @@ UPDATE customers c
  WHERE c.key_person_id IS NULL;
 
 INSERT INTO accounts_migrations (version) VALUES (3) ON CONFLICT DO NOTHING;
+
+-- Version 4: the user's own page. Phone and email belong to the person; company, website, role and
+-- notes are kept per person per pipeline. Notes are insert-only for the app. Plain text, like contact
+-- data in the CRMs. Every action list above also names 'profile': the earlier blocks re-add the check
+-- on each run, and a shorter list would fail once a profile row exists.
+ALTER TABLE people ADD COLUMN IF NOT EXISTS phone TEXT NULL;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS email TEXT NULL;
+
+CREATE TABLE IF NOT EXISTS person_work (
+  person_id UUID NOT NULL REFERENCES people(id),
+  pipeline_id UUID NOT NULL REFERENCES pipelines(id),
+  company TEXT NULL,
+  website TEXT NULL,
+  role_objectives TEXT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (person_id, pipeline_id)
+);
+
+CREATE TABLE IF NOT EXISTS person_notes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  person_id UUID NOT NULL REFERENCES people(id),
+  pipeline_id UUID NOT NULL REFERENCES pipelines(id),
+  body TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS person_notes_person_pipeline_at ON person_notes (person_id, pipeline_id, created_at DESC);
+
+ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
+  ADD CONSTRAINT activity_action_check CHECK (action IN (
+    'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
+    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile'
+  ));
+
+ALTER TABLE person_work ENABLE ROW LEVEL SECURITY;
+ALTER TABLE person_notes ENABLE ROW LEVEL SECURITY;
+
+INSERT INTO accounts_migrations (version) VALUES (4) ON CONFLICT DO NOTHING;

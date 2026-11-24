@@ -37,7 +37,68 @@ describe.skipIf(!db.available)("monsoon admin", () => {
 
   it("migrate is idempotent", async () => {
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toContain("Schema already applied (version 3).");
+    expect(text()).toContain("Schema already applied (version 4).");
+    expect((await client.query("SELECT max(version)::int AS v FROM accounts_migrations")).rows[0].v).toBe(4);
+  });
+
+  it("migrate applies version 4 to an empty database and says so", async () => {
+    await client.query("DROP SCHEMA public CASCADE");
+    await client.query("CREATE SCHEMA public");
+    expect(await run(["migrate"])).toBe(0);
+    expect(text()).toBe("Schema applied (version 4).");
+    expect((await client.query("SELECT to_regclass('public.person_notes') AS t")).rows[0].t).not.toBeNull();
+  });
+
+  it("migrate brings a version 3 database up to version 4", async () => {
+    // A database as the live one is today: everything but the version 4 marker.
+    await client.query("DELETE FROM accounts_migrations WHERE version = 4");
+    expect(await run(["migrate"])).toBe(0);
+    expect(text()).toBe("Schema applied (version 4).");
+    expect(await run(["migrate"])).toBe(0);
+    expect(text()).toBe("Schema already applied (version 4).");
+  });
+
+  it("forget blanks the user pages of that customer's people and leaves another customer's alone", async () => {
+    await run(["customer", "add", "acme", "Acme"]);
+    await run(["customer", "add", "other", "Other"]);
+    await run(["person", "add", "acme", "Ann", "AN"]);
+    await run(["person", "add", "acme", "Bob", "BO"]);
+    await run(["person", "add", "other", "Oz", "OZ"]);
+    for (const code of ["acme", "other"]) {
+      await run(["pipeline", "add", code, "main", "Main", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
+    }
+    await run(["pipeline", "add", "acme", "side", "Side", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
+    await client.query("UPDATE people SET phone = '+31 6 ' || owner_key, email = lower(owner_key) || '@example.com'");
+    // Every person gets a work row and two notes in each pipeline of their own customer.
+    await client.query(
+      `INSERT INTO person_work (person_id, pipeline_id, company, website, role_objectives)
+       SELECT p.id, l.id, 'Co', 'https://example.com', 'Sell more' FROM people p JOIN pipelines l ON l.customer_id = p.customer_id`,
+    );
+    await client.query(
+      `INSERT INTO person_notes (person_id, pipeline_id, body)
+       SELECT p.id, l.id, 'note ' || n FROM people p JOIN pipelines l ON l.customer_id = p.customer_id, generate_series(1, 2) n`,
+    );
+
+    expect(await run(["forget", "acme"])).toBe(0);
+    expect(text()).toContain("User pages blanked: notes removed 8, work details removed 4, phone and email cleared for 2.");
+    expect(text()).not.toMatch(/example\.com|\+31/);
+    const left = async (table: string) =>
+      (
+        await client.query(
+          `SELECT c.code, count(*)::int AS n FROM ${table} t JOIN people p ON p.id = t.person_id JOIN customers c ON c.id = p.customer_id GROUP BY c.code`,
+        )
+      ).rows;
+    expect(await left("person_notes")).toEqual([{ code: "other", n: 2 }]);
+    expect(await left("person_work")).toEqual([{ code: "other", n: 1 }]);
+    const people = await client.query("SELECT owner_key, display_name, phone, email FROM people ORDER BY owner_key");
+    expect(people.rows).toEqual([
+      { owner_key: "AN", display_name: "Ann", phone: null, email: null },
+      { owner_key: "BO", display_name: "Bob", phone: null, email: null },
+      { owner_key: "OZ", display_name: "Oz", phone: "+31 6 OZ", email: "oz@example.com" },
+    ]);
+    // A second run finds nothing left to blank.
+    expect(await run(["forget", "acme"])).toBe(0);
+    expect(text()).toContain("User pages blanked: notes removed 0, work details removed 0, phone and email cleared for 0.");
   });
 
   it("the first person keeps the Claude key until keyholder names another", async () => {
@@ -587,10 +648,21 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     expect(text()).toMatch(/usage/i);
   });
 
-  it("the CLI source never mentions the master key or deletes", () => {
+  it("the CLI source never mentions the master key, and deletes only the user pages in forget", () => {
+    // forget blanks the user pages of a customer's people (the user page spec, 2026-11-24). Those two
+    // statements, exactly as written and once each, are the only deletes the tool may hold.
+    const pageDeletes = ["person_notes", "person_work"].map(
+      (t) => `"DELETE FROM ${t} WHERE person_id IN (SELECT id FROM people WHERE customer_id = $1)"`,
+    );
     for (const f of ["admin.ts", "admin-commands.ts"]) {
-      const src = readFileSync(join(__dirname, f), "utf8");
+      let src = readFileSync(join(__dirname, f), "utf8");
       expect(src).not.toContain("MONSOON_MASTER_KEY");
+      if (f === "admin-commands.ts") {
+        for (const stmt of pageDeletes) {
+          expect(src.split(stmt).length - 1, stmt).toBe(1);
+          src = src.replace(stmt, " ");
+        }
+      }
       expect(src).not.toMatch(/\bDELETE\b/i);
     }
   });

@@ -203,14 +203,14 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         parseArgs(argv.slice(1));
         const t = await db.query("SELECT to_regclass('public.accounts_migrations') AS t");
         if (t.rows[0].t) {
-          const v = await db.query("SELECT 1 FROM accounts_migrations WHERE version = 3");
+          const v = await db.query("SELECT 1 FROM accounts_migrations WHERE version = 4");
           if (v.rowCount) {
-            out("Schema already applied (version 3).");
+            out("Schema already applied (version 4).");
             return 0;
           }
         }
         await db.query(readFile(join(process.cwd(), "src", "lib", "monsoon", "accounts", "schema.sql")));
-        out("Schema applied (version 3).");
+        out("Schema applied (version 4).");
         return 0;
       }
       case "customer": {
@@ -486,7 +486,8 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         return 0;
       }
       case "forget": {
-        // Offboarding: clears every stored secret and signs everyone out. Rows stay (UPDATE only).
+        // Offboarding: clears every stored secret and signs everyone out, and blanks the user pages of the
+        // customer's people. Account rows stay (UPDATE only); only the page's work details and notes are removed.
         const { pos } = parseArgs(argv.slice(1));
         need(pos, 1);
         const c = await customer(pos[0]);
@@ -500,6 +501,14 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
           await db.query("UPDATE customers SET claude_key_enc = NULL, status = 'suspended' WHERE id = $1", [c.id]);
           await db.query("UPDATE pipelines SET db_url_enc = NULL, connected_at = NULL WHERE customer_id = $1", [c.id]);
           const people = await db.query("UPDATE people SET session_no = session_no + 1 WHERE customer_id = $1", [c.id]);
+          // The user page (docs/superpowers/specs/2026-11-24-monsoon-user-page-design.md): an administrator
+          // erasing people, not the app deleting a note. The names stay; they are the account, not the page.
+          const notes = await db.query("DELETE FROM person_notes WHERE person_id IN (SELECT id FROM people WHERE customer_id = $1)", [c.id]);
+          const work = await db.query("DELETE FROM person_work WHERE person_id IN (SELECT id FROM people WHERE customer_id = $1)", [c.id]);
+          const details = await db.query(
+            "UPDATE people SET phone = NULL, email = NULL WHERE customer_id = $1 AND (phone IS NOT NULL OR email IS NOT NULL)",
+            [c.id],
+          );
           const links = await db.query(
             "UPDATE setup_links SET expires_at = now() WHERE customer_id = $1 AND used_at IS NULL AND expires_at > now()",
             [c.id],
@@ -511,6 +520,9 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
             out(`Pipeline ${row.key}: database address ${row.had_address ? "cleared" : "was not set"}.`);
           }
           out(`People signed out: ${people.rowCount ?? 0}. Unused setup links expired: ${links.rowCount ?? 0}.`);
+          out(
+            `User pages blanked: notes removed ${notes.rowCount ?? 0}, work details removed ${work.rowCount ?? 0}, phone and email cleared for ${details.rowCount ?? 0}.`,
+          );
         } catch (err) {
           await db.query("ROLLBACK").catch(() => undefined);
           throw err;
