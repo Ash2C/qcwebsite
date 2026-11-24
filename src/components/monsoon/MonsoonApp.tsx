@@ -60,7 +60,8 @@ const EMPTY_CARD: CardFields = {
 };
 
 type Phase = "loading" | "locked" | "failed" | "app";
-type Message = { tone: "ok" | "info" | "error"; text: string };
+// `open` is the person a save line is about, in the estate it was saved to: the line then opens their contact card.
+type Message = { tone: "ok" | "info" | "error"; text: string; open?: { estate: string; personId: string } };
 
 function readStoredEstate(): string {
   try {
@@ -462,7 +463,7 @@ export default function MonsoonApp() {
     }
   }
 
-  function finish(text: string) {
+  function finish(text: string, open?: Message["open"]) {
     clearRefine();
     setForm(EMPTY_FORM);
     setExtracted(null);
@@ -472,7 +473,7 @@ export default function MonsoonApp() {
     setNewOrg(false);
     setSamePerson(undefined);
     setPrompt(null);
-    setMessage({ tone: "ok", text });
+    setMessage({ tone: "ok", text, ...(open ? { open } : {}) });
   }
 
   function applyResult(
@@ -489,7 +490,8 @@ export default function MonsoonApp() {
       roleLabel,
     });
     if (out.kind === "done") {
-      finish(out.text);
+      // Every saved outcome names the person on file, so the line can open their contact card.
+      finish(out.text, "person" in result && result.person ? { estate: e.key, personId: result.person } : undefined);
       return;
     }
     if (out.kind === "prompt") {
@@ -806,7 +808,24 @@ export default function MonsoonApp() {
                 role={message.tone === "error" ? "alert" : "status"}
                 className={`${card} flex flex-col gap-3 p-4`}
               >
-                <p className={`text-[17px] font-medium leading-snug ${messageColour}`}>{message.text}</p>
+                {message.open && message.open.estate === estateKey ? (
+                  <button
+                    type="button"
+                    disabled={busy || askBusy || profileBusy}
+                    onClick={() => openContact({ personId: message.open!.personId })}
+                    className={`flex min-h-[44px] w-full items-center justify-between gap-3 text-left text-[17px] font-medium leading-snug disabled:opacity-50 ${messageColour}`}
+                  >
+                    <span>{message.text}</span>
+                    <span className="flex shrink-0 items-center gap-1 text-[15px] text-[#0E7FA6] dark:text-[#6AE6FF]">
+                      Open contact
+                      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M9 5l7 7-7 7" />
+                      </svg>
+                    </span>
+                  </button>
+                ) : (
+                  <p className={`text-[17px] font-medium leading-snug ${messageColour}`}>{message.text}</p>
+                )}
                 {prompt && (
                   <PromptButtons
                     prompt={prompt}

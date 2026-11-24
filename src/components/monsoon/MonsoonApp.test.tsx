@@ -372,6 +372,43 @@ describe("MonsoonApp", () => {
     expect(screen.getByRole("button", { name: "Unlock" })).toBeEnabled();
   });
 
+  it("the saved line opens that person's contact card", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.saveCard.mockResolvedValue({
+      status: 200,
+      body: { outcome: "added", person: "6f1c2a3e-0000-4000-8000-000000000001", org: "Acme Capital", role: "lp_prospect", filled: [] },
+    });
+    m.loadProfile.mockResolvedValue({ status: 404, body: { error: "Not found" } } as never);
+    m.searchContacts.mockResolvedValue({ status: 200, body: { contacts: [] } } as never);
+    render(<MonsoonApp />);
+    await ready();
+    await typeName(user);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(await screen.findByRole("button", { name: "Jane Tan added to Traxo. Open contact" }));
+    await waitFor(() =>
+      expect(m.loadProfile).toHaveBeenCalledWith("traxo", { personId: "6f1c2a3e-0000-4000-8000-000000000001" }, expect.any(String)),
+    );
+    expect(screen.getByRole("button", { name: "Contacts" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("a saved line for another estate, or a batch summary, is plain text", async () => {
+    const user = userEvent.setup();
+    signedIn();
+    m.saveCard.mockResolvedValue({
+      status: 200,
+      body: { outcome: "added", person: "6f1c2a3e-0000-4000-8000-000000000001", org: null, role: "lp_prospect", filled: [] },
+    });
+    render(<MonsoonApp />);
+    await ready();
+    await typeName(user);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByRole("button", { name: "Jane Tan added to Traxo. Open contact" });
+    await user.click(screen.getByRole("button", { name: "Zero One" }));
+    expect(screen.queryByRole("button", { name: /Open contact/ })).toBeNull();
+    expect(screen.getByText("Jane Tan added to Traxo.")).toBeInTheDocument();
+  });
+
   it("saves and clears", async () => {
     const user = userEvent.setup();
     signedIn();
