@@ -94,6 +94,45 @@ describe("RequestsPanel", () => {
     expect(screen.queryByRole("region", { name: "Declined" })).not.toBeInTheDocument();
   });
 
+  describe("the free trial key", () => {
+    const withTrialKey = (trialKey: string) => ({ status: 200, body: { requests: ALL, configured: true, trialKey } }) as never;
+    const REFUSED = "The free trial key was refused. New clients have no AI until it is replaced.";
+    const NO_CREDIT = "The free trial key is out of credit. Trial clients have no AI until credit is added.";
+    const UNSET = "No free trial key is set. New clients start without AI.";
+
+    it.each([
+      ["key_rejected", REFUSED],
+      ["no_credit", NO_CREDIT],
+    ])("warns above the list when it is %s", async (trialKey, line) => {
+      m.loadRequests.mockResolvedValue(withTrialKey(trialKey));
+      view();
+      const warning = await screen.findByText(line);
+      expect(warning).toHaveAttribute("role", "alert");
+      expect(warning.compareDocumentPosition(section("Waiting")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(within(rowOf("Gil Hale")).getByRole("button", { name: /^Approve/ })).toBeEnabled();
+    });
+
+    it("notes plainly, above the list, when none is set", async () => {
+      m.loadRequests.mockResolvedValue(withTrialKey("unset"));
+      view();
+      const note = await screen.findByText(UNSET);
+      expect(note).not.toHaveAttribute("role", "alert");
+      expect(note.compareDocumentPosition(section("Waiting")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("says nothing when it is working, or when the reply says something else", async () => {
+      for (const trialKey of ["ok", "sk-ant-not-a-status", ""]) {
+        m.loadRequests.mockResolvedValue(withTrialKey(trialKey));
+        view();
+        await screen.findByRole("region", { name: "Waiting" });
+        for (const line of [REFUSED, NO_CREDIT, UNSET]) expect(screen.queryByText(line)).not.toBeInTheDocument();
+        expect(screen.queryByText(/sk-ant/)).not.toBeInTheDocument();
+        cleanup();
+      }
+    });
+  });
+
   it("says new sign-ups are off when the shared database is not set, above the list, and Approve is off", async () => {
     m.loadRequests.mockResolvedValue(list(ALL, false));
     view();

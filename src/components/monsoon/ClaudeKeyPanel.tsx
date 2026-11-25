@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClaudeKeyState } from "@/lib/monsoon/accounts/claude-key";
 import { loadClaudeKey, saveClaudeKey, testClaudeKey } from "./api";
 import { Mark } from "./ClaudeChip";
@@ -11,11 +11,22 @@ import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./
 const LOAD_FAILURE = "Could not load. Check signal.";
 const BUSY = "Claude could not be reached to test the key. Try again in a minute.";
 
-const LOOK: Record<ClaudeChipStatus, { title: string; detail: string; tone: string; mark: "dot" | "cross" | "bang" }> = {
+const CONSOLE_KEYS_URL = "https://console.anthropic.com/settings/keys";
+const HOW_TO = "Tap Get a key, sign in to the Claude Console, create a key and copy it. Come back and tap Paste.";
+const PASTE_FAILED = "Could not paste. Press and hold in the box, then choose Paste.";
+// A key is far shorter; a clipboard holding something else is not kept whole.
+const MAX_PASTE = 400;
+
+const GREEN = "border-green-600/40 bg-green-50 text-green-900 dark:border-[#1F6B43] dark:bg-[#0F2A1C] dark:text-[#C4E9D2]";
+const AMBER = "border-amber-600/40 bg-amber-50 text-amber-950 dark:border-[#8A6A1F] dark:bg-[#2B2210] dark:text-[#F3E2B8]";
+
+type Look = { title: string; detail: string; tone: string; mark: "dot" | "cross" | "bang" };
+
+const LOOK: Record<Exclude<ClaudeChipStatus, "trial">, Look> = {
   ok: {
     title: "Connected",
     detail: "Claude accepted this key the last time Monsoon used it.",
-    tone: "border-green-600/40 bg-green-50 text-green-900 dark:border-[#1F6B43] dark:bg-[#0F2A1C] dark:text-[#C4E9D2]",
+    tone: GREEN,
     mark: "dot",
   },
   missing: {
@@ -33,10 +44,31 @@ const LOOK: Record<ClaudeChipStatus, { title: string; detail: string; tone: stri
   no_credit: {
     title: "Out of credit",
     detail: "The key works, but its Claude account has no credit left. Add credit in the Claude Console.",
-    tone: "border-amber-600/40 bg-amber-50 text-amber-950 dark:border-[#8A6A1F] dark:bg-[#2B2210] dark:text-[#F3E2B8]",
+    tone: AMBER,
     mark: "bang",
   },
 };
+
+const TRIAL_PAUSED = "The free trial is paused. Add your own Claude key, or try again later.";
+const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** How the key's state is shown. The free trial and its end have their own words. */
+function lookOf(key: ClaudeKeyState): Look {
+  if (key.status === "trial") {
+    if (key.paused) return { title: "Free trial", detail: TRIAL_PAUSED, tone: AMBER, mark: "bang" };
+    const left = `${count(key.daysLeft ?? 0, "day", "days")} and ${count(key.usesLeft ?? 0, "AI use", "AI uses")} left.`;
+    return { title: "Free trial", detail: `${left} Add your own Claude key any time to keep going after the trial.`, tone: GREEN, mark: "dot" };
+  }
+  if (key.status === "missing" && key.trialEnded) {
+    return {
+      title: "Trial ended",
+      detail: "Add your own Claude key to keep the AI features. Typing and saving contacts still works.",
+      tone: AMBER,
+      mark: "bang",
+    };
+  }
+  return LOOK[key.status];
+}
 
 const OFF = "Photo reading, Ask, notes tidy-up and research are off until a key works. You can still type contacts in and save them.";
 
@@ -69,6 +101,31 @@ export default function ClaudeKeyPanel({
   const [draft, setDraft] = useState("");
   const [testNote, setTestNote] = useState<Note | null>(null);
   const [saveNote, setSaveNote] = useState<Note | null>(null);
+  // Whether this browser lets a page read the clipboard at all. Known only once on the device.
+  const [canPaste, setCanPaste] = useState(false);
+  const box = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setCanPaste(typeof navigator !== "undefined" && typeof navigator.clipboard?.readText === "function");
+  }, []);
+
+  /** Fills the box from the clipboard. The value goes nowhere else: not to a log, not onto the screen. */
+  async function paste() {
+    if (saving || testing) return;
+    setSaveNote(null);
+    let text = "";
+    try {
+      text = (await navigator.clipboard.readText()).trim().slice(0, MAX_PASTE);
+    } catch {
+      // refused by the person or the browser: the line below says how to paste by hand
+    }
+    if (text === "") {
+      setSaveNote({ text: PASTE_FAILED, tone: "error" });
+      box.current?.focus();
+      return;
+    }
+    setDraft(text);
+  }
 
   const show = useCallback(
     (next: ClaudeKeyState) => {
@@ -143,7 +200,9 @@ export default function ClaudeKeyPanel({
   }
 
   const noteColour = (n: Note) => (n.tone === "ok" ? "text-green-700 dark:text-green-400" : "text-red-600 dark:text-red-400");
-  const look = key ? LOOK[key.status] : null;
+  const look = key ? lookOf(key) : null;
+  // The trial's own words already say what works; the "off" line is for a key that is missing or failing.
+  const showOff = key !== null && key.status !== "ok" && key.status !== "trial" && !key.trialEnded;
 
   return (
     <section aria-labelledby="claude-key-title" className="flex flex-col gap-4">
@@ -193,7 +252,7 @@ export default function ClaudeKeyPanel({
                 <span className="text-[14px]">{look.detail}</span>
               </div>
             </div>
-            {key.status !== "ok" && <p className="border-t border-black/10 dark:border-white/15 pt-3 text-[14px] leading-snug">{OFF}</p>}
+            {showOff && <p className="border-t border-black/10 dark:border-white/15 pt-3 text-[14px] leading-snug">{OFF}</p>}
             {key.last4 !== null && (
               <dl className="flex flex-col gap-1.5 border-t border-black/10 dark:border-white/15 pt-3 text-[14px]">
                 <div className="flex justify-between gap-3">
@@ -238,28 +297,49 @@ export default function ClaudeKeyPanel({
                 <label htmlFor="claude-key-new" className={fieldLabel}>
                   {key.last4 === null ? "Claude API key" : "New Claude API key"}
                 </label>
-                <input
-                  id="claude-key-new"
-                  type="password"
-                  autoComplete="off"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  placeholder="sk-ant-…"
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  aria-describedby="claude-key-help"
-                  className={`${fieldInput} font-mono`}
-                />
+                <div className="flex items-center gap-2 pr-2">
+                  <input
+                    ref={box}
+                    id="claude-key-new"
+                    type="password"
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    placeholder="sk-ant-…"
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    aria-describedby="claude-key-help"
+                    className={`${fieldInput} min-w-0 flex-1 font-mono`}
+                  />
+                  {canPaste && (
+                    <button
+                      type="button"
+                      onClick={() => void paste()}
+                      disabled={saving || testing}
+                      className="min-h-[44px] shrink-0 rounded-xl bg-neutral-100 px-4 text-[16px] font-medium text-[#0E7FA6] active:bg-neutral-200 disabled:opacity-50 dark:bg-white/10 dark:text-[#6AE6FF] dark:active:bg-white/20"
+                    >
+                      Paste
+                    </button>
+                  )}
+                </div>
               </div>
+              <a
+                href={CONSOLE_KEYS_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`${secondaryButton} flex items-center justify-center`}
+              >
+                Get a key
+              </a>
               {saveNote && (
                 <p role={saveNote.tone === "ok" ? "status" : "alert"} className={`px-1 text-[15px] font-medium ${noteColour(saveNote)}`}>
                   {saveNote.text}
                 </p>
               )}
               <p id="claude-key-help" className="px-1 text-[13px] leading-snug text-neutral-600 dark:text-neutral-400">
-                Create a key in the Claude Console under API keys, then paste it here. Monsoon tests it with Claude before
-                saving{key.last4 === null ? "." : ", and the current key keeps working until the new one passes."}
+                {HOW_TO} Monsoon tests the key with Claude before saving
+                {key.last4 === null ? "." : ", and the current key keeps working until the new one passes."}
               </p>
               <button type="submit" disabled={saving || testing || draft.trim() === ""} className={primaryButton}>
                 {saving ? "Testing…" : "Test and save"}

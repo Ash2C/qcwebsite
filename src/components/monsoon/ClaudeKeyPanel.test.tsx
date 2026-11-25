@@ -154,3 +154,145 @@ describe("ClaudeKeyPanel", () => {
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("ClaudeKeyPanel on the free trial", () => {
+  const NONE = { status: "missing" as const, last4: null, checkedAt: null, setAt: null, setBy: null, keyPerson: "Gil Hale", canChange: true };
+  const TRIAL = { ...NONE, status: "trial" as const, daysLeft: 9, usesLeft: 112 };
+  const PAUSED = "The free trial is paused. Add your own Claude key, or try again later.";
+
+  it("says how much of the trial is left, shows no key rows and no Test again, and tells the chip", async () => {
+    m.loadClaudeKey.mockResolvedValue(reply(TRIAL));
+    view();
+    expect(await screen.findByText("Free trial")).toHaveAttribute("role", "status");
+    expect(screen.getByText("9 days and 112 AI uses left. Add your own Claude key any time to keep going after the trial.")).toBeInTheDocument();
+    expect(onStatus).toHaveBeenCalledWith("trial");
+    expect(screen.queryByText(/sk-ant-…/)).toBeNull();
+    expect(screen.queryByText("Key")).toBeNull();
+    expect(screen.queryByText("Last checked")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Test again" })).toBeNull();
+    // Everything works on the trial: nothing is said to be off.
+    expect(screen.queryByText(/are off until a key works/)).toBeNull();
+    expect(screen.getByLabelText("Claude API key")).toBeInTheDocument();
+  });
+
+  it("uses the singular for one day and one use", async () => {
+    m.loadClaudeKey.mockResolvedValue(reply({ ...TRIAL, daysLeft: 1, usesLeft: 1 }));
+    view();
+    expect(await screen.findByText(/^1 day and 1 AI use left\. /)).toBeInTheDocument();
+    cleanup();
+    m.loadClaudeKey.mockResolvedValue(reply({ ...TRIAL, daysLeft: 2, usesLeft: 1 }));
+    view();
+    expect(await screen.findByText(/^2 days and 1 AI use left\. /)).toBeInTheDocument();
+  });
+
+  it("says the trial is paused while the trial key is failing", async () => {
+    m.loadClaudeKey.mockResolvedValue(reply({ ...TRIAL, paused: true }));
+    view();
+    expect(await screen.findByText(PAUSED)).toBeInTheDocument();
+    expect(screen.getByText("Free trial")).toHaveAttribute("role", "status");
+    expect(screen.queryByText(/AI uses left/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Test again" })).toBeNull();
+  });
+
+  it("says the trial ended, and that typing and saving still work", async () => {
+    m.loadClaudeKey.mockResolvedValue(reply({ ...NONE, trialEnded: true }));
+    view();
+    expect(await screen.findByText("Trial ended")).toHaveAttribute("role", "status");
+    expect(screen.getByText("Add your own Claude key to keep the AI features. Typing and saving contacts still works.")).toBeInTheDocument();
+    expect(screen.queryByText("This account has no Claude API key yet.")).toBeNull();
+    expect(onStatus).toHaveBeenCalledWith("missing");
+    expect(screen.getByLabelText("Claude API key")).toBeInTheDocument();
+  });
+
+  it("saving an own key during the trial ends it on screen", async () => {
+    const user = userEvent.setup();
+    m.loadClaudeKey.mockResolvedValue(reply(TRIAL));
+    m.saveClaudeKey.mockResolvedValue(reply(OK));
+    view();
+    await user.type(await screen.findByLabelText("Claude API key"), "sk-ant-my-own-key");
+    await user.click(screen.getByRole("button", { name: "Test and save" }));
+    expect(await screen.findByText("Connected")).toBeInTheDocument();
+    expect(screen.queryByText("Free trial")).toBeNull();
+    expect(onStatus).toHaveBeenLastCalledWith("ok");
+  });
+});
+
+describe("ClaudeKeyPanel: getting and pasting a key on a phone", () => {
+  const HELP = "Tap Get a key, sign in to the Claude Console, create a key and copy it. Come back and tap Paste.";
+  const COULD_NOT = "Could not paste. Press and hold in the box, then choose Paste.";
+  const PASTED = "sk-ant-api03-PASTEDKEY-0123456789-pppp";
+  const NONE = { status: "missing" as const, last4: null, checkedAt: null, setAt: null, setBy: null, keyPerson: "Gil Hale", canChange: true };
+
+  /** Stands in for the browser's clipboard. Set after userEvent.setup(), which installs its own. */
+  function clipboard(value: unknown): void {
+    Object.defineProperty(navigator, "clipboard", { value, configurable: true });
+  }
+  afterEach(() => clipboard(undefined));
+
+  it("Get a key opens the Claude Console keys page in a new tab", async () => {
+    m.loadClaudeKey.mockResolvedValue(reply(NONE));
+    view();
+    const link = await screen.findByRole("link", { name: "Get a key" });
+    expect(link).toHaveAttribute("href", "https://console.anthropic.com/settings/keys");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.getByText((text) => text.startsWith(HELP))).toBeInTheDocument();
+    expect(screen.queryByText(/under API keys, then paste it here/)).toBeNull();
+  });
+
+  it("Paste fills the box from the clipboard, without showing the key anywhere", async () => {
+    const user = userEvent.setup();
+    const readText = vi.fn(async () => `  ${PASTED}\n`);
+    clipboard({ readText });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    m.loadClaudeKey.mockResolvedValue(reply(NONE));
+    m.saveClaudeKey.mockResolvedValue(reply(OK));
+    view();
+    const box = await screen.findByLabelText("Claude API key");
+    await user.click(screen.getByRole("button", { name: "Paste" }));
+    await waitFor(() => expect(box).toHaveValue(PASTED));
+    expect(box).toHaveAttribute("type", "password");
+    expect(document.body.textContent).not.toContain(PASTED);
+    expect(JSON.stringify([...log.mock.calls, ...error.mock.calls])).not.toContain(PASTED);
+    expect(screen.queryByText(COULD_NOT)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Test and save" }));
+    await waitFor(() => expect(m.saveClaudeKey).toHaveBeenCalledWith(PASTED));
+  });
+
+  it("says how to paste by hand, and puts the cursor in the box, when the browser refuses or the clipboard is empty", async () => {
+    const user = userEvent.setup();
+    m.loadClaudeKey.mockResolvedValue(reply(NONE));
+    for (const readText of [vi.fn(async () => Promise.reject(new Error("NotAllowedError"))), vi.fn(async () => "   ")]) {
+      clipboard({ readText });
+      view();
+      const box = await screen.findByLabelText("Claude API key");
+      await user.click(screen.getByRole("button", { name: "Paste" }));
+      expect(await screen.findByText(COULD_NOT)).toHaveAttribute("role", "alert");
+      expect(box).toHaveValue("");
+      expect(box).toHaveFocus();
+      cleanup();
+    }
+  });
+
+  it("shows no Paste button where the browser cannot read the clipboard", async () => {
+    m.loadClaudeKey.mockResolvedValue(reply(NONE));
+    for (const value of [undefined, {}]) {
+      clipboard(value);
+      view();
+      expect(await screen.findByRole("link", { name: "Get a key" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Paste" })).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("someone who cannot change the key gets neither button", async () => {
+    clipboard({ readText: vi.fn() });
+    m.loadClaudeKey.mockResolvedValue(reply({ ...NONE, canChange: false }));
+    view();
+    expect(await screen.findByText("Only Gil Hale can change the key.")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Get a key" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Paste" })).toBeNull();
+  });
+});

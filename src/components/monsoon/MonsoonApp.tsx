@@ -3,7 +3,7 @@
 import { claudeFailureText } from "./claudeFailure";
 import ClaudeChip from "./ClaudeChip";
 import ClaudeKeyPanel from "./ClaudeKeyPanel";
-import { onClaudeStatus, type ClaudeChipStatus } from "./claudeStatus";
+import { nextChipStatus, onClaudeStatus, type ClaudeChipStatus } from "./claudeStatus";
 import UpdateBanner from "./UpdateBanner";
 import UserPanel, { EMPTY_USER_DRAFT, type UserDraft } from "./UserPanel";
 import MonsoonLoader from "./MonsoonLoader";
@@ -100,7 +100,7 @@ export default function MonsoonApp() {
   // The header chip: the last real Claude result, from the server at load and from each call after.
   const [claude, setClaude] = useState<ClaudeChipStatus | null>(null);
   const [keyOpen, setKeyOpen] = useState(false);
-  useEffect(() => onClaudeStatus(setClaude), []);
+  useEffect(() => onClaudeStatus((reported) => setClaude((shown) => nextChipStatus(shown, reported))), []);
   const [estates, setEstates] = useState<EstateInfo[]>([]);
   const [estateKey, setEstateKey] = useState(DEFAULT_ESTATE);
   const [role, setRole] = useState("");

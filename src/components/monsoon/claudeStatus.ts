@@ -1,6 +1,15 @@
-// The app's view of the account's Claude key: the result of the last real Claude call. The api
-// client reports each result here; the chip in the header listens.
-export type ClaudeChipStatus = "ok" | "missing" | "key_rejected" | "no_credit";
+// The app's view of the account's Claude key: the result of the last real Claude call, or `trial`
+// while the account runs on the free trial. The api client reports each result here; the chip in the
+// header listens.
+export type ClaudeChipStatus = "ok" | "missing" | "key_rejected" | "no_credit" | "trial";
+
+/**
+ * The chip after a call reported `reported`. A call that worked says nothing new on the free trial
+ * (it stays "Free trial", not "Connected"); anything else replaces what was shown.
+ */
+export function nextChipStatus(shown: ClaudeChipStatus | null, reported: ClaudeChipStatus): ClaudeChipStatus {
+  return shown === "trial" && reported === "ok" ? "trial" : reported;
+}
 
 const listeners = new Set<(status: ClaudeChipStatus) => void>();
 
@@ -18,8 +27,8 @@ export function reportClaudeStatus(status: ClaudeChipStatus): void {
 
 /**
  * What a response from a route that calls Claude says about the key, or null when it says nothing
- * (a busy Claude, a lost connection, a database failure). `worked` is false for a 200 that did not
- * reach Claude.
+ * (a busy Claude, a lost connection, a database failure, a paused free trial). `worked` is false
+ * for a 200 that did not reach Claude.
  */
 export function claudeStatusOf(res: { status: number; body: unknown }, worked = true): ClaudeChipStatus | null {
   const error = (res.body as { error?: unknown } | null)?.error;

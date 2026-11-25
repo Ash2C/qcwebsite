@@ -10,6 +10,8 @@ export function claudeFailureText(body: unknown, lead: string): string | null {
       return `${lead}: Claude did not accept this account's API key. It may have expired, been revoked or lack permission.`;
     case "claude_no_credit":
       return `${lead}: this account's Claude API key is out of credit. Add credit in the Claude Console.`;
+    case "claude_trial_paused":
+      return "The free trial is paused. Add your own Claude key, or try again later.";
     case "claude_busy":
       return `${lead} right now: Claude is busy or this account's rate limit was reached. Try again in a minute.`;
     default:

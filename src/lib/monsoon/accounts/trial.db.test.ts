@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Client } from "pg";
 import { makeAccountsTestDb } from "../testing/db";
+import { signSession } from "../auth";
 import { claudeFailure, claudeFailureResponse } from "../claude-failure";
 import { buildAccount, NotConnected, type Account } from "./account";
 import { loadClaudeKeyState, replaceClaudeKey } from "./claude-key";
@@ -309,6 +310,95 @@ describe.skipIf(!db.available)("the free trial", () => {
       expect(await trialKeyHealth()).toBe("key_rejected");
       vi.stubEnv("MONSOON_TRIAL_CLAUDE_KEY", "");
       expect(await trialKeyHealth()).toBe("unset");
+    });
+  });
+
+  describe("the key state the app sees", () => {
+    it("on trial: days and uses left, and never anything of the trial key", async () => {
+      const { cid, pid } = await seed();
+      await beginTrialUse(cid, pid, "ask");
+      await beginTrialUse(cid, pid, "read");
+      const s = await state(cid, pid);
+      expect(s).toMatchObject({ status: "trial", daysLeft: 14, usesLeft: 148, last4: null, canChange: true });
+      expect(s.paused).toBeUndefined();
+      expect(s.trialEnded).toBeUndefined();
+      const text = JSON.stringify(s) + JSON.stringify(await account(cid, pid));
+      expect(text).not.toContain(TRIAL_KEY);
+      expect(text).not.toContain(TRIAL_KEY.slice(-4));
+
+      await client.query("UPDATE customers SET trial_ends_at = now() + interval '30 hours' WHERE id = $1", [cid]);
+      expect((await state(cid, pid)).daysLeft).toBe(2);
+      await client.query("UPDATE customers SET trial_ends_at = now() + interval '10 minutes' WHERE id = $1", [cid]);
+      expect((await state(cid, pid)).daysLeft).toBe(1);
+    });
+
+    it("paused while the trial key is failing", async () => {
+      const { cid, pid } = await seed();
+      await noteTrialKey("no_credit");
+      expect(await state(cid, pid)).toMatchObject({ status: "trial", paused: true, daysLeft: 14, usesLeft: 150 });
+    });
+
+    it("over: the missing key of today, marked as a trial that ended", async () => {
+      const days = await seed();
+      await client.query("UPDATE customers SET trial_started_at = now() - interval '15 days', trial_ends_at = now() - interval '1 day' WHERE id = $1", [days.cid]);
+      const s = await state(days.cid, days.pid);
+      expect(s).toMatchObject({ status: "missing", trialEnded: true, last4: null });
+      expect(s.daysLeft).toBeUndefined();
+      expect(s.usesLeft).toBeUndefined();
+
+      const spent = await seed({ limit: 1, code: "spent-co" });
+      await beginTrialUse(spent.cid, spent.pid, "ask");
+      expect(await state(spent.cid, spent.pid)).toMatchObject({ status: "missing", trialEnded: true });
+    });
+
+    it("no trial: exactly the state of today", async () => {
+      const today = { status: "missing", last4: null, checkedAt: null, setAt: null, setBy: null, keyPerson: "Ann", canChange: true };
+      const old = await seed({ limit: null });
+      expect(await state(old.cid, old.pid)).toEqual(today);
+      const waiting = await seed({ started: false, code: "wait-co" });
+      expect(await state(waiting.cid, waiting.pid)).toEqual(today);
+      const given = await seed({ code: "given-co" });
+      vi.stubEnv("MONSOON_TRIAL_CLAUDE_KEY", "");
+      expect(await state(given.cid, given.pid)).toEqual(today);
+    });
+
+    it("the key and estates routes answer a client on trial with nothing of the trial key in the body", async () => {
+      vi.stubEnv("MONSOON_SESSION_SECRET", "x".repeat(32));
+      const { cid, pid } = await seed();
+      const cookie = `monsoon_session=${signSession({ customerId: cid, personId: pid, sessionNo: 1 })}`;
+      const key = await import("@/app/api/monsoon/claude-key/route");
+      const estates = await import("@/app/api/monsoon/estates/route");
+      const at = (path: string, init: RequestInit = {}) => new Request(`http://localhost/api/monsoon/${path}`, { ...init, headers: { cookie, "Content-Type": "application/json" } });
+
+      const read = await key.GET(at("claude-key"));
+      expect(read.status).toBe(200);
+      const readText = await read.text();
+      expect(JSON.parse(readText).key).toMatchObject({ status: "trial", daysLeft: 14, usesLeft: 150, last4: null });
+
+      const home = await estates.GET(at("estates"));
+      const homeText = await home.text();
+      expect(JSON.parse(homeText).claude).toEqual({ status: "trial" });
+
+      // There is no key on file to test: the trial key is never tested from here.
+      const test = await key.POST(at("claude-key", { method: "POST", body: JSON.stringify({ test: true }) }));
+      expect(test.status).toBe(422);
+      const testText = await test.text();
+      expect(JSON.parse(testText)).toEqual({ error: "claude_key_missing" });
+
+      for (const text of [readText, homeText, testText]) {
+        expect(text).not.toContain(TRIAL_KEY);
+        expect(text).not.toContain("TRIALKEY");
+        expect(text).not.toContain(TRIAL_KEY.slice(-4));
+      }
+    });
+
+    it("an own key ends the trial for that customer", async () => {
+      const { cid, pid } = await seed();
+      expect(await replaceClaudeKey(cid, pid, OWN_KEY)).toBe(true);
+      const s = await state(cid, pid);
+      expect(s).toMatchObject({ status: "ok", last4: "oooo" });
+      expect(s.trialEnded).toBeUndefined();
+      expect(s.daysLeft).toBeUndefined();
     });
   });
 });

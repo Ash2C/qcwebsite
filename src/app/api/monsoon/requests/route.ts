@@ -6,6 +6,7 @@ import { requireAccount, type Account } from "@/lib/monsoon/accounts/account";
 import { approveSignup } from "@/lib/monsoon/accounts/approve";
 import { canApprove } from "@/lib/monsoon/accounts/approver";
 import { declineSignup, listSignups, reopenSignup } from "@/lib/monsoon/accounts/signups";
+import { trialKeyHealth } from "@/lib/monsoon/accounts/trial";
 import { readJson } from "@/lib/monsoon/body";
 import { signupsConfigured } from "@/lib/monsoon/google";
 
@@ -47,7 +48,8 @@ export async function GET(request: Request): Promise<Response> {
     const rows = await listSignups();
     // Field by field, so the Google id (or anything added to the row later) never leaves.
     const requests = rows.map((r) => ({ id: r.id, email: r.email, name: r.name, status: r.status, customerId: r.customerId, createdAt: r.createdAt }));
-    return reply({ requests, configured: signupsConfigured() });
+    // How the free trial's key is doing (never the key): unset, ok, key_rejected or no_credit.
+    return reply({ requests, configured: signupsConfigured(), trialKey: await trialKeyHealth() });
   } catch (err) {
     return failed("list", err, "Could not reach the accounts database");
   }

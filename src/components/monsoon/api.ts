@@ -339,8 +339,11 @@ export async function loadSignInOptions(): Promise<SignInOptions> {
 export type SignupRequest = Omit<SignupRow, "sub">;
 export type RequestAction = "approve" | "decline" | "reopen";
 
+/** How the free trial's key is doing, for the approver: never the key itself. */
+export type TrialKeyHealth = "unset" | "ok" | "key_rejected" | "no_credit";
+
 /** Everyone who has asked to join, waiting first. Only the approver gets an answer; others a 404. */
-export async function loadRequests(): Promise<ApiResult<{ requests: SignupRequest[]; configured: boolean } | { error: string }>> {
+export async function loadRequests(): Promise<ApiResult<{ requests: SignupRequest[]; configured: boolean; trialKey?: TrialKeyHealth } | { error: string }>> {
   return parse(await request("/api/monsoon/requests", { cache: "no-store" }, TIMEOUT_MS.quick));
 }
 

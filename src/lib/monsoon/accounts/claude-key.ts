@@ -5,10 +5,14 @@ import { claudeFailure, type ClaudeFailure } from "../claude-failure";
 import type { Account } from "./account";
 import { decryptSecret, encryptSecret } from "./crypto";
 import { evictCustomer, withAccountsDb, type ClaudeStatus } from "./store";
+import { loadTrialState, type TrialState } from "./trial";
 
 export type ClaudeKeyState = {
-  /** `missing`: no key on file. Otherwise the last real Claude result (a key with none yet was tested when saved). */
-  status: "missing" | ClaudeStatus;
+  /**
+   * `missing`: no key on file. `trial`: no key on file, and the free trial is running. Otherwise the
+   * last real Claude result (a key with none yet was tested when saved).
+   */
+  status: "missing" | "trial" | ClaudeStatus;
   /** The last four characters of the key on file, or null. */
   last4: string | null;
   /** ISO times; null when unknown. */
@@ -20,13 +24,20 @@ export type ClaudeKeyState = {
   keyPerson: string | null;
   /** Whether the signed-in person is that person. */
   canChange: boolean;
+  /** With `trial` only: what is left of it, both at least 1. */
+  daysLeft?: number;
+  usesLeft?: number;
+  /** With `trial` only: true while the trial's key is failing, so the AI features are off for now. */
+  paused?: true;
+  /** With `missing` only: true when this customer had a free trial and it is over. */
+  trialEnded?: true;
 };
 
 const iso = (d: unknown): string | null => (d instanceof Date ? d.toISOString() : null);
 
 /** Read fresh from the accounts database (never the 60-second cache). */
 export async function loadClaudeKeyState(account: Pick<Account, "customer" | "person">): Promise<ClaudeKeyState> {
-  const row = await withAccountsDb(async (db) => {
+  const { row, trial } = await withAccountsDb(async (db) => {
     const r = await db.query(
       `SELECT c.claude_key_enc, c.claude_status, c.claude_checked_at, c.claude_key_set_at, c.key_person_id,
               (SELECT display_name FROM people s WHERE s.id = c.claude_key_set_by) AS set_by,
@@ -34,18 +45,23 @@ export async function loadClaudeKeyState(account: Pick<Account, "customer" | "pe
          FROM customers c WHERE c.id = $1`,
       [account.customer.id],
     );
-    return r.rows[0] as Record<string, unknown> | undefined;
+    const found = r.rows[0] as Record<string, unknown> | undefined;
+    // Only a customer with no key of its own can be on trial; with no trial key nothing is read.
+    const none: TrialState = { state: "none" };
+    return { row: found, trial: found && found.claude_key_enc === null ? await loadTrialState(db, account.customer.id) : none };
   });
   if (!row) throw new Error("Customer not found");
   const enc = (row.claude_key_enc as string | null) ?? null;
   return {
-    status: enc === null ? "missing" : ((row.claude_status as ClaudeStatus | null) ?? "ok"),
+    status: enc === null ? (trial.state === "live" ? "trial" : "missing") : ((row.claude_status as ClaudeStatus | null) ?? "ok"),
     last4: enc === null ? null : decryptSecret(enc, account.customer.id, "claude_key").slice(-4),
     checkedAt: iso(row.claude_checked_at),
     setAt: iso(row.claude_key_set_at),
     setBy: (row.set_by as string | null) ?? null,
     keyPerson: (row.key_person as string | null) ?? null,
     canChange: row.key_person_id !== null && row.key_person_id === account.person.id,
+    ...(trial.state === "live" ? { daysLeft: trial.daysLeft, usesLeft: trial.usesLeft, ...(trial.paused ? { paused: true as const } : {}) } : {}),
+    ...(trial.state === "ended" ? { trialEnded: true as const } : {}),
   };
 }
 

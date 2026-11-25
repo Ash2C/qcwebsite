@@ -17,6 +17,12 @@ describe("claudeFailureText", () => {
     );
   });
 
+  it("says the free trial is paused in those words, whatever was being done", () => {
+    for (const lead of ["Photos cannot be read", "Ask is not available"]) {
+      expect(claudeFailureText({ error: "claude_trial_paused" }, lead)).toBe("The free trial is paused. Add your own Claude key, or try again later.");
+    }
+  });
+
   it("answers null for any other body", () => {
     expect(claudeFailureText({ error: "Could not read the photo" }, "X")).toBeNull();
     expect(claudeFailureText(null, "X")).toBeNull();

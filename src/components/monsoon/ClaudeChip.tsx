@@ -1,10 +1,15 @@
 import type { ClaudeChipStatus } from "./claudeStatus";
 
-// Always in the header: green when the last real Claude call worked, red or amber when the key is
-// the problem. Tapping it opens the Claude key screen. The mark differs by state as well as the colour.
+// Always in the header: green when the last real Claude call worked or the free trial is running,
+// red or amber when the key is the problem. Tapping it opens the Claude key screen. The mark differs by state as well as the colour.
 const LOOK: Record<ClaudeChipStatus | "unknown", { label: string; tone: string; mark: "dot" | "cross" | "bang" }> = {
   ok: {
     label: "Connected",
+    tone: "border-green-600/40 bg-green-50 text-green-800 dark:border-[#1F6B43] dark:bg-[#0F2A1C] dark:text-[#6EE7A0]",
+    mark: "dot",
+  },
+  trial: {
+    label: "Free trial",
     tone: "border-green-600/40 bg-green-50 text-green-800 dark:border-[#1F6B43] dark:bg-[#0F2A1C] dark:text-[#6EE7A0]",
     mark: "dot",
   },

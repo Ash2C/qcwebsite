@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { actOnRequest, loadRequests, type RequestAction, type SignupRequest } from "./api";
+import { actOnRequest, loadRequests, type RequestAction, type SignupRequest, type TrialKeyHealth } from "./api";
 import { formatWhen } from "./ClaudeKeyPanel";
 import MonsoonLoader from "./MonsoonLoader";
 import { card, secondaryButton } from "./styles";
@@ -12,6 +12,12 @@ const BUSY_ELSEWHERE = "Already being set up. Check again in a moment.";
 const SETTING_UP = "Setting up their CRM...";
 const SIGNUPS_OFF = "New sign-ups are off until the shared database is set.";
 const DECLINE = "Decline this request?";
+// The free trial's key, when it is not simply working. Fixed lines: nothing the server sent is shown.
+const TRIAL_KEY_WARNING: Partial<Record<TrialKeyHealth, string>> = {
+  key_rejected: "The free trial key was refused. New clients have no AI until it is replaced.",
+  no_credit: "The free trial key is out of credit. Trial clients have no AI until credit is added.",
+};
+const TRIAL_KEY_UNSET = "No free trial key is set. New clients start without AI.";
 
 const sectionTitle = "px-1 text-[13px] font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-300";
 const quiet = "px-1 text-[14px] leading-snug text-neutral-600 dark:text-neutral-400";
@@ -22,7 +28,8 @@ const approveButton =
 const plainButton =
   "min-h-[46px] flex-1 rounded-xl bg-neutral-100 px-4 text-[16px] font-medium text-[#0E7FA6] active:bg-neutral-200 disabled:opacity-50 dark:bg-white/10 dark:text-[#6AE6FF] dark:active:bg-white/20";
 
-type Loaded = { requests: SignupRequest[]; configured: boolean };
+type Loaded = { requests: SignupRequest[]; configured: boolean; trialKey: TrialKeyHealth | null };
+const TRIAL_KEY_STATES: readonly unknown[] = ["unset", "ok", "key_rejected", "no_credit"];
 
 /** Who the request is from, and when it was made. Text only: nothing here is a link. */
 function Who({ request }: { request: SignupRequest }) {
@@ -77,7 +84,8 @@ export default function RequestsPanel({
       if (!alive.current) return;
       if (res.status === 401) return calls.current.onUnauthorized();
       if (res.status === 200 && res.body && "requests" in res.body && Array.isArray(res.body.requests)) {
-        setData({ requests: res.body.requests, configured: res.body.configured === true });
+        const trialKey = TRIAL_KEY_STATES.includes(res.body.trialKey) ? (res.body.trialKey as TrialKeyHealth) : null;
+        setData({ requests: res.body.requests, configured: res.body.configured === true, trialKey });
         calls.current.onWaiting?.(res.body.requests.filter((r) => r.status === "pending").length);
         return;
       }
@@ -170,6 +178,12 @@ export default function RequestsPanel({
               {SIGNUPS_OFF}
             </p>
           )}
+          {data.trialKey && TRIAL_KEY_WARNING[data.trialKey] && (
+            <p role="alert" className="rounded-2xl border border-amber-600/40 bg-amber-50 px-4 py-3 text-[15px] text-amber-950 dark:border-[#8A6A1F] dark:bg-[#2B2210] dark:text-[#F3E2B8]">
+              {TRIAL_KEY_WARNING[data.trialKey]}
+            </p>
+          )}
+          {data.trialKey === "unset" && <p className={quiet}>{TRIAL_KEY_UNSET}</p>}
           {busy === "approve" && (
             <p role="status" className="px-1 text-[15px] font-medium text-neutral-800 dark:text-neutral-200">
               {SETTING_UP}

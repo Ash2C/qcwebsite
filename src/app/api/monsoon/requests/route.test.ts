@@ -10,6 +10,8 @@ const approveSignup = vi.fn();
 vi.mock("@/lib/monsoon/accounts/approve", () => ({ approveSignup: (...a: unknown[]) => approveSignup(...a) }));
 const signupsConfigured = vi.fn();
 vi.mock("@/lib/monsoon/google", () => ({ signupsConfigured: () => signupsConfigured() }));
+const trialKeyHealth = vi.fn();
+vi.mock("@/lib/monsoon/accounts/trial", () => ({ trialKeyHealth: () => trialKeyHealth() }));
 vi.mock("@/lib/monsoon/accounts/account", async () =>
   (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
 );
@@ -43,7 +45,8 @@ const calledNothing = () => {
 
 beforeEach(() => {
   vi.restoreAllMocks();
-  for (const f of [...Object.values(lib), approveSignup, signupsConfigured]) f.mockReset();
+  for (const f of [...Object.values(lib), approveSignup, signupsConfigured, trialKeyHealth]) f.mockReset();
+  trialKeyHealth.mockResolvedValue("ok");
   lib.listSignups.mockResolvedValue([row(), row({ id: "id-2", status: "approved", customerId: CUSTOMER })]);
   lib.declineSignup.mockResolvedValue(true);
   lib.reopenSignup.mockResolvedValue(true);
@@ -110,8 +113,31 @@ describe("GET /api/monsoon/requests", () => {
         { id: "id-2", email: "gil@example.com", name: "Gil Hale", status: "approved", customerId: CUSTOMER, createdAt: "2026-11-25T10:00:00.000Z" },
       ],
       configured: true,
+      trialKey: "ok",
     });
     expect(JSON.stringify(body)).not.toContain(SUB);
+  });
+
+  it("says how the free trial key is doing: unset, ok, refused or out of credit, and never the key", async () => {
+    vi.stubEnv("MONSOON_TRIAL_CLAUDE_KEY", "sk-ant-api03-TRIALKEY-0123456789-tttt");
+    try {
+      for (const health of ["unset", "ok", "key_rejected", "no_credit"]) {
+        trialKeyHealth.mockResolvedValue(health);
+        const res = await GET(get());
+        const text = await res.text();
+        expect(JSON.parse(text).trialKey).toBe(health);
+        expect(text).not.toContain("TRIALKEY");
+        expect(text).not.toContain("tttt");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not look at the trial key for anyone but the approver", async () => {
+    signInAs(fakeAccount({ customer: { code: "acme-co" }, canChangeKey: true }));
+    expect((await GET(get())).status).toBe(404);
+    expect(trialKeyHealth).not.toHaveBeenCalled();
   });
 
   it("says configured false without the shared database setting, and still lists", async () => {
