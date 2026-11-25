@@ -9,7 +9,7 @@ import { Client } from "pg";
 import { pipelineClientConfig, withPipelineDb } from "../db";
 import { buildSharedPoolerUrl } from "./address";
 import { runSetupChecks, type SetupFailure } from "./setup-check";
-import { loginStatements, schemaStatements, type SetupVocabulary } from "./setup-script";
+import { NEW_PASSWORD_SETTING, loginStatements, schemaStatements, type SetupVocabulary } from "./setup-script";
 import { clientNames, type ClientNames } from "./shared-names";
 
 export { clientNames, type ClientNames };
@@ -36,7 +36,7 @@ const LOCK = "SELECT pg_advisory_xact_lock(hashtext('monsoon:provision'))";
 /**
  * Builds the schema, the tables, the vocabulary rows and the login on the owner's connection.
  * Nothing that is not derived from the customer id is ever part of the SQL text: every key, label
- * and name travels as a parameter. Statements go one at a time inside one transaction.
+ * and name travels as a parameter, and so does the password. Statements go one at a time inside one transaction.
  */
 async function build(admin: Client, names: ClientNames, vocabulary: SetupVocabulary, password: string): Promise<void> {
   const { schema, role } = names;
@@ -83,7 +83,11 @@ async function build(admin: Client, names: ClientNames, vocabulary: SetupVocabul
         vocabulary.owners.map((o) => String(o.name)),
       ]);
     }
-    await admin.query(loginStatements(role, schema, password));
+    // The password goes as a parameter into a setting that lasts for this transaction at most, is
+    // read from there by the login script, and is blanked as soon as the login has it.
+    await admin.query(`SELECT set_config('${NEW_PASSWORD_SETTING}', $1, true)`, [password]);
+    await admin.query(loginStatements(role, schema));
+    await admin.query(`SELECT set_config('${NEW_PASSWORD_SETTING}', '', true)`);
     await admin.query(`ALTER ROLE ${role} SET search_path TO ${schema}`);
     await admin.query("COMMIT");
   } catch (err) {

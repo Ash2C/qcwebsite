@@ -388,6 +388,40 @@ describe.skipIf(!shared.available)("the wall between clients in the shared datab
     ]);
   });
 
+  it("the new password is never part of the SQL text: it travels as a parameter, and the login works", async () => {
+    const id = newCustomer();
+    const sent: { text: string; values: unknown[] }[] = [];
+    const real = Client.prototype.query;
+    const spy = vi.spyOn(Client.prototype, "query").mockImplementation(function (this: Client, ...args: unknown[]) {
+      const first = args[0] as string | { text?: string; values?: unknown[] };
+      sent.push({
+        text: typeof first === "string" ? first : String(first?.text ?? ""),
+        values: Array.isArray(args[1]) ? args[1] : typeof first === "object" && Array.isArray(first?.values) ? first.values : [],
+      });
+      return (real as (...a: unknown[]) => unknown).apply(this, args);
+    } as never);
+    let dbUrl: string;
+    try {
+      dbUrl = (await provisionSharedCrm({ customerId: id, vocabulary })).dbUrl;
+    } finally {
+      spy.mockRestore();
+    }
+    const password = decodeURIComponent(new URL(dbUrl).password);
+    expect(password).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    for (const q of sent) expect(q.text.includes(password), q.text.slice(0, 60)).toBe(false);
+    // It went once, as a value, into a setting that lasts only for the transaction, and was cleared after use.
+    const carried = sent.filter((q) => q.values.includes(password));
+    expect(carried.map((q) => q.text)).toEqual(["SELECT set_config('monsoon.new_password', $1, true)"]);
+    const at = sent.indexOf(carried[0]);
+    expect(sent.slice(at + 1).map((q) => q.text)).toContain("SELECT set_config('monsoon.new_password', '', true)");
+    const c = await login(dbUrl);
+    expect((await c.query("SELECT current_user::text AS me, current_setting('monsoon.new_password', true) AS left_over")).rows[0]).toEqual({
+      me: clientNames(id).role,
+      left_over: null,
+    });
+    expect(await code(c, "SELECT * FROM people")).toBeUndefined();
+  });
+
   it("builds nothing unless the connection confirms that a backslash is only a backslash", async () => {
     const id = newCustomer();
     const real = Client.prototype.query;

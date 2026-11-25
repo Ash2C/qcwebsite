@@ -45,7 +45,9 @@ export function checkSchemaName(name: string): string {
   return name;
 }
 
-function loginPart(role: string, password: string = PASSWORD_PLACEHOLDER, schema: string = DEFAULT_SCHEMA): string {
+// `passwordSql`, when given, is a fixed SQL expression the block reads the password from, in place
+// of the quoted password: the password itself is then nowhere in the script.
+function loginPart(role: string, password: string = PASSWORD_PLACEHOLDER, schema: string = DEFAULT_SCHEMA, passwordSql?: string): string {
   const policies: string[] = [];
   const policy = (table: string, action: "select" | "insert" | "update") => {
     const name = `${role}_${action}`;
@@ -62,7 +64,7 @@ function loginPart(role: string, password: string = PASSWORD_PLACEHOLDER, schema
   return `DO $$
 DECLARE
   -- Put your own password between the quotes on the next line (at least 16 characters).
-  pw text := ${lit(password)};
+  pw text := ${passwordSql ?? lit(password)};
 BEGIN
   IF pw IS NULL OR pw LIKE 'REPLACE-%' OR length(pw) < 16 THEN
     RAISE EXCEPTION 'Set your own password for ${role} on the marked line, then run the script again.';
@@ -124,10 +126,16 @@ export function schemaStatements(): string {
   return [CRM_SCHEMA_SQL, "INSERT INTO schema_migrations (version) VALUES (1) ON CONFLICT DO NOTHING;"].join("\n\n");
 }
 
-/** The login, its grants and its policies for the shared database. Built from the two checked names and the password only. */
-export function loginStatements(roleName: string, schema: string, password: string): string {
-  if (typeof password !== "string" || password.length < 16 || !/^[A-Za-z0-9_-]+$/.test(password)) throw new Error("invalid password");
-  return loginPart(checkRole(roleName), password, checkSchemaName(schema));
+/** The setting the shared database's login script reads the new password from. Set it for the transaction only. */
+export const NEW_PASSWORD_SETTING = "monsoon.new_password";
+
+/**
+ * The login, its grants and its policies for the shared database. Built from the two checked names
+ * only: the password is read from `NEW_PASSWORD_SETTING`, so it is never in this text, and a
+ * statement that fails cannot carry it into a log.
+ */
+export function loginStatements(roleName: string, schema: string): string {
+  return loginPart(checkRole(roleName), undefined, checkSchemaName(schema), `current_setting('${NEW_PASSWORD_SETTING}')`);
 }
 
 /** Everything the setup script runs, without its BEGIN and COMMIT, for a caller with its own transaction. */
