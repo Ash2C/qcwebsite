@@ -114,8 +114,9 @@ async function store(link: Link, dbUrl: string | null, projectRef: string | null
         return false;
       }
       if (dbUrlEnc !== null) {
+        // The address is now the customer's own database: the pipeline is no longer in the shared one.
         const p = await db.query(
-          "UPDATE pipelines SET db_url_enc = $1, connected_at = now(), project_ref = $4 WHERE id = $2 AND customer_id = $3",
+          "UPDATE pipelines SET db_url_enc = $1, shared_schema = NULL, connected_at = now(), project_ref = $4 WHERE id = $2 AND customer_id = $3",
           [dbUrlEnc, link.pipelineId, link.customerId, projectRef],
         );
         if (p.rowCount !== 1) throw new Error("Pipeline not found");

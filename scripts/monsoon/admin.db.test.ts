@@ -459,6 +459,8 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     await run(["pipeline", "add", "other", "main", "Main", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
     await client.query("UPDATE customers SET claude_key_enc = 'k1.aaa.bbb.ccc'");
     await client.query("UPDATE pipelines SET db_url_enc = 'k1.ddd.eee.fff', connected_at = now()");
+    // One of each customer's pipelines lives in the shared database.
+    await client.query("UPDATE pipelines SET shared_schema = 'c_0b9d2a476a3e4c1f9d552f7a3c1e8b10' WHERE key = 'main'");
 
     expect(await run(["forget", "acme"])).toBe(0);
     expect(text()).not.toMatch(/k1\./);
@@ -476,6 +478,15 @@ describe.skipIf(!db.available)("monsoon admin", () => {
       ["acme", "main", null, true],
       ["acme", "side", null, true],
       ["other", "main", "k1.ddd.eee.fff", false],
+    ]);
+    // With the address gone, nothing still says the pipeline is in the shared database.
+    const shared = await client.query(
+      "SELECT c.code, p.key, p.shared_schema FROM pipelines p JOIN customers c ON c.id = p.customer_id ORDER BY c.code, p.key",
+    );
+    expect(shared.rows.map((r) => [r.code, r.key, r.shared_schema])).toEqual([
+      ["acme", "main", null],
+      ["acme", "side", null],
+      ["other", "main", "c_0b9d2a476a3e4c1f9d552f7a3c1e8b10"],
     ]);
     const people = await client.query("SELECT owner_key, session_no FROM people ORDER BY owner_key");
     expect(people.rows).toEqual([

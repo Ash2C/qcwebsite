@@ -500,7 +500,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
             [c.id],
           );
           await db.query("UPDATE customers SET claude_key_enc = NULL, status = 'suspended' WHERE id = $1", [c.id]);
-          await db.query("UPDATE pipelines SET db_url_enc = NULL, connected_at = NULL WHERE customer_id = $1", [c.id]);
+          await db.query("UPDATE pipelines SET db_url_enc = NULL, shared_schema = NULL, connected_at = NULL WHERE customer_id = $1", [c.id]);
           const people = await db.query("UPDATE people SET session_no = session_no + 1 WHERE customer_id = $1", [c.id]);
           // The user page (docs/superpowers/specs/2026-11-24-monsoon-user-page-design.md): an administrator
           // erasing people, not the app deleting a note. The names stay; they are the account, not the page.

@@ -127,6 +127,17 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/bootstrap", () => {
     expect(act).toEqual([{ customer_id: c.id, person_id: null, action: "setup" }]);
   });
 
+  it("a pipeline that named a schema in the shared database no longer does once its own address is stored", async () => {
+    await admin.query("UPDATE pipelines SET shared_schema = 'c_0b9d2a476a3e4c1f9d552f7a3c1e8b10'");
+    expect((await POST(boot())).status).toBe(200);
+    const p = (await admin.query("SELECT db_url_enc, shared_schema FROM pipelines ORDER BY key")).rows;
+    expect(p.length).toBeGreaterThanOrEqual(2);
+    for (const row of p) {
+      expect(row.db_url_enc).toMatch(/^k1\./);
+      expect(row.shared_schema).toBeNull();
+    }
+  });
+
   it("trims trailing whitespace and newlines from the three settings before storing", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", `${CLAUDE_KEY}
 `);

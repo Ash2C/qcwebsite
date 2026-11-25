@@ -77,7 +77,8 @@ export async function POST(request: Request): Promise<Response> {
           id,
         ]);
         for (const [i, row] of rows.entries()) {
-          await db.query("UPDATE pipelines SET db_url_enc = $1, connected_at = now() WHERE id = $2 AND customer_id = $3", [
+          // These addresses are databases of their own, never the shared one.
+          await db.query("UPDATE pipelines SET db_url_enc = $1, shared_schema = NULL, connected_at = now() WHERE id = $2 AND customer_id = $3", [
             encryptSecret(urls[i], id, `pipeline:${row!.id}`),
             row!.id,
             id,

@@ -202,6 +202,15 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/setup", { timeout: 30_00
     expect(again.json.error).toBe(EXPIRED);
   });
 
+  it("host: a pipeline that was in the shared database stops naming its schema there", async () => {
+    await client.query("UPDATE pipelines SET db_url_enc = 'k1.old.old.old', shared_schema = 'c_0b9d2a476a3e4c1f9d552f7a3c1e8b10' WHERE id = $1", [pid]);
+    expect((await send(body())).status).toBe(200);
+    const p = (await client.query("SELECT db_url_enc, shared_schema FROM pipelines WHERE id = $1", [pid])).rows[0];
+    expect(p.db_url_enc).not.toBe("k1.old.old.old");
+    expect(new URL(decryptSecret(p.db_url_enc, cid, `pipeline:${pid}`)).username).toBe(ROLE);
+    expect(p.shared_schema).toBeNull();
+  });
+
   it("host: a project ref used by another pipeline is refused with 409 and nothing stored", async () => {
     await client.query(
       "INSERT INTO pipelines (customer_id, key, label, default_role, project_ref) VALUES ($1, 'other', 'Other', 'investor', $2)",
