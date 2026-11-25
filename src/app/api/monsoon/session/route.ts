@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { SESSION_COOKIE, SESSION_SECONDS, accountsConfigured, signSession } from "@/lib/monsoon/auth";
+import { accountsConfigured } from "@/lib/monsoon/auth";
 import { buildAccount } from "@/lib/monsoon/accounts/account";
 import { DUMMY_PASSCODE_HASH, hashAddress, verifyPasscode } from "@/lib/monsoon/accounts/crypto";
 import {
@@ -16,6 +16,7 @@ import {
 } from "@/lib/monsoon/accounts/store";
 import { readJson } from "@/lib/monsoon/body";
 import { ensureOwner } from "@/lib/monsoon/owners";
+import { clearSessionCookie, networkAddress, setSessionCookie } from "@/lib/monsoon/session-cookie";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,14 +32,6 @@ const PAIR_LIMIT = 5;
 const CODE_LIMIT = 50;
 const WRONG = "Wrong company code or passcode.";
 const LOCKED = "Wrong company code or passcode. Try again later.";
-
-// Vercel sets x-real-ip and the client cannot forge it; x-forwarded-for can carry client-supplied entries.
-function networkAddress(request: Request): string {
-  const real = request.headers.get("x-real-ip")?.trim();
-  if (real) return real;
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  return forwarded || "unknown";
-}
 
 function errorClass(err: unknown): string {
   return err instanceof Error ? err.name : "error";
@@ -150,22 +143,12 @@ export async function POST(request: Request) {
   await recordActivity({ customerId: customer.id, personId: person.id, pipelineKey: null, action: "sign_in" });
 
   const response = NextResponse.json({ ok: true });
-  response.cookies.set(
-    SESSION_COOKIE,
-    signSession({ customerId: customer.id, personId: person.id, sessionNo: person.sessionNo }),
-    { path: "/", httpOnly: true, secure: true, sameSite: "strict", maxAge: SESSION_SECONDS },
-  );
+  setSessionCookie(response, { customerId: customer.id, personId: person.id, sessionNo: person.sessionNo });
   return response;
 }
 
 export async function DELETE() {
   const response = NextResponse.json({ ok: true });
-  response.cookies.set(SESSION_COOKIE, "", {
-    path: "/",
-    httpOnly: true,
-    secure: true,
-    sameSite: "strict",
-    maxAge: 0,
-  });
+  clearSessionCookie(response);
   return response;
 }

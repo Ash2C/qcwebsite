@@ -2,6 +2,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Client } from "pg";
 import { makeAccountsTestDb } from "../testing/db";
 import {
+  GOOGLE_ATTEMPT_CODE,
+  GOOGLE_ATTEMPT_LIMIT,
+  beginGoogleAttempt,
+  settleGoogleAttempt,
   declineSignup,
   findPersonByGoogleSub,
   findSignup,
@@ -226,6 +230,50 @@ describe.skipIf(!db.available)("sign-up requests and Google links", { timeout: 2
     });
   });
 
+  describe("Google callback attempts", () => {
+    const failed = async (address: string, n: number) => {
+      for (let i = 0; i < n; i++) expect(await beginGoogleAttempt(address)).toMatch(/^\d+$/);
+    };
+
+    it("records each attempt as a failure until it is settled, under a code no company can have", async () => {
+      const id = await beginGoogleAttempt("addr-1");
+      expect(id).toMatch(/^\d+$/);
+      expect(GOOGLE_ATTEMPT_CODE).not.toMatch(/^[a-z0-9-]{3,32}$/);
+      let rows = await client.query("SELECT code, address_hash, ok, person_id FROM sign_in_attempts");
+      expect(rows.rows).toEqual([{ code: GOOGLE_ATTEMPT_CODE, address_hash: "addr-1", ok: false, person_id: null }]);
+      await settleGoogleAttempt(id as string);
+      rows = await client.query("SELECT ok FROM sign_in_attempts");
+      expect(rows.rows).toEqual([{ ok: true }]);
+    });
+
+    it("refuses an address after ten failures in fifteen minutes; the refusal does not count", async () => {
+      await failed("addr-busy", GOOGLE_ATTEMPT_LIMIT);
+      expect(GOOGLE_ATTEMPT_LIMIT).toBe(10);
+      expect(await beginGoogleAttempt("addr-busy")).toBeNull();
+      expect(await beginGoogleAttempt("addr-busy")).toBeNull();
+      const rows = await client.query("SELECT ok, count(*)::int AS n FROM sign_in_attempts GROUP BY ok ORDER BY ok NULLS LAST");
+      expect(rows.rows).toEqual([{ ok: false, n: 10 }, { ok: null, n: 2 }]);
+      // Another address is unaffected, and so is this one once the failures are old.
+      expect(await beginGoogleAttempt("addr-quiet")).toMatch(/^\d+$/);
+      await client.query("UPDATE sign_in_attempts SET at = now() - interval '16 minutes' WHERE address_hash = 'addr-busy'");
+      expect(await beginGoogleAttempt("addr-busy")).toMatch(/^\d+$/);
+    });
+
+    it("successes do not count, and failed passcode sign-ins from the same address are separate", async () => {
+      for (let i = 0; i < 15; i++) await settleGoogleAttempt((await beginGoogleAttempt("addr-ok")) as string);
+      await client.query(
+        "INSERT INTO sign_in_attempts (code, address_hash, ok) SELECT 'acme-co', 'addr-ok', false FROM generate_series(1, 30)",
+      );
+      expect(await beginGoogleAttempt("addr-ok")).toMatch(/^\d+$/);
+    });
+
+    it("parallel attempts from one address cannot pass the limit", async () => {
+      const results = await Promise.all(Array.from({ length: 16 }, () => beginGoogleAttempt("addr-par")));
+      expect(results.filter((r) => r !== null).length).toBeLessThanOrEqual(GOOGLE_ATTEMPT_LIMIT);
+      expect(results.filter((r) => r === null).length).toBeGreaterThanOrEqual(6);
+    });
+  });
+
   describe("linkGoogle", () => {
     it("links a free Google id to the person and records it", async () => {
       const { ann, bob } = await seed();
@@ -275,6 +323,16 @@ describe.skipIf(!db.available)("sign-up requests and Google links", { timeout: 2
       expect(await linkGoogle(ann, "abc")).toBe("taken");
       expect(await linkGoogle(ann, "")).toBe("taken");
       expect(await subOf(ann)).toBeNull();
+    });
+
+    it("taken: the person or their customer has been suspended since the link was started", async () => {
+      const { ann, oz } = await seed();
+      await client.query("UPDATE people SET status = 'suspended' WHERE id = $1", [ann.personId]);
+      await client.query("UPDATE customers SET status = 'suspended' WHERE id = $1", [oz.customerId]);
+      expect(await linkGoogle(ann, "1001")).toBe("taken");
+      expect(await linkGoogle(oz, "1002")).toBe("taken");
+      expect(await subOf(ann)).toBeNull();
+      expect(await subOf(oz)).toBeNull();
     });
 
     it("two people linking the same Google id at once: exactly one wins", async () => {

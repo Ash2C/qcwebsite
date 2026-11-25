@@ -6,7 +6,10 @@ import type { Client } from "pg";
 import {
   CUSTOMER_COLUMNS,
   PERSON_COLUMNS,
+  beginAttempt,
+  failuresSince,
   recordActivity,
+  settleAttempt,
   toCustomer,
   toPerson,
   withAccountsDb,
@@ -174,7 +177,9 @@ export async function linkGoogle(who: { customerId: string; personId: string }, 
       return h.id === who.personId.toLowerCase() && h.customer_id === who.customerId.toLowerCase() ? "already" : "taken";
     }
     const r = await db.query(
-      "UPDATE people SET google_sub = $3 WHERE id = $1 AND customer_id = $2 AND status = 'active' AND google_sub IS NULL",
+      `UPDATE people SET google_sub = $3
+        WHERE id = $1 AND customer_id = $2 AND status = 'active' AND google_sub IS NULL
+          AND EXISTS (SELECT 1 FROM customers c WHERE c.id = $2 AND c.status = 'active')`,
       [who.personId, who.customerId, sub],
     );
     return r.rowCount === 1 ? "linked" : "taken";
@@ -184,4 +189,32 @@ export async function linkGoogle(who: { customerId: string; personId: string }, 
     await recordActivity({ customerId: who.customerId, personId: who.personId, pipelineKey: null, action: "google_link" });
   }
   return "linked";
+}
+
+// Returns from Google are counted per network address in sign_in_attempts, like passcode sign-ins,
+// under a code no company can have (a company code has no colon).
+export const GOOGLE_ATTEMPT_CODE = "google:callback";
+export const GOOGLE_ATTEMPT_LIMIT = 10;
+const GOOGLE_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+
+/**
+ * Call before asking Google who someone is. Records the attempt as a failure until it is settled
+ * and returns its id, or null when this address already has more than ten failures in the last
+ * fifteen minutes (that refusal is kept as a record but not counted).
+ */
+export async function beginGoogleAttempt(addressHash: string): Promise<string | null> {
+  return withAccountsDb(async (db) => {
+    const id = await beginAttempt(db, { code: GOOGLE_ATTEMPT_CODE, addressHash });
+    const failures = await failuresSince(db, GOOGLE_ATTEMPT_CODE, addressHash, Date.now() - GOOGLE_ATTEMPT_WINDOW_MS);
+    if (failures.pair > GOOGLE_ATTEMPT_LIMIT) {
+      await settleAttempt(db, id, null);
+      return null;
+    }
+    return id;
+  });
+}
+
+/** Google answered for this attempt: it no longer counts as a failure. */
+export async function settleGoogleAttempt(id: string): Promise<void> {
+  await withAccountsDb((db) => settleAttempt(db, id, true));
 }
