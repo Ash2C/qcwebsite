@@ -133,12 +133,42 @@ describe.skipIf(!db.available)("the free trial", () => {
       expect(await uses(cid)).toBe(0);
     });
 
-    it("a trial that has not started, has run out of days, or of uses, is the missing key of today", async () => {
-      const early = await seed({ started: false });
-      const a = await account(early.cid, early.pid);
-      await a.beginAi("ask");
-      expect(() => a.anthropic({ timeout: 1000 })).toThrow(NotConnected);
+    it("the first AI request starts the clock for a client who signed in before there was a trial key, once only", async () => {
+      const clock = async (cid: string) =>
+        (await client.query("SELECT trial_started_at, trial_ends_at, (trial_ends_at - trial_started_at) = interval '14 days' AS two_weeks FROM customers WHERE id = $1", [cid])).rows[0];
+      const { cid, pid } = await seed({ started: false });
+      expect((await clock(cid)).trial_started_at).toBeNull();
 
+      const a = await account(cid, pid);
+      await a.beginAi("ask");
+      expect(a.anthropic({ timeout: 1000 }).apiKey).toBe(TRIAL_KEY);
+      expect(await uses(cid)).toBe(1);
+      const first = await clock(cid);
+      expect(first.trial_started_at).toBeInstanceOf(Date);
+      expect(first.two_weeks).toBe(true);
+
+      expect(await beginTrialUse(cid, pid, "read")).toEqual({ granted: true, probe: false });
+      const again = await clock(cid);
+      expect(again.trial_started_at).toEqual(first.trial_started_at);
+      expect(again.trial_ends_at).toEqual(first.trial_ends_at);
+
+      // Not for a customer who was never given a trial, nor for one with a key of its own.
+      const old = await seed({ limit: null, code: "old-co" });
+      await beginTrialUse(old.cid, old.pid, "ask");
+      expect((await clock(old.cid)).trial_started_at).toBeNull();
+      const own = await seed({ started: false, code: "own-co" });
+      await client.query("UPDATE customers SET claude_key_enc = $2 WHERE id = $1", [own.cid, encryptSecret(OWN_KEY, own.cid, "claude_key")]);
+      expect(await beginTrialUse(own.cid, own.pid, "ask")).toEqual({ granted: false, probe: false });
+      expect((await clock(own.cid)).trial_started_at).toBeNull();
+
+      // And never while there is no trial key.
+      const wait = await seed({ started: false, code: "wait-co" });
+      vi.stubEnv("MONSOON_TRIAL_CLAUDE_KEY", "");
+      expect(await beginTrialUse(wait.cid, wait.pid, "ask")).toEqual({ granted: false, probe: false });
+      expect((await clock(wait.cid)).trial_started_at).toBeNull();
+    });
+
+    it("a trial that has run out of days, or of uses, is the missing key of today", async () => {
       const late = await seed({ code: "late-co" });
       await client.query("UPDATE customers SET trial_started_at = now() - interval '15 days', trial_ends_at = now() - interval '1 day' WHERE id = $1", [late.cid]);
       const b = await account(late.cid, late.pid);
@@ -160,7 +190,6 @@ describe.skipIf(!db.available)("the free trial", () => {
         thrown = err;
       }
       expect(claudeFailure(thrown)).toBe("claude_key_missing");
-      expect(await uses(early.cid)).toBe(0);
       expect(await uses(late.cid)).toBe(0);
       expect(await uses(spent.cid)).toBe(2);
     });
@@ -376,6 +405,17 @@ describe.skipIf(!db.available)("the free trial", () => {
       expect((await state(cid, pid)).daysLeft).toBe(1);
     });
 
+    it("not started yet (signed in before there was a trial key): the whole trial, and looking does not start the clock", async () => {
+      const { cid, pid } = await seed({ started: false, limit: 40 });
+      const s = await state(cid, pid);
+      expect(s).toMatchObject({ status: "trial", daysLeft: 14, usesLeft: 40, last4: null });
+      expect(s.paused).toBeUndefined();
+      expect(s.trialEnded).toBeUndefined();
+      expect((await client.query("SELECT trial_started_at FROM customers WHERE id = $1", [cid])).rows[0].trial_started_at).toBeNull();
+      const full = await seed({ started: false, code: "full-co" });
+      expect(await state(full.cid, full.pid)).toMatchObject({ status: "trial", daysLeft: TRIAL_DAYS, usesLeft: TRIAL_USES });
+    });
+
     it("paused while the trial key is failing", async () => {
       const { cid, pid } = await seed();
       await noteTrialKey("no_credit");
@@ -399,8 +439,6 @@ describe.skipIf(!db.available)("the free trial", () => {
       const today = { status: "missing", last4: null, checkedAt: null, setAt: null, setBy: null, keyPerson: "Ann", canChange: true };
       const old = await seed({ limit: null });
       expect(await state(old.cid, old.pid)).toEqual(today);
-      const waiting = await seed({ started: false, code: "wait-co" });
-      expect(await state(waiting.cid, waiting.pid)).toEqual(today);
       const given = await seed({ code: "given-co" });
       vi.stubEnv("MONSOON_TRIAL_CLAUDE_KEY", "");
       expect(await state(given.cid, given.pid)).toEqual(today);

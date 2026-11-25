@@ -1,6 +1,7 @@
 // The free trial: a new client's AI features run on one Claude key held by the server
 // (MONSOON_TRIAL_CLAUDE_KEY) for 14 days or 150 AI uses, whichever comes first. With that setting
-// empty there is no trial for anyone. The key is read from the environment where it is used and is
+// empty there is no trial for anyone. The clock starts at the first sign-in made while the key is
+// set, or else at the first AI request. The key is read from the environment where it is used and is
 // never stored, returned, shown (not even in part) or logged. A customer whose trial_uses_limit is
 // NULL (everyone from before sign-up) never has a trial.
 import type { Client } from "pg";
@@ -37,22 +38,21 @@ function logFailure(what: string, err: unknown): void {
   console.error(`monsoon: ${what} failed (${err instanceof Error ? err.constructor.name : "Error"})`);
 }
 
+// Starts the clock once only, and only for a customer ($1) who was given a trial.
+const START_CLOCK = `UPDATE customers
+    SET trial_started_at = now(), trial_ends_at = now() + make_interval(days => $2)
+  WHERE id = $1 AND trial_uses_limit IS NOT NULL AND trial_started_at IS NULL`;
+
 /**
  * Starts the trial clock at a person's sign-in: once only, and only for a customer who was given a
- * trial. Does nothing while there is no trial key, so the days do not run before the AI works.
+ * trial. Does nothing while there is no trial key, so the days do not run before the AI works (a
+ * client who signed in before there was a key gets the clock started by beginTrialUse instead).
  * Never throws: a failure here must not stop a sign-in.
  */
 export async function startTrialClock(customerId: string): Promise<void> {
   if (trialKey() === null) return;
   try {
-    await withAccountsDb((db) =>
-      db.query(
-        `UPDATE customers
-            SET trial_started_at = now(), trial_ends_at = now() + make_interval(days => $2)
-          WHERE id = $1 AND trial_uses_limit IS NOT NULL AND trial_started_at IS NULL`,
-        [customerId, TRIAL_DAYS],
-      ),
-    );
+    await withAccountsDb((db) => db.query(START_CLOCK, [customerId, TRIAL_DAYS]));
   } catch (err) {
     logFailure("startTrialClock", err);
   }
@@ -64,12 +64,16 @@ export async function startTrialClock(customerId: string): Promise<void> {
  * on as for a missing key. The use is written first and counted after, so parallel requests cannot
  * all slip under the limit (the last few in flight may; never more).
  *
+ * A client who signed in before there was a trial key has no clock yet: their first AI request
+ * starts it here, once only.
+ *
  * While the trial key is known to be failing this throws TrialPaused without recording a use, except
  * for one request a minute, which is let through to try the key again (`probe`).
  */
 export async function beginTrialUse(customerId: string, personId: string | null, kind: AiKind): Promise<{ granted: boolean; probe: boolean }> {
   if (trialKey() === null) return NOT_ON_TRIAL;
   return withAccountsDb(async (db) => {
+    await db.query(`${START_CLOCK} AND status = 'active' AND claude_key_enc IS NULL`, [customerId, TRIAL_DAYS]);
     const live = await db.query(`SELECT 1 FROM customers c WHERE ${LIVE}`, [customerId]);
     if (live.rowCount !== 1) return NOT_ON_TRIAL;
 
@@ -143,27 +147,30 @@ export type TrialState =
 
 /**
  * Where a customer with no key of its own stands, for the key screen and the chip. `none` when
- * there is no trial key, the customer was never given a trial, or its clock has not started.
+ * there is no trial key or the customer was never given a trial. A clock that has not started yet
+ * (it starts at the first AI request) is the whole trial, still to come.
  */
 export async function loadTrialState(db: Client, customerId: string): Promise<TrialState> {
   if (trialKey() === null) return { state: "none" };
   const r = await db.query(
     `SELECT c.trial_uses_limit AS use_limit,
             (SELECT count(*)::int FROM trial_uses u WHERE u.customer_id = c.id) AS used,
+            c.trial_started_at IS NULL AS unstarted,
             extract(epoch FROM (c.trial_ends_at - now()))::float8 AS seconds_left,
             (SELECT status FROM trial_key_health WHERE id) AS health
        FROM customers c
       WHERE c.id = $1 AND c.claude_key_enc IS NULL AND c.trial_uses_limit IS NOT NULL
-        AND c.trial_started_at IS NOT NULL AND c.trial_ends_at IS NOT NULL`,
+        AND (c.trial_started_at IS NULL OR c.trial_ends_at IS NOT NULL)`,
     [customerId],
   );
-  const row = r.rows[0] as { use_limit: number; used: number; seconds_left: number; health: string | null } | undefined;
+  const row = r.rows[0] as { use_limit: number; used: number; unstarted: boolean; seconds_left: number | null; health: string | null } | undefined;
   if (!row) return { state: "none" };
   const usesLeft = row.use_limit - row.used;
-  if (!(row.seconds_left > 0) || usesLeft <= 0) return { state: "ended" };
+  const secondsLeft = row.unstarted ? TRIAL_DAYS * 86_400 : (row.seconds_left ?? 0);
+  if (!(secondsLeft > 0) || usesLeft <= 0) return { state: "ended" };
   return {
     state: "live",
-    daysLeft: Math.max(1, Math.ceil(row.seconds_left / 86_400)),
+    daysLeft: Math.max(1, Math.ceil(secondsLeft / 86_400)),
     usesLeft,
     paused: row.health !== null && row.health !== "ok",
   };
