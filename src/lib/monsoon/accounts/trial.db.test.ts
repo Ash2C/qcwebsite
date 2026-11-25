@@ -220,6 +220,50 @@ describe.skipIf(!db.available)("the free trial", () => {
       expect(await customerStatus(cid)).toEqual({ claude_status: null, claude_checked_at: null });
     });
 
+    it("a 403 on a trial call is not the trial key's fault: health stays as it was and the request fails as an ordinary error", async () => {
+      const forbidden = () => Object.assign(new Error("web search is not enabled for this organization"), { status: 403 });
+      const { cid, pid } = await seed();
+      const a = await account(cid, pid);
+      await a.beginAi("research");
+      a.anthropic({ timeout: 1000 });
+      await a.noteClaude(forbidden());
+      expect(await health()).toBeNull();
+      // Not a pause and not a key problem: the route answers with its own ordinary failure.
+      const shown = a.aiError(forbidden());
+      expect(shown).not.toBeInstanceOf(TrialPaused);
+      expect(claudeFailure(shown)).toBeNull();
+      expect(claudeFailureResponse(shown)).toBeNull();
+      expect(await customerStatus(cid)).toEqual({ claude_status: null, claude_checked_at: null });
+      // The next trial request is let through as before.
+      expect(await beginTrialUse(cid, pid, "ask")).toEqual({ granted: true, probe: false });
+
+      // A healthy key stays healthy, and a failing one stays failing, after a 403.
+      await noteTrialKey("ok", true);
+      const b = await account(cid, pid);
+      await b.beginAi("research");
+      b.anthropic({ timeout: 1000 });
+      await b.noteClaude(forbidden());
+      expect(await health()).toBe("ok");
+
+      // Out of credit can arrive as a 403 too: that is still the trial key's own fault.
+      const c = await account(cid, pid);
+      await c.beginAi("ask");
+      c.anthropic({ timeout: 1000 });
+      const broke = Object.assign(new Error("Your credit balance is too low"), { status: 403 });
+      await c.noteClaude(broke);
+      expect(await health()).toBe("no_credit");
+      expect(claudeFailure(c.aiError(broke))).toBe("claude_trial_paused");
+
+      // A customer's own key: a 403 is the refused key it has always been.
+      const own = await seed({ limit: null, code: "own-co" });
+      await client.query("UPDATE customers SET claude_key_enc = $2 WHERE id = $1", [own.cid, encryptSecret(OWN_KEY, own.cid, "claude_key")]);
+      const d = await account(own.cid, own.pid);
+      await d.beginAi("research");
+      await d.noteClaude(forbidden());
+      expect((await customerStatus(own.cid)).claude_status).toBe("key_rejected");
+      expect(claudeFailure(d.aiError(forbidden()))).toBe("claude_key_rejected");
+    });
+
     it("a trial call that worked records ok on the trial key, at most once a minute, and not on the customer", async () => {
       const { cid, pid } = await seed();
       const a = await account(cid, pid);

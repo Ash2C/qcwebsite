@@ -51,7 +51,8 @@ export type Account = {
   noteClaude(err?: unknown): Promise<void>;
   /**
    * What a failed AI call should be reported as: `err` itself, except that the trial key being
-   * refused or out of credit is the trial being paused, not a fault in the customer's key.
+   * refused (401) or out of credit is the trial being paused, not a fault in the customer's key, and
+   * any other refusal of a trial call (403) is an ordinary failure.
    */
   aiError(err: unknown): unknown;
 };
@@ -87,6 +88,13 @@ export function buildAccount(rows: { customer: CustomerRow; person: PersonRow; p
   const keyFault = (err: unknown): ClaudeStatus | null => {
     const reason = claudeFailure(err);
     return reason === "claude_key_rejected" ? "key_rejected" : reason === "claude_no_credit" ? "no_credit" : null;
+  };
+  // The same for a call made with the trial key, which every trial client shares: only a 401 says
+  // the key itself is refused. A 403 can be a permission one feature lacks (a tool not enabled for
+  // the organisation), so it must not pause the trial for everyone.
+  const trialKeyFault = (err: unknown): ClaudeStatus | null => {
+    const fault = keyFault(err);
+    return fault === "key_rejected" && (err as { status?: unknown } | null)?.status !== 401 ? null : fault;
   };
 
   return {
@@ -132,19 +140,23 @@ export function buildAccount(rows: { customer: CustomerRow; person: PersonRow; p
     canChangeKey: customer.keyPersonId !== null && customer.keyPersonId === person.id,
     async noteClaude(...args) {
       // A missing key, a busy Claude or another failure says nothing about the key.
-      const status = args.length === 0 ? "ok" : keyFault(args[0]);
-      if (status === null) return;
       if (customer.claudeKeyEnc === null) {
         // The call, if there was one, used the trial key: its result is never written onto the customer.
-        if (trialUsed) await noteTrialKey(status, trialProbe);
+        const health = args.length === 0 ? "ok" : trialKeyFault(args[0]);
+        if (trialUsed && health !== null) await noteTrialKey(health, trialProbe);
         return;
       }
+      const status = args.length === 0 ? "ok" : keyFault(args[0]);
+      if (status === null) return;
       const fresh = customer.claudeCheckedAt !== null && Date.now() - customer.claudeCheckedAt.getTime() < RECHECK_MS;
       if (customer.claudeStatus === status && fresh) return;
       await recordClaudeStatus(customer.id, status);
     },
     aiError(err) {
-      return trialUsed && keyFault(err) !== null ? new TrialPaused() : err;
+      if (!trialUsed || keyFault(err) === null) return err;
+      // A refusal that is not the trial key's own fault is an ordinary failure: the client has no
+      // key of its own to be told about, so the status that would name one is left off.
+      return trialKeyFault(err) !== null ? new TrialPaused() : new Error("Claude refused the request");
     },
   };
 }
