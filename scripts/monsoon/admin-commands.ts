@@ -45,6 +45,8 @@ const USAGE = [
 const MAX_PEOPLE = 50;
 const LINK_DAYS = 7;
 const HOST_LINK_MINUTES = 15;
+/** What `forget` leaves in place of the email and name on a sign-up request. */
+const FORGOTTEN = "forgotten";
 const NOT_CONNECTED = "The pipeline is not connected until host runs again successfully.";
 const CODE_RE = /^[a-z0-9-]{3,32}$/;
 const KEY_RE = /^[a-z0-9-]{2,32}$/;
@@ -518,6 +520,16 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
                 AND (granola_key_enc IS NOT NULL OR granola_status IS NOT NULL OR granola_checked_at IS NOT NULL OR granola_key_set_at IS NOT NULL)`,
             [c.id],
           );
+          // Sign-up requests that became this customer, or whose Google id one of its people linked: the
+          // email and name are blanked. The row, its Google id and its status stay, so the same Google
+          // account cannot quietly ask again. Before the links below are cleared, while they still say whose they are.
+          const requests = await db.query(
+            `UPDATE signups SET email = $2, name = $2
+              WHERE (customer_id = $1
+                     OR google_sub IN (SELECT google_sub FROM people WHERE customer_id = $1 AND google_sub IS NOT NULL))
+                AND (email <> $2 OR name <> $2)`,
+            [c.id, FORGOTTEN],
+          );
           // The Google link goes too: a forgotten customer's people cannot sign back in with Google.
           const google = await db.query("UPDATE people SET google_sub = NULL WHERE customer_id = $1 AND google_sub IS NOT NULL", [c.id]);
           const links = await db.query(
@@ -533,6 +545,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
           out(`People signed out: ${people.rowCount ?? 0}. Unused setup links expired: ${links.rowCount ?? 0}.`);
           out(`Granola keys cleared: ${granola.rowCount ?? 0}.`);
           out(`Google links cleared: ${google.rowCount ?? 0}.`);
+          out(`Sign-up requests blanked: ${requests.rowCount ?? 0}.`);
           out(
             `User pages blanked: notes removed ${notes.rowCount ?? 0}, work details removed ${work.rowCount ?? 0}, phone and email cleared for ${details.rowCount ?? 0}.`,
           );

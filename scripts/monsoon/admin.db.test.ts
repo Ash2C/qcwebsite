@@ -154,6 +154,39 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     expect(text()).toContain("Google links cleared: 0.");
   });
 
+  it("forget blanks the email and name on that customer's sign-up requests, keeps the rows and their status, and says how many", async () => {
+    await run(["customer", "add", "acme", "Acme"]);
+    await run(["customer", "add", "other", "Other"]);
+    await run(["person", "add", "acme", "Ann", "AN"]);
+    const acme = (await client.query("SELECT id FROM customers WHERE code = 'acme'")).rows[0].id;
+    const other = (await client.query("SELECT id FROM customers WHERE code = 'other'")).rows[0].id;
+    // Ann linked her Google account after a stray Sign in with Google: her request is kept as linked.
+    await client.query("UPDATE people SET google_sub = '4002' WHERE owner_key = 'AN'");
+    await client.query(
+      `INSERT INTO signups (google_sub, email, name, status, customer_id, address_hash) VALUES
+         ('4001', 'gil@acme.example', 'Gil Hale', 'approved', $1, 'h1'),
+         ('4002', 'ann@acme.example', 'Ann Acme', 'linked', NULL, 'h2'),
+         ('4003', 'oz@other.example', 'Oz Other', 'approved', $2, 'h3'),
+         ('4004', 'new@else.example', 'New Person', 'pending', NULL, 'h4')`,
+      [acme, other],
+    );
+
+    expect(await run(["forget", "acme"])).toBe(0);
+    expect(text()).toContain("Sign-up requests blanked: 2.");
+    expect(text()).not.toMatch(/acme\.example|Gil Hale|Ann Acme|400\d/);
+    const rows = await client.query("SELECT google_sub, email, name, status, customer_id, address_hash FROM signups ORDER BY google_sub");
+    expect(rows.rows).toEqual([
+      { google_sub: "4001", email: "forgotten", name: "forgotten", status: "approved", customer_id: acme, address_hash: "h1" },
+      { google_sub: "4002", email: "forgotten", name: "forgotten", status: "linked", customer_id: null, address_hash: "h2" },
+      { google_sub: "4003", email: "oz@other.example", name: "Oz Other", status: "approved", customer_id: other, address_hash: "h3" },
+      { google_sub: "4004", email: "new@else.example", name: "New Person", status: "pending", customer_id: null, address_hash: "h4" },
+    ]);
+    // Run again there is nothing left to blank, and nothing was removed.
+    expect(await run(["forget", "acme"])).toBe(0);
+    expect(text()).toContain("Sign-up requests blanked: 0.");
+    expect((await client.query("SELECT count(*)::int AS n FROM signups")).rows[0].n).toBe(4);
+  });
+
   it("forget clears the Granola key of that customer's people and leaves another customer's alone", async () => {
     await run(["customer", "add", "acme", "Acme"]);
     await run(["customer", "add", "other", "Other"]);
