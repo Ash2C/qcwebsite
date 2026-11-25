@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Profile } from "@/lib/monsoon/contacts";
+import { actionLabel } from "@/lib/monsoon/rules";
 import MonsoonLoader from "./MonsoonLoader";
 import { loadProfile, type EstateInfo } from "./api";
 import { localDate } from "./AskPanel";
@@ -563,7 +564,7 @@ export default function ProfileView({
             {p.timeline.map((t, i) => (
               <li key={i} className="px-4 py-3">
                 <p className="whitespace-pre-wrap break-words text-[16px] text-neutral-900 dark:text-white">
-                  {`${formatDate(t.at)} · ${t.kind} · ${t.summary}`}
+                  {`${formatDate(t.at)} · ${actionLabel(t.kind, t.summary)} · ${t.summary}`}
                 </p>
                 {t.by ? <p className="text-[14px] text-neutral-500 dark:text-neutral-400">{`by ${t.by}`}</p> : null}
               </li>

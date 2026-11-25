@@ -37,11 +37,13 @@ export type CaptureResult =
 const SOURCE = "monsoon-app";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const KIND_TEXT: Record<CaptureKind, string> = {
-  card: "Card captured in person",
-  badge: "Badge captured in person",
-  screen: "Captured from a screenshot",
-  other: "Captured from a photo",
+  card: "Added from a photo of a business card",
+  badge: "Added from a photo of a badge",
+  screen: "Added from a screenshot",
+  other: "Added from a photo",
 };
+// A contact typed in by hand: no image, and nothing is assumed about having met.
+const TYPED_TEXT = "Added by hand";
 const PERSON_COLUMNS = ["title", "email", "phone", "linkedin_url"] as const;
 
 type PersonRow = {
@@ -248,8 +250,8 @@ export async function capture(db: ClientBase, input: CaptureInput, owner: string
     );
 
     // 7. A meeting touch, also for an existing member.
-    const kindKey = input.kind ?? "card";
-    let summary = Object.hasOwn(KIND_TEXT, kindKey) ? KIND_TEXT[kindKey] : KIND_TEXT.card;
+    const kindKey = input.kind;
+    let summary = kindKey !== undefined && Object.hasOwn(KIND_TEXT, kindKey) ? KIND_TEXT[kindKey] : TYPED_TEXT;
     if (filedUnder) summary = `${person.name}: ${summary}`;
     if (notes) summary += `: ${notes}`;
     if (cardOrg) summary += ` (card shows ${cardOrg})`;

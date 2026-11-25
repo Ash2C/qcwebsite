@@ -60,12 +60,12 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
     expect(c.person_id).toBe(r.person);
     expect(c.org_id).not.toBeNull();
     const t = (await db.query("SELECT * FROM touches")).rows[0];
-    expect(t).toMatchObject({ kind: "meeting", by_whom: "VF", summary: "Card captured in person: met at SFF" });
+    expect(t).toMatchObject({ kind: "meeting", by_whom: "VF", summary: "Added by hand: met at SFF" });
   });
 
-  it('touch summary without notes is exactly "Card captured in person"', async () => {
+  it('touch summary without notes is exactly "Added by hand"', async () => {
     await capture(db, input({ org: "Acme Capital" }), "VF");
-    expect(await touchSummaries()).toEqual(["Card captured in person"]);
+    expect(await touchSummaries()).toEqual(["Added by hand"]);
   });
 
   it("stores rawText and extracted on the capture row", async () => {
@@ -137,7 +137,7 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
       expect(r).toMatchObject({ outcome: "existing", org: "Acme Capital", filled: ["phone"] });
       expect(await count("orgs")).toBe(1);
       const s = await touchSummaries();
-      expect(s[s.length - 1]).toBe("Card captured in person (card shows Borealis Partners)");
+      expect(s[s.length - 1]).toBe("Added by hand (card shows Borealis Partners)");
     });
 
     it("different person creates a second one", async () => {
@@ -195,7 +195,7 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
       const id = await seed("jon@acme.com", true);
       const r = await capture(db, input({ name: "Jon Poe", email: "jon@acme.com", samePerson: id }), "VF");
       expect(r).toMatchObject({ outcome: "filed", name: "Jonathan Poe" });
-      expect(await touchSummaries()).toEqual(["Jonathan Poe: Card captured in person"]);
+      expect(await touchSummaries()).toEqual(["Jonathan Poe: Added by hand"]);
     });
 
     it("a stored email with no email on the card is invalid and writes nothing", async () => {
@@ -224,7 +224,7 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
 
   it("an odd kind such as toString falls back to the card wording", async () => {
     await capture(db, input({ kind: "toString" as unknown as "card" }), "VF");
-    expect(await touchSummaries()).toEqual(["Card captured in person"]);
+    expect(await touchSummaries()).toEqual(["Added by hand"]);
   });
 
   it("samePerson with a different name and a different email is invalid", async () => {
@@ -256,7 +256,7 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
       expect(await count("people")).toBe(1);
       expect(await count("members")).toBe(1);
       const t = (await db.query("SELECT member_id, summary FROM touches")).rows;
-      expect(t).toEqual([{ member_id: memberId, summary: "Omar Reyes: Card captured in person" }]);
+      expect(t).toEqual([{ member_id: memberId, summary: "Omar Reyes: Added by hand" }]);
       expect((await db.query("SELECT notes FROM members")).rows[0].notes).toBe("company note");
       const c = (await db.query("SELECT person_id, org_id FROM captures")).rows[0];
       expect(c.person_id).toBe((r as { person: string }).person);
@@ -273,7 +273,7 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
       expect(await count("people")).toBe(1);
       expect(await count("members")).toBe(1);
       const s = await touchSummaries();
-      expect(s[s.length - 1]).toBe("Omar Reyes: Badge captured in person: met at SFF");
+      expect(s[s.length - 1]).toBe("Omar Reyes: Added from a photo of a badge: met at SFF");
       expect((await db.query("SELECT notes FROM members")).rows[0].notes).toBe("company note");
     });
 
@@ -290,7 +290,7 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
       const r = await capture(db, input({ name: "Omar Reyes", org: "Northwind Capital" }), "VF");
       expect(r).toMatchObject({ outcome: "existing", role: "introducer" });
       expect((await db.query("SELECT member_id, summary FROM touches")).rows).toEqual([
-        { member_id: own.id, summary: "Card captured in person" },
+        { member_id: own.id, summary: "Added by hand" },
       ]);
     });
 
@@ -322,11 +322,11 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
   });
 
   it.each([
-    ["badge", "Badge captured in person"],
-    ["screen", "Captured from a screenshot"],
-    ["other", "Captured from a photo"],
-    ["card", "Card captured in person"],
-    [undefined, "Card captured in person"],
+    ["badge", "Added from a photo of a badge"],
+    ["screen", "Added from a screenshot"],
+    ["other", "Added from a photo"],
+    ["card", "Added from a photo of a business card"],
+    [undefined, "Added by hand"],
   ] as const)("timeline wording for kind %s", async (kind, text) => {
     await capture(db, input({ org: "Acme Capital", kind }), "VF");
     expect(await touchSummaries()).toEqual([text]);

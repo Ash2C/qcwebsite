@@ -135,6 +135,44 @@ export function dueBucket(
 
 export const ACTION_KINDS = ["note", "email", "call", "meeting"] as const;
 
+// The timeline entry written when a contact is added is stored as a "meeting" (as the core does),
+// but adding someone is not meeting them. These are the texts that entry starts with, today's and
+// the ones written before the wording changed, after an optional "<Name>: " for a person filed
+// under a company.
+const PHOTO_TEXTS = [
+  "Added from a photo of a business card",
+  "Added from a photo of a badge",
+  "Added from a screenshot",
+  "Added from a photo",
+  "Badge captured in person",
+  "Captured from a screenshot",
+  "Captured from a photo",
+];
+// "Card captured in person" was also written for hand-typed contacts, so it says only "added".
+const ADDED_TEXTS = ["Added by hand", "Card captured in person"];
+const NAME_PREFIX = /^[^:\n]{1,200}: /;
+
+function startsWithAny(text: string, starts: string[]): boolean {
+  return starts.some((s) => text === s || text.startsWith(`${s}:`) || text.startsWith(`${s} (`));
+}
+
+/** "photo" for an entry made when a contact came in from an image, "added" for one typed in, else null. */
+export function captureOrigin(summary: string | null | undefined): "photo" | "added" | null {
+  const text = (summary ?? "").trim();
+  for (const candidate of [text, text.replace(NAME_PREFIX, "")]) {
+    if (startsWithAny(candidate, PHOTO_TEXTS)) return "photo";
+    if (startsWithAny(candidate, ADDED_TEXTS)) return "added";
+  }
+  return null;
+}
+
+/** What to call a last action: a meeting entry that only records the contact being added is not a meeting. */
+export function actionLabel(kind: string, summary: string | null | undefined): string {
+  if (kind !== "meeting") return kind;
+  const origin = captureOrigin(summary);
+  return origin === "photo" ? "photo capture" : origin === "added" ? "added" : kind;
+}
+
 /** The newest call, meeting, email or note, compared on String(at) as the Python does. First wins a tie. */
 export function lastAction<T extends { kind: string; at: string | Date }>(touches: T[]): T | null {
   let best: T | null = null;

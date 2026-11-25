@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import fixtures from "./rules.fixtures.json";
 import {
+  actionLabel,
+  captureOrigin,
   dueBucket,
   lastAction,
   mergeFillEmpty,
@@ -92,5 +94,44 @@ describe("lastAction with Date values", () => {
     const stage = { kind: "stage", at: new Date("2026-12-01T00:00:00Z") };
     expect(lastAction([stage, call])).toBe(call);
     expect(lastAction([stage])).toBeNull();
+  });
+});
+
+describe("captureOrigin", () => {
+  it("reads an entry written when a contact came in from an image as a photo capture, never as a meeting", () => {
+    for (const text of [
+      "Added from a photo of a business card",
+      "Added from a photo of a badge: spoke about pricing",
+      "Added from a screenshot",
+      "Added from a photo (card shows Borealis Partners)",
+      "Omar Reyes: Added from a photo of a badge",
+      // Entries written before the wording changed.
+      "Badge captured in person",
+      "Captured from a screenshot: note",
+      "Captured from a photo",
+      "Omar Reyes: Badge captured in person: met at SFF",
+    ]) {
+      expect(captureOrigin(text), text).toBe("photo");
+    }
+  });
+
+  it("reads a hand-typed entry, and the old wording that covered both, as simply added", () => {
+    for (const text of ["Added by hand", "Added by hand: met at SFF", "Card captured in person", "Jonathan Poe: Card captured in person"]) {
+      expect(captureOrigin(text), text).toBe("added");
+    }
+  });
+
+  it("leaves every other entry alone", () => {
+    for (const text of ["Coffee at SFF", "Call: agreed pricing", "She added from a photo", "", "Note: Card captured in person was wrong"]) {
+      expect(captureOrigin(text), text).toBeNull();
+    }
+  });
+
+  it("labels a last action: only a meeting entry that records the adding is renamed", () => {
+    expect(actionLabel("meeting", "Added from a photo of a badge")).toBe("photo capture");
+    expect(actionLabel("meeting", "Card captured in person")).toBe("added");
+    expect(actionLabel("meeting", "Lunch at SFF")).toBe("meeting");
+    expect(actionLabel("note", "Added from a photo")).toBe("note");
+    expect(actionLabel("call", null)).toBe("call");
   });
 });

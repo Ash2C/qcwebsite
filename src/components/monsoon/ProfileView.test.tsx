@@ -163,6 +163,7 @@ describe("ProfileView", () => {
         timelineOf: "Acme Capital",
         timeline: [
           { at: NOON_13, kind: "note", by: "VF", summary: "Called <b>Jane</b>" },
+          { at: NOON_1, kind: "meeting", by: null, summary: "Added from a photo of a badge" },
           { at: NOON_1, kind: "system", by: null, summary: "Moved" },
         ],
         timelineTotal: 75,
@@ -173,11 +174,13 @@ describe("ProfileView", () => {
     expect(screen.getByText("filed under Acme Capital")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Timeline of Acme Capital" })).toBeInTheDocument();
     expect(screen.getByText(`${localLabel(NOON_13)} · note · Called <b>Jane</b>`)).toBeInTheDocument();
+    // Being added from an image is not a meeting.
+    expect(screen.getByText(`${localLabel(NOON_1)} · photo capture · Added from a photo of a badge`)).toBeInTheDocument();
     expect(document.querySelector("b")).toBeNull();
     expect(screen.getByText("by VF")).toBeInTheDocument();
     expect(screen.getByText(`${localLabel(NOON_1)} · system · Moved`)).toBeInTheDocument();
     expect(screen.getAllByText(/^by /)).toHaveLength(1);
-    expect(screen.getByText("Showing 2 of 75")).toBeInTheDocument();
+    expect(screen.getByText("Showing 3 of 75")).toBeInTheDocument();
   });
 
   it("a person not on the pipeline", async () => {

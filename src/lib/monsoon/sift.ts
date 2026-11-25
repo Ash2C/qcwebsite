@@ -3,7 +3,7 @@
 import type { ClientBase } from "pg";
 import { readOnly, type QueryOptions } from "./ask/queries";
 import type { ContactHit } from "./contacts";
-import { dueBucket, type DueBucket } from "./rules";
+import { actionLabel, dueBucket, type DueBucket } from "./rules";
 
 export const SORTS = ["recent", "next", "last", "stage"] as const;
 export type Sort = (typeof SORTS)[number];
@@ -30,11 +30,11 @@ const LIST_MAX = 100;
 const MEMBERS_MAX = 2000;
 
 const WORK_COLUMNS = `m.priority, m.next_action, m.next_action_date::text AS next_action_date, s.ord AS stage_ord,
-       la.kind AS last_kind, la.at AS last_at,
+       la.kind AS last_kind, la.summary AS last_summary, la.at AS last_at,
        GREATEST(m.updated_at, (SELECT max(t.at) FROM touches t WHERE t.member_id = m.id)) AS recent_at`;
 const WORK_JOINS = `JOIN stages s ON s.key = m.stage
   LEFT JOIN LATERAL (
-    SELECT t.kind, t.at FROM touches t
+    SELECT t.kind, t.summary, t.at FROM touches t
      WHERE t.member_id = m.id AND t.kind IN ('note', 'email', 'call', 'meeting')
      ORDER BY t.at DESC LIMIT 1
   ) la ON true`;
@@ -49,7 +49,7 @@ function toWork(r: Record<string, unknown>, today: string): Work {
     nextAction,
     nextActionDate,
     due: dueBucket({ next_action: nextAction, next_action_date: nextActionDate }, today),
-    lastKind: (r.last_kind as string | null) ?? null,
+    lastKind: typeof r.last_kind === "string" ? actionLabel(r.last_kind, r.last_summary as string | null) : null,
     lastAt: iso(r.last_at),
     stageOrd: Number(r.stage_ord),
     recentAt: iso(r.recent_at),

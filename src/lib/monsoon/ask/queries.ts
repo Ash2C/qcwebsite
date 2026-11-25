@@ -3,7 +3,7 @@
 // timeout, uses unnamed statements only (safe on a transaction-mode pooler), and leaves the
 // connection outside a transaction whether it returns or throws.
 import type { ClientBase } from "pg";
-import { dueBucket, lastAction, type DueBucket } from "../rules";
+import { actionLabel, dueBucket, lastAction, type DueBucket } from "../rules";
 
 export type MemberKind = "person" | "company";
 export type MemberRef = { memberId: string; memberKind: MemberKind; role: string; stage: string };
@@ -198,21 +198,21 @@ const MEMBER_COLUMNS = `
 
 const MEMBER_ORDER = "ORDER BY s.ord, m.created_at, m.id";
 
-type ActionTouch = { member_id: string; at: string; kind: string };
+type ActionTouch = { member_id: string; at: string; kind: string; summary: string };
 
 /** Action entries (note, email, call, meeting) for the members, `at` as ISO so they compare in time order. */
 async function actionTouches(db: ClientBase, ids: string[]): Promise<Map<string, ActionTouch[]>> {
   const out = new Map<string, ActionTouch[]>();
   if (ids.length === 0) return out;
   const r = await db.query(
-    `SELECT member_id, at, kind FROM touches
+    `SELECT member_id, at, kind, summary FROM touches
       WHERE member_id = ANY($1::uuid[]) AND kind IN ('note', 'email', 'call', 'meeting')
       ORDER BY member_id, at, id`,
     [ids],
   );
   for (const row of r.rows) {
     const list = out.get(row.member_id) ?? [];
-    list.push({ member_id: row.member_id, at: (row.at as Date).toISOString(), kind: row.kind });
+    list.push({ member_id: row.member_id, at: (row.at as Date).toISOString(), kind: row.kind, summary: row.summary ?? "" });
     out.set(row.member_id, list);
   }
   return out;
@@ -229,7 +229,8 @@ function toPipelineRow(m: MemberRow, touches: ActionTouch[], today: string): Pip
     stage: m.stage,
     owner: m.owner,
     lastActionAt: last ? last.at : null,
-    lastActionKind: last ? last.kind : null,
+    // "photo capture" or "added" when the newest entry only records the contact being added.
+    lastActionKind: last ? actionLabel(last.kind, last.summary) : null,
     nextAction: m.next_action,
     nextActionDate: m.next_action_date,
     due: dueBucket(m, today),
@@ -374,7 +375,8 @@ export function getContact(
       people,
       timeline: tl.rows.map((t) => ({
         at: iso(t.at) as string,
-        kind: t.kind,
+        // Ask must not read "this contact was added" as "they met".
+        kind: actionLabel(t.kind, t.summary),
         by: t.by_whom,
         summary: clip(t.summary, SUMMARY_MAX) as string,
       })),

@@ -220,6 +220,24 @@ describe.skipIf(!testDb.available)("Contact lookups (real Postgres)", () => {
       expect(miaD.work).toMatchObject({ priority: null, nextAction: null, nextActionDate: null, due: "none", lastKind: null, lastAt: null });
     });
 
+    it("a contact whose newest entry is its own adding from an image shows a photo capture, not a meeting", async () => {
+      const member = (
+        await db.query("SELECT m.id FROM members m JOIN people p ON p.id = m.person_id WHERE p.name = 'Mia Ditrolio'")
+      ).rows[0].id as string;
+      const made = (
+        await db.query("INSERT INTO touches (member_id, kind, summary) VALUES ($1, 'meeting', 'Added from a photo of a badge') RETURNING id", [member])
+      ).rows[0].id as string;
+      try {
+        const { contacts } = await listMembers(db, { high: false, sort: "stage", today: TODAY });
+        expect(contacts.find((c) => c.name === "Mia Ditrolio")!.work).toMatchObject({ lastKind: "photo capture" });
+        await db.query("UPDATE touches SET summary = 'Card captured in person' WHERE id = $1", [made]);
+        const again = await listMembers(db, { high: false, sort: "stage", today: TODAY });
+        expect(again.contacts.find((c) => c.name === "Mia Ditrolio")!.work).toMatchObject({ lastKind: "added" });
+      } finally {
+        await db.query("DELETE FROM touches WHERE id = $1", [made]);
+      }
+    });
+
     it("keeps only high priority when asked", async () => {
       const r = await listMembers(db, { high: true, sort: "recent", today: TODAY });
       expect(names(r)).toEqual(["Raffles Family Office"]);
