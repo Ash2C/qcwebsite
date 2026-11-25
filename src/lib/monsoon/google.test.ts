@@ -10,6 +10,7 @@ import {
   newNonce,
   sameNonce,
   signState,
+  signupsConfigured,
   verifyState,
 } from "./google";
 
@@ -44,7 +45,6 @@ describe("googleConfigured", () => {
       "MONSOON_GOOGLE_CLIENT_ID",
       "MONSOON_GOOGLE_CLIENT_SECRET",
       "MONSOON_GOOGLE_REDIRECT_URI",
-      "MONSOON_SHARED_DB_ADMIN_URL",
       "MONSOON_SESSION_SECRET",
       "MONSOON_MASTER_KEY",
       "MONSOON_ACCOUNTS_DATABASE_URL",
@@ -64,6 +64,20 @@ describe("googleConfigured", () => {
     }
     vi.stubEnv("MONSOON_GOOGLE_REDIRECT_URI", "http://localhost:3000/api/monsoon/google/callback");
     expect(googleConfigured()).toBe(true);
+  });
+});
+
+describe("signupsConfigured", () => {
+  it("signing in and linking do not need the shared database; new requests and approving do", () => {
+    expect(signupsConfigured()).toBe(true);
+    vi.stubEnv("MONSOON_SHARED_DB_ADMIN_URL", "");
+    expect(googleConfigured()).toBe(true);
+    expect(signupsConfigured()).toBe(false);
+  });
+
+  it("is off whenever Sign in with Google is off", () => {
+    vi.stubEnv("MONSOON_GOOGLE_CLIENT_ID", "");
+    expect(signupsConfigured()).toBe(false);
   });
 });
 

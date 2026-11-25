@@ -56,18 +56,24 @@ function redirectUri(): string | null {
 }
 
 /**
- * True only with every setting of the sign-up feature present (the three Google settings, the
- * shared database's owner address, and the accounts settings). With any missing the feature is off.
- * Only the presence of the shared database's address is looked at here; it is never read.
+ * True with the three Google settings and the accounts settings present: enough to sign in with
+ * Google and to link a Google account. With any missing, Sign in with Google is off.
  */
 export function googleConfigured(): boolean {
   return (
     accountsConfigured() &&
     !!process.env.MONSOON_GOOGLE_CLIENT_ID &&
     !!process.env.MONSOON_GOOGLE_CLIENT_SECRET &&
-    redirectUri() !== null &&
-    !!process.env.MONSOON_SHARED_DB_ADMIN_URL
+    redirectUri() !== null
   );
+}
+
+/**
+ * True when new requests can be taken and approved: Sign in with Google is on and the shared
+ * database's owner address is set. Only its presence is looked at here; it is never read.
+ */
+export function signupsConfigured(): boolean {
+  return googleConfigured() && !!process.env.MONSOON_SHARED_DB_ADMIN_URL;
 }
 
 /** A fresh per-browser nonce: 32 random bytes. */

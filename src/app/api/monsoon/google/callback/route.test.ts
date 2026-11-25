@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const lib = {
   findPersonByGoogleSub: vi.fn(),
   findSignup: vi.fn(),
+  googleIdHeld: vi.fn(),
   requestSignup: vi.fn(),
   linkGoogle: vi.fn(),
   beginGoogleAttempt: vi.fn(),
@@ -11,6 +12,7 @@ const lib = {
 vi.mock("@/lib/monsoon/accounts/signups", () => ({
   findPersonByGoogleSub: (...a: unknown[]) => lib.findPersonByGoogleSub(...a),
   findSignup: (...a: unknown[]) => lib.findSignup(...a),
+  googleIdHeld: (...a: unknown[]) => lib.googleIdHeld(...a),
   requestSignup: (...a: unknown[]) => lib.requestSignup(...a),
   linkGoogle: (...a: unknown[]) => lib.linkGoogle(...a),
   beginGoogleAttempt: (...a: unknown[]) => lib.beginGoogleAttempt(...a),
@@ -97,6 +99,7 @@ beforeEach(() => {
   lib.settleGoogleAttempt.mockResolvedValue(undefined);
   lib.findPersonByGoogleSub.mockResolvedValue(null);
   lib.findSignup.mockResolvedValue(null);
+  lib.googleIdHeld.mockResolvedValue(false);
   lib.requestSignup.mockResolvedValue("created");
   lib.linkGoogle.mockResolvedValue("linked");
   store.recordActivity.mockResolvedValue(undefined);
@@ -187,6 +190,43 @@ describe("GET /api/monsoon/google/callback", () => {
       expect(lib.findSignup).not.toHaveBeenCalled();
       expect(lib.requestSignup).not.toHaveBeenCalled();
       expect(lib.linkGoogle).not.toHaveBeenCalled();
+    });
+
+    it("a suspended person, or a person of a suspended customer, is told it was not approved: no session, no request", async () => {
+      // Not found as an active person, yet the Google id is on a person.
+      lib.googleIdHeld.mockResolvedValue(true);
+      for (const found of [null, { ...signup("approved"), customerId: CUSTOMER }]) {
+        lib.findSignup.mockResolvedValue(found);
+        const res = await GET(callback());
+        await expectPage(res, "/monsoon/request?status=declined");
+        expect(sessionCookie(res)).toBeUndefined();
+      }
+      expect(lib.googleIdHeld).toHaveBeenCalledWith(SUB);
+      expect(lib.requestSignup).not.toHaveBeenCalled();
+      expect(store.recordActivity).not.toHaveBeenCalled();
+    });
+
+    it("without the shared database setting a known person still signs in and links still work", async () => {
+      vi.stubEnv("MONSOON_SHARED_DB_ADMIN_URL", "");
+      lib.findPersonByGoogleSub.mockResolvedValue(FOUND);
+      const res = await GET(callback());
+      await expectPage(res, "/monsoon");
+      expect(sessionCookie(res)).toBeDefined();
+      const nonce = newNonce();
+      const linked = await GET(callback({ state: signState({ nonce, link: { customerId: CUSTOMER, personId: PERSON } }), cookie: nonce }));
+      await expectPage(linked, "/monsoon");
+      expect(lib.linkGoogle).toHaveBeenCalledTimes(1);
+    });
+
+    it("without the shared database setting someone new sees that sign-ups are paused, and nothing is created", async () => {
+      vi.stubEnv("MONSOON_SHARED_DB_ADMIN_URL", "");
+      const res = await GET(callback());
+      await expectPage(res, "/monsoon/request?status=paused");
+      expect(sessionCookie(res)).toBeUndefined();
+      expect(lib.requestSignup).not.toHaveBeenCalled();
+      // Someone already waiting or declined is still told so.
+      lib.findSignup.mockResolvedValue(signup("pending"));
+      await expectPage(await GET(callback()), "/monsoon/request?status=waiting");
     });
 
     it("a pending request waits: no session", async () => {

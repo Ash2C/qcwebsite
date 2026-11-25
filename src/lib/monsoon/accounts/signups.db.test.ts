@@ -9,6 +9,7 @@ import {
   declineSignup,
   findPersonByGoogleSub,
   findSignup,
+  googleIdHeld,
   linkGoogle,
   listSignups,
   reopenSignup,
@@ -227,6 +228,21 @@ describe.skipIf(!db.available)("sign-up requests and Google links", { timeout: 2
       await client.query("UPDATE people SET status = 'active' WHERE id = $1", [ann.personId]);
       await client.query("UPDATE customers SET status = 'suspended' WHERE id = $1", [ann.customerId]);
       expect(await findPersonByGoogleSub("1001")).toBeNull();
+    });
+  });
+
+  describe("googleIdHeld", () => {
+    it("is true for a Google id on any person, active or suspended, and false otherwise", async () => {
+      const { ann } = await seed();
+      expect(await googleIdHeld("1001")).toBe(false);
+      await client.query("UPDATE people SET google_sub = '1001', status = 'suspended' WHERE id = $1", [ann.personId]);
+      expect(await findPersonByGoogleSub("1001")).toBeNull();
+      expect(await googleIdHeld("1001")).toBe(true);
+      await client.query("UPDATE people SET status = 'active' WHERE id = $1", [ann.personId]);
+      await client.query("UPDATE customers SET status = 'suspended' WHERE id = $1", [ann.customerId]);
+      expect(await googleIdHeld("1001")).toBe(true);
+      expect(await googleIdHeld("1002")).toBe(false);
+      expect(await googleIdHeld("ann@example.com")).toBe(false);
     });
   });
 

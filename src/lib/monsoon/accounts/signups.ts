@@ -85,6 +85,15 @@ export async function findPersonByGoogleSub(sub: string): Promise<{ customer: Cu
   });
 }
 
+/** True when any person has this Google id, whatever their status or their customer's. */
+export async function googleIdHeld(sub: string): Promise<boolean> {
+  if (typeof sub !== "string" || !GOOGLE_SUB.test(sub)) return false;
+  return withAccountsDb(async (db) => {
+    const r = await db.query("SELECT 1 FROM people WHERE google_sub = $1", [sub]);
+    return r.rowCount === 1;
+  });
+}
+
 export async function findSignup(sub: string): Promise<SignupRow | null> {
   if (typeof sub !== "string" || !GOOGLE_SUB.test(sub)) return null;
   return withAccountsDb(async (db) => {

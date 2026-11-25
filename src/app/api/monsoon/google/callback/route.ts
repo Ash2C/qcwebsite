@@ -11,6 +11,7 @@ import {
   beginGoogleAttempt,
   findPersonByGoogleSub,
   findSignup,
+  googleIdHeld,
   linkGoogle,
   requestSignup,
   settleGoogleAttempt,
@@ -22,6 +23,7 @@ import {
   exchangeCode,
   googleConfigured,
   sameNonce,
+  signupsConfigured,
   verifyState,
 } from "@/lib/monsoon/google";
 import { networkAddress, setSessionCookie } from "@/lib/monsoon/session-cookie";
@@ -95,6 +97,9 @@ export async function GET(request: Request) {
       return response;
     }
 
+    // The Google id is on a person who is suspended, or whose customer is: no way in, and no request.
+    if (await googleIdHeld(google.sub)) return page("declined");
+
     const signup = await findSignup(google.sub);
     if (signup) {
       if (signup.status === "pending") return page("waiting");
@@ -102,6 +107,9 @@ export async function GET(request: Request) {
       // Approved, yet no active person has this Google id.
       return page("error");
     }
+
+    // Without the shared database nobody could be approved, so no request is taken.
+    if (!signupsConfigured()) return page("paused");
 
     const asked = await requestSignup({ sub: google.sub, email: google.email, name: google.name, addressHash });
     if (asked === "created") return page("received");

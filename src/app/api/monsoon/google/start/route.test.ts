@@ -41,7 +41,7 @@ afterEach(() => {
 
 describe("GET /api/monsoon/google/start", () => {
   it("answers 503 and sets nothing when Google sign-in is not configured", async () => {
-    for (const name of ["MONSOON_GOOGLE_CLIENT_ID", "MONSOON_GOOGLE_CLIENT_SECRET", "MONSOON_GOOGLE_REDIRECT_URI", "MONSOON_SHARED_DB_ADMIN_URL"]) {
+    for (const name of ["MONSOON_GOOGLE_CLIENT_ID", "MONSOON_GOOGLE_CLIENT_SECRET", "MONSOON_GOOGLE_REDIRECT_URI"]) {
       const before = process.env[name] as string;
       vi.stubEnv(name, "");
       for (const q of ["", "?link=1"]) {
@@ -53,6 +53,13 @@ describe("GET /api/monsoon/google/start", () => {
       vi.stubEnv(name, before);
     }
     expect(requireAccount).not.toHaveBeenCalled();
+  });
+
+  it("works without the shared database setting: signing in and linking do not need it", async () => {
+    vi.stubEnv("MONSOON_SHARED_DB_ADMIN_URL", "");
+    expect((await GET(get())).status).toBe(302);
+    signInAs(fakeAccount());
+    expect((await GET(get("?link=1"))).status).toBe(302);
   });
 
   it("sets a ten-minute nonce cookie and redirects to Google with a state carrying that nonce", async () => {

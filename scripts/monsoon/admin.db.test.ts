@@ -279,6 +279,19 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     ]);
   });
 
+  it("reset unlinks the person's Google account: a seat handed on is not reachable by the last holder's Google", async () => {
+    await run(["customer", "add", "acme", "Acme"]);
+    await run(["person", "add", "acme", "Ann", "AN"]);
+    await run(["person", "add", "acme", "Bob", "BO"]);
+    await client.query("UPDATE people SET google_sub = CASE owner_key WHEN 'AN' THEN '5001' ELSE '5002' END");
+    await run(["person", "reset", "acme", "AN"]);
+    const r = await client.query("SELECT owner_key, google_sub FROM people ORDER BY owner_key");
+    expect(r.rows).toEqual([
+      { owner_key: "AN", google_sub: null },
+      { owner_key: "BO", google_sub: "5002" },
+    ]);
+  });
+
   it("passcode-from-env hashes without printing the value", async () => {
     await run(["customer", "add", "acme", "Acme"]);
     const code = await run(["person", "add", "acme", "Vince", "VF", "--passcode-from-env", "MONSOON_PASSCODE"], {
