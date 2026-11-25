@@ -215,7 +215,7 @@ describe("AskPanel", () => {
     render(<Harness />);
     await ask(user, "Why?");
     expect(
-      await screen.findByText("Ask is not available yet: this account has no Claude API key. Add it with your Monsoon setup link."),
+      await screen.findByText("Ask is not available yet: this account has no Claude API key. To add one, tap the status chip at the top of Monsoon."),
     ).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Why?");
   });

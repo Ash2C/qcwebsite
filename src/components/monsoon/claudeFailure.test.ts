@@ -4,7 +4,7 @@ import { claudeFailureText } from "./claudeFailure";
 describe("claudeFailureText", () => {
   it("says which Claude problem stopped the feature", () => {
     expect(claudeFailureText({ error: "claude_key_missing" }, "Photos cannot be read")).toBe(
-      "Photos cannot be read yet: this account has no Claude API key. Add it with your Monsoon setup link.",
+      "Photos cannot be read yet: this account has no Claude API key. To add one, tap the status chip at the top of Monsoon.",
     );
     expect(claudeFailureText({ error: "claude_key_rejected" }, "Ask is not available")).toBe(
       "Ask is not available: Claude did not accept this account's API key. It may have expired, been revoked or lack permission.",

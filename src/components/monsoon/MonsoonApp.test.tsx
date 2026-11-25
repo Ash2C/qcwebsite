@@ -408,7 +408,7 @@ describe("MonsoonApp", () => {
     await pickPhoto(user);
     expect(
       await screen.findByText(
-        "Photos cannot be read yet: this account has no Claude API key. Add it with your Monsoon setup link. You can type the details instead.",
+        "Photos cannot be read yet: this account has no Claude API key. To add one, tap the status chip at the top of Monsoon. You can type the details instead.",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Could not read the photo/)).not.toBeInTheDocument();

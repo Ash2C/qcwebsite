@@ -5,7 +5,7 @@ export function claudeFailureText(body: unknown, lead: string): string | null {
   const reason = (body as { error?: unknown } | null)?.error;
   switch (reason) {
     case "claude_key_missing":
-      return `${lead} yet: this account has no Claude API key. Add it with your Monsoon setup link.`;
+      return `${lead} yet: this account has no Claude API key. To add one, tap the status chip at the top of Monsoon.`;
     case "claude_key_rejected":
       return `${lead}: Claude did not accept this account's API key. It may have expired, been revoked or lack permission.`;
     case "claude_no_credit":
