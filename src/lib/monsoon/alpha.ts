@@ -9,6 +9,9 @@ import { nameKey } from "./rules";
 export const SIGNUPS_OPEN = false;
 
 export const ALPHA_NOTE = "Signed up for the Monsoon alpha on quantcloud.com";
+/** The note for someone whose request to join Monsoon was approved. */
+export const APPROVED_NOTE = "Approved for Monsoon on quantcloud.com";
+const MAX_NAME = 200;
 const SOURCE = "monsoon-alpha";
 const ROLE = "reader";
 
@@ -27,8 +30,20 @@ async function addMember(db: ClientBase, personId: string, owner: string): Promi
   return row.id as string;
 }
 
-export async function recordAlphaSignup(db: ClientBase, email: string, owner: string): Promise<AlphaResult> {
+/**
+ * `opts.name` names a new person by their name instead of their email (unless someone else without
+ * a company is already on file under that name: then the email is used, as before). `opts.note` is
+ * the timeline note to leave (default: the alpha sign-up note); the same note is never left twice.
+ */
+export async function recordAlphaSignup(
+  db: ClientBase,
+  email: string,
+  owner: string,
+  opts: { name?: string; note?: string } = {},
+): Promise<AlphaResult> {
   const clean = email.trim().toLowerCase();
+  const note = opts.note ?? ALPHA_NOTE;
+  const wanted = (opts.name ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_NAME).trim();
   await db.query("BEGIN ISOLATION LEVEL READ COMMITTED");
   try {
     await db.query("SET LOCAL statement_timeout = '8s'");
@@ -54,10 +69,15 @@ export async function recordAlphaSignup(db: ClientBase, email: string, owner: st
       status = "existing";
       memberId = person.own_member ?? person.org_member ?? (await addMember(db, person.id, owner));
     } else {
+      let name = clean;
+      if (wanted) {
+        const taken = await db.query("SELECT 1 FROM people WHERE org_id IS NULL AND name_key = $1 LIMIT 1", [nameKey(wanted)]);
+        if ((taken.rowCount ?? 0) === 0) name = wanted;
+      }
       const created = (
         await db.query(
-          `INSERT INTO people (name, name_key, email, source) VALUES ($1, $2, $1, $3) RETURNING id`,
-          [clean, nameKey(clean), SOURCE],
+          `INSERT INTO people (name, name_key, email, source) VALUES ($1, $2, $3, $4) RETURNING id`,
+          [name, nameKey(name), clean, SOURCE],
         )
       ).rows[0];
       memberId = await addMember(db, created.id as string, owner);
@@ -66,7 +86,7 @@ export async function recordAlphaSignup(db: ClientBase, email: string, owner: st
 
     const already = await db.query(
       `SELECT 1 FROM touches WHERE member_id = $1 AND kind = 'note' AND summary = $2 LIMIT 1`,
-      [memberId, ALPHA_NOTE],
+      [memberId, note],
     );
     if ((already.rowCount ?? 0) > 0) {
       await db.query("COMMIT");
@@ -75,7 +95,7 @@ export async function recordAlphaSignup(db: ClientBase, email: string, owner: st
     await db.query(`INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'note', $2, $3)`, [
       memberId,
       owner,
-      ALPHA_NOTE,
+      note,
     ]);
     await db.query("COMMIT");
     return { status };

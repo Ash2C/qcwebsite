@@ -3,7 +3,7 @@ import type { Client } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ensureOwner } from "./owners";
 import { testDb } from "./testing/db";
-import { ALPHA_NOTE, recordAlphaSignup } from "./alpha";
+import { ALPHA_NOTE, APPROVED_NOTE, recordAlphaSignup } from "./alpha";
 
 describe.skipIf(!testDb.available)("recordAlphaSignup (real Postgres)", () => {
   let db: Client;
@@ -87,6 +87,53 @@ describe.skipIf(!testDb.available)("recordAlphaSignup (real Postgres)", () => {
     expect(await count("people")).toBe(0);
     expect(await count("members")).toBe(0);
     expect(await count("touches")).toBe(0);
+  });
+
+  describe("with a name and a note (a request approved for Monsoon)", () => {
+    const approved = { name: "Gil Hale", note: APPROVED_NOTE };
+
+    it("says what it is in plain words", () => {
+      expect(APPROVED_NOTE).toBe("Approved for Monsoon on quantcloud.com");
+    });
+
+    it("adds the person under their name, with their email and that note", async () => {
+      expect(await recordAlphaSignup(db, " Gil@Example.com ", "VF", approved)).toEqual({ status: "added" });
+      expect((await db.query("SELECT name, name_key, email, source FROM people")).rows).toEqual([
+        { name: "Gil Hale", name_key: "gil hale", email: "gil@example.com", source: "monsoon-alpha" },
+      ]);
+      expect((await db.query("SELECT kind, by_whom, summary FROM touches")).rows).toEqual([{ kind: "note", by_whom: "VF", summary: APPROVED_NOTE }]);
+    });
+
+    it("writes the note once however often it is called", async () => {
+      await recordAlphaSignup(db, "gil@example.com", "VF", approved);
+      expect(await recordAlphaSignup(db, "gil@example.com", "VF", approved)).toEqual({ status: "repeat" });
+      expect(await count("people")).toBe(1);
+      expect(await count("touches")).toBe(1);
+    });
+
+    it("someone who signed up for the alpha before keeps their row and gets the new note beside the old one", async () => {
+      await recordAlphaSignup(db, "gil@example.com", "VF");
+      expect(await recordAlphaSignup(db, "gil@example.com", "VF", approved)).toEqual({ status: "existing" });
+      expect((await db.query("SELECT name FROM people")).rows).toEqual([{ name: "gil@example.com" }]);
+      expect((await db.query("SELECT summary FROM touches ORDER BY at")).rows.map((r) => r.summary)).toEqual([ALPHA_NOTE, APPROVED_NOTE]);
+    });
+
+    it("a different person already on file under the same name is left alone: the new one is filed by email", async () => {
+      await db.query("INSERT INTO people (name, name_key, email, source) VALUES ('Gil Hale', 'gil hale', 'other.gil@example.org', 'test')");
+      expect(await recordAlphaSignup(db, "gil@example.com", "VF", approved)).toEqual({ status: "added" });
+      expect((await db.query("SELECT name, email FROM people ORDER BY email")).rows).toEqual([
+        { name: "gil@example.com", email: "gil@example.com" },
+        { name: "Gil Hale", email: "other.gil@example.org" },
+      ]);
+    });
+
+    it("a blank name falls back to the email, and an over-long one is cut", async () => {
+      await recordAlphaSignup(db, "a@example.com", "VF", { name: "   " });
+      await recordAlphaSignup(db, "b@example.com", "VF", { name: "N".repeat(500) });
+      const rows = (await db.query("SELECT name FROM people ORDER BY email")).rows.map((r) => r.name);
+      expect(rows[0]).toBe("a@example.com");
+      expect(rows[1]).toBe("N".repeat(200));
+    });
   });
 
   it("stamps the member and the note with the given owner key", async () => {

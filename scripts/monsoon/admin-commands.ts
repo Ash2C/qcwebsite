@@ -105,8 +105,8 @@ const VOCAB_KEY_RE = /^[a-z0-9_]{1,40}$/;
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const goodLabel = (v: unknown): v is string => typeof v === "string" && v.trim() !== "" && v.length <= 60;
 
-/** The vocabulary the setup script writes into the customer's stages and roles tables. */
-function checkVocabulary(stages: unknown[], roles: unknown[], defaultRole: string): void {
+/** The vocabulary the setup script writes into the customer's stages and roles tables. Throws on a bad one. */
+export function checkVocabulary(stages: unknown[], roles: unknown[], defaultRole: string): void {
   if (stages.length === 0) fail("--stages must list at least one stage");
   const keys = new Set<string>();
   const ords = new Set<number>();

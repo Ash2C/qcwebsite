@@ -37,6 +37,8 @@ function buildScript(names: ClientNames, vocabulary: SetupVocabulary, password: 
   const { schema, role } = names;
   return [
     "BEGIN;",
+    // Names in the vocabulary go into the script as quoted text: make sure a backslash is only a backslash.
+    "SET LOCAL standard_conforming_strings = on;",
     LOCK,
     // Nobody gets into `public` by default. Asked for on every run; it changes nothing after the first.
     "REVOKE ALL ON SCHEMA public FROM PUBLIC;",
