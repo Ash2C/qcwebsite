@@ -12,7 +12,7 @@ export const TRIAL_USES = 150;
 export const TRIAL_DAYS = 14;
 
 /** One AI request by a person. All kinds count the same. */
-export type AiKind = "read" | "ask" | "tidy" | "research";
+export type AiKind = "read" | "ask" | "tidy" | "research" | "import";
 
 /** A failing trial key is tried again (by one request) only this often; a healthy one is re-noted this often. */
 const HEALTH_INTERVAL = "1 minute";
