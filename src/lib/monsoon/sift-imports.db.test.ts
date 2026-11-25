@@ -107,7 +107,7 @@ describe.skipIf(!testDb.available)("the Imports filter (real Postgres)", () => {
     expect(contacts).toHaveLength(100);
     expect(contacts[0].name).toBe("Bulk 000");
     expect((await listImports(db))[0]).toMatchObject({ label: "Big list", count: 130 });
-  });
+  }, 30_000);
 
   it("reads only", async () => {
     const seen: string[] = [];

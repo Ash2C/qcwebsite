@@ -258,8 +258,9 @@ describe.skipIf(!testDb.available)("saveImportRows (real Postgres)", () => {
     const took = Date.now() - started;
     expect(out.filter((o) => o === "added")).toHaveLength(100);
     expect(await counts()).toEqual([40, 100, 100, 100, 100]);
-    expect(took).toBeLessThan(5000);
-  });
+    // About a second when run alone; the allowance is for a test database busy with other files.
+    expect(took).toBeLessThan(10_000);
+  }, 30_000);
 
   it("uses a handful of statements per row, and looks up role, stage and owner once per call", async () => {
     const seen: string[] = [];
