@@ -5,7 +5,7 @@ vi.mock("@/lib/monsoon/accounts/account", async () =>
 );
 import { requireAccount } from "@/lib/monsoon/accounts/account";
 import { fakeAccount, signInAs, signOut } from "@/lib/monsoon/testing/account";
-import { verifySession } from "@/lib/monsoon/auth";
+import { signSession, verifySession } from "@/lib/monsoon/auth";
 import { verifyState } from "@/lib/monsoon/google";
 import { GET } from "./route";
 
@@ -15,6 +15,9 @@ const REDIRECT = "https://quantcloud.com/api/monsoon/google/callback";
 const WHO = { customerId: "00000000-0000-4000-8000-000000000001", personId: "00000000-0000-4000-8000-000000000002" };
 
 const get = (query = "") => new Request(`http://internal-host.example/api/monsoon/google/start${query}`);
+/** The same request with the session cookie a signed-in browser sends. */
+const signedIn = (query: string, claims = { ...WHO, sessionNo: 7 }) =>
+  new Request(`http://internal-host.example/api/monsoon/google/start${query}`, { headers: { cookie: `monsoon_session=${signSession(claims)}` } });
 
 function parts(res: Response) {
   const cookie = res.headers.get("set-cookie") ?? "";
@@ -59,7 +62,7 @@ describe("GET /api/monsoon/google/start", () => {
     vi.stubEnv("MONSOON_SHARED_DB_ADMIN_URL", "");
     expect((await GET(get())).status).toBe(302);
     signInAs(fakeAccount());
-    expect((await GET(get("?link=1"))).status).toBe(302);
+    expect((await GET(signedIn("?link=1"))).status).toBe(302);
   });
 
   it("sets a ten-minute nonce cookie and redirects to Google with a state carrying that nonce", async () => {
@@ -109,10 +112,25 @@ describe("GET /api/monsoon/google/start", () => {
 
   it("link=1 with a session puts that person, and nobody the request names, in the state", async () => {
     signInAs(fakeAccount());
-    const res = await GET(get("?link=1&personId=11111111-1111-4111-8111-111111111111&customerId=22222222-2222-4222-8222-222222222222"));
+    const res = await GET(signedIn("?link=1&personId=11111111-1111-4111-8111-111111111111&customerId=22222222-2222-4222-8222-222222222222&sessionNo=9"));
     expect(res.status).toBe(302);
     const { nonce, state } = parts(res);
-    expect(verifyState(state)).toEqual({ nonce, link: WHO });
+    // The session number is the one in the session this request came with: a later reset makes the link stale.
+    expect(verifyState(state)).toEqual({ nonce, link: { ...WHO, sessionNo: 7 } });
+  });
+
+  it("link=1 is refused when the session cookie is not this account's own", async () => {
+    signInAs(fakeAccount());
+    for (const req of [
+      get("?link=1"),
+      signedIn("?link=1", { customerId: WHO.customerId, personId: "00000000-0000-4000-8000-000000000009", sessionNo: 7 }),
+      signedIn("?link=1", { customerId: "00000000-0000-4000-8000-000000000009", personId: WHO.personId, sessionNo: 7 }),
+    ]) {
+      const res = await GET(req);
+      expect(res.status).toBe(401);
+      expect(res.headers.get("set-cookie")).toBeNull();
+      expect(res.headers.get("location")).toBeNull();
+    }
   });
 
   it("only link=1 exactly asks for a link", async () => {

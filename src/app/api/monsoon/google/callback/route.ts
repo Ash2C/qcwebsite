@@ -84,6 +84,8 @@ export async function GET(request: Request) {
     // Linking comes first: the person is the one inside the signed state, and gets no new session.
     if (state.link) {
       const linked = await linkGoogle(state.link, google.sub);
+      // A link started before the seat was reset is as good as one that ran out of time.
+      if (linked === "expired") return page("error");
       return page(linked === "linked" ? "app" : "taken");
     }
 

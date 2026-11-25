@@ -87,7 +87,7 @@ describe("the signed state", () => {
     expect(nonce).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(newNonce()).not.toBe(nonce);
     expect(verifyState(signState({ nonce }, NOW), NOW)).toEqual({ nonce });
-    const link = { customerId: CUSTOMER, personId: PERSON };
+    const link = { customerId: CUSTOMER, personId: PERSON, sessionNo: 3 };
     expect(verifyState(signState({ nonce, link }, NOW), NOW)).toEqual({ nonce, link });
     expect(signState({ nonce }, NOW)).toMatch(/^[A-Za-z0-9._~-]+$/);
   });
@@ -108,7 +108,7 @@ describe("the signed state", () => {
     const swap = (i: number, v: string) => parts.map((p, j) => (j === i ? v : p)).join(".");
     expect(verifyState(swap(1, other), NOW)).toBeNull();
     expect(verifyState(swap(2, String(Number(parts[2]) + 1)), NOW)).toBeNull();
-    expect(verifyState(swap(3, `${CUSTOMER}~${PERSON}`), NOW)).toBeNull();
+    expect(verifyState(swap(3, `${CUSTOMER}~${PERSON}~3`), NOW)).toBeNull();
     expect(verifyState(swap(4, "0".repeat(64)), NOW)).toBeNull();
     expect(verifyState(swap(0, "g2"), NOW)).toBeNull();
     expect(verifyState(state + "0", NOW)).toBeNull();
@@ -122,22 +122,36 @@ describe("the signed state", () => {
   it("a link cannot be added to a signed state, or moved to another person", () => {
     const nonce = newNonce();
     const plain = signState({ nonce }, NOW).split(".");
-    const linked = signState({ nonce, link: { customerId: CUSTOMER, personId: PERSON } }, NOW).split(".");
+    const linked = signState({ nonce, link: { customerId: CUSTOMER, personId: PERSON, sessionNo: 3 } }, NOW).split(".");
     expect(verifyState([plain[0], plain[1], plain[2], linked[3], plain[4]].join("."), NOW)).toBeNull();
     expect(verifyState([linked[0], linked[1], linked[2], plain[3], linked[4]].join("."), NOW)).toBeNull();
-    const elsewhere = `${CUSTOMER}~${PERSON.replace(/^7/, "8")}`;
+    const elsewhere = `${CUSTOMER}~${PERSON.replace(/^7/, "8")}~3`;
     expect(verifyState([linked[0], linked[1], linked[2], elsewhere, linked[4]].join("."), NOW)).toBeNull();
+  });
+
+  it("a link carries the session number it was started under, and that number cannot be changed or left out", () => {
+    const nonce = newNonce();
+    const state = signState({ nonce, link: { customerId: CUSTOMER, personId: PERSON, sessionNo: 41 } }, NOW);
+    expect(verifyState(state, NOW)).toEqual({ nonce, link: { customerId: CUSTOMER, personId: PERSON, sessionNo: 41 } });
+    const parts = state.split(".");
+    expect(parts[3]).toBe(`${CUSTOMER}~${PERSON}~41`);
+    for (const link of [`${CUSTOMER}~${PERSON}~42`, `${CUSTOMER}~${PERSON}`, `${CUSTOMER}~${PERSON}~`]) {
+      expect(verifyState([parts[0], parts[1], parts[2], link, parts[4]].join("."), NOW), link).toBeNull();
+    }
+    for (const sessionNo of [0, -1, 1.5, NaN, 2 ** 31, "1", undefined]) {
+      expect(() => signState({ nonce, link: { customerId: CUSTOMER, personId: PERSON, sessionNo: sessionNo as number } }, NOW), String(sessionNo)).toThrow();
+    }
   });
 
   it("refuses to sign a malformed nonce or link", () => {
     expect(() => signState({ nonce: "short" }, NOW)).toThrow();
     expect(() => signState({ nonce: "a.b".padEnd(43, "x") }, NOW)).toThrow();
-    expect(() => signState({ nonce: newNonce(), link: { customerId: "nope", personId: PERSON } }, NOW)).toThrow();
+    expect(() => signState({ nonce: newNonce(), link: { customerId: "nope", personId: PERSON, sessionNo: 3 } }, NOW)).toThrow();
   });
 
   it("a state is never a session, and a session is never a state", () => {
     const nonce = newNonce();
-    const state = signState({ nonce, link: { customerId: CUSTOMER, personId: PERSON } }, NOW);
+    const state = signState({ nonce, link: { customerId: CUSTOMER, personId: PERSON, sessionNo: 3 } }, NOW);
     expect(verifySession(state, NOW)).toBeNull();
     const session = signSession({ customerId: CUSTOMER, personId: PERSON, sessionNo: 1 }, NOW);
     expect(verifySession(session, NOW)).not.toBeNull();

@@ -38,12 +38,13 @@ describe.skipIf(!db.available)("sign-up requests and Google links", { timeout: 2
     vi.restoreAllMocks();
   });
 
-  type Who = { customerId: string; personId: string };
+  type Who = { customerId: string; personId: string; sessionNo: number };
   async function seed(): Promise<{ ann: Who; bob: Who; oz: Who }> {
     const customer = async (code: string) =>
       (await client.query("INSERT INTO customers (code, name) VALUES ($1, $1) RETURNING id", [code])).rows[0].id as string;
     const person = async (customerId: string, name: string, owner: string): Promise<Who> => ({
       customerId,
+      sessionNo: 1,
       personId: (
         await client.query(
           "INSERT INTO people (customer_id, display_name, owner_key, passcode_hash) VALUES ($1, $2, $3, 'h') RETURNING id",
@@ -418,8 +419,8 @@ describe.skipIf(!db.available)("sign-up requests and Google links", { timeout: 2
 
     it("taken: the person is not in that customer, or the id is not a Google id", async () => {
       const { ann, oz } = await seed();
-      expect(await linkGoogle({ customerId: oz.customerId, personId: ann.personId }, "1001")).toBe("taken");
-      expect(await linkGoogle({ customerId: ann.customerId, personId: NONE }, "1001")).toBe("taken");
+      expect(await linkGoogle({ customerId: oz.customerId, personId: ann.personId, sessionNo: 1 }, "1001")).toBe("taken");
+      expect(await linkGoogle({ customerId: ann.customerId, personId: NONE, sessionNo: 1 }, "1001")).toBe("taken");
       expect(await linkGoogle(ann, "abc")).toBe("taken");
       expect(await linkGoogle(ann, "")).toBe("taken");
       expect(await subOf(ann)).toBeNull();
@@ -433,6 +434,26 @@ describe.skipIf(!db.available)("sign-up requests and Google links", { timeout: 2
       expect(await linkGoogle(oz, "1002")).toBe("taken");
       expect(await subOf(ann)).toBeNull();
       expect(await subOf(oz)).toBeNull();
+    });
+
+    it("expired: the seat was reset after the link was started, so the link does nothing", async () => {
+      const { ann } = await seed();
+      await ask("1001");
+      // The admin reset Ann's seat while she was at Google: her session number moved on.
+      await client.query("UPDATE people SET session_no = session_no + 1 WHERE id = $1", [ann.personId]);
+      expect(await linkGoogle(ann, "1001")).toBe("expired");
+      expect(await linkGoogle(ann, "1002")).toBe("expired");
+      expect(await subOf(ann)).toBeNull();
+      expect(await findSignup("1001")).toMatchObject({ status: "pending" });
+      expect((await client.query("SELECT count(*)::int AS n FROM activity")).rows[0].n).toBe(0);
+      // A link started under the new session works.
+      expect(await linkGoogle({ ...ann, sessionNo: 2 }, "1001")).toBe("linked");
+      expect(await subOf(ann)).toBe("1001");
+      // And asking again for a link that is already there, under an old session, is still expired.
+      expect(await linkGoogle(ann, "1001")).toBe("expired");
+      for (const sessionNo of [0, 1.5, NaN, "2"]) {
+        expect(await linkGoogle({ ...ann, sessionNo: sessionNo as number }, "1001"), String(sessionNo)).toBe("expired");
+      }
     });
 
     it("two people linking the same Google id at once: exactly one wins", async () => {

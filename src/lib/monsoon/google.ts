@@ -26,13 +26,16 @@ const NONCE = /^[A-Za-z0-9_-]{43}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const GOOGLE_SUB = /^\d{1,64}$/;
 const EMAIL = /^[^\s@<>"']{1,64}@[^\s@<>"']{1,255}$/;
+const SESSION_NO = /^[1-9]\d{0,9}$/;
+const MAX_SESSION_NO = 2147483647;
 const MAX_STATE = 400;
 const MAX_CODE = 2048;
 const MAX_EMAIL = 320;
 const MAX_NAME = 200;
 const MAX_REPLY_CHARS = 100_000;
 
-export type GoogleLink = { customerId: string; personId: string };
+/** Who is linking, and the session number they were signed in under when they started. */
+export type GoogleLink = { customerId: string; personId: string; sessionNo: number };
 export type GoogleState = { nonce: string; link?: GoogleLink };
 export type GoogleIdentity = { ok: true; sub: string; email: string; name: string } | { ok: false };
 
@@ -91,14 +94,16 @@ function stateHmac(payload: string): string {
   return createHmac("sha256", secret()).update(STATE_PREFIX + payload).digest("hex");
 }
 
-/** `g1.<nonce>.<expiry>.<customer~person or ->.<hmac>`; good for ten minutes. Throws on a malformed payload. */
+/** `g1.<nonce>.<expiry>.<customer~person~session number or ->.<hmac>`; good for ten minutes. Throws on a malformed payload. */
 export function signState(payload: GoogleState, nowMs: number = Date.now()): string {
   if (secret().length < MIN_SECRET) throw new Error("Monsoon is not configured");
   if (!NONCE.test(payload.nonce)) throw new Error("malformed nonce");
   let link = NO_LINK;
   if (payload.link) {
-    if (!UUID.test(payload.link.customerId) || !UUID.test(payload.link.personId)) throw new Error("malformed link");
-    link = `${payload.link.customerId}~${payload.link.personId}`;
+    const { customerId, personId, sessionNo } = payload.link;
+    if (!UUID.test(customerId) || !UUID.test(personId)) throw new Error("malformed link");
+    if (!Number.isInteger(sessionNo) || sessionNo < 1 || sessionNo > MAX_SESSION_NO) throw new Error("malformed link");
+    link = `${customerId}~${personId}~${sessionNo}`;
   }
   const expiry = Math.floor(nowMs / 1000) + GOOGLE_STATE_SECONDS;
   const body = `${STATE_VERSION}.${payload.nonce}.${expiry}.${link}`;
@@ -121,8 +126,10 @@ export function verifyState(state: string | null | undefined, nowMs: number = Da
     if (left <= 0 || left > GOOGLE_STATE_SECONDS * 1000) return null;
     if (link === NO_LINK) return { nonce };
     const ids = link.split("~");
-    if (ids.length !== 2 || !UUID.test(ids[0]) || !UUID.test(ids[1])) return null;
-    return { nonce, link: { customerId: ids[0], personId: ids[1] } };
+    if (ids.length !== 3 || !UUID.test(ids[0]) || !UUID.test(ids[1]) || !SESSION_NO.test(ids[2])) return null;
+    const sessionNo = Number(ids[2]);
+    if (sessionNo > MAX_SESSION_NO) return null;
+    return { nonce, link: { customerId: ids[0], personId: ids[1], sessionNo } };
   } catch {
     return null;
   }

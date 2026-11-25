@@ -213,7 +213,7 @@ describe("GET /api/monsoon/google/callback", () => {
       await expectPage(res, "/monsoon");
       expect(sessionCookie(res)).toBeDefined();
       const nonce = newNonce();
-      const linked = await GET(callback({ state: signState({ nonce, link: { customerId: CUSTOMER, personId: PERSON } }), cookie: nonce }));
+      const linked = await GET(callback({ state: signState({ nonce, link: { customerId: CUSTOMER, personId: PERSON, sessionNo: 7 } }), cookie: nonce }));
       await expectPage(linked, "/monsoon");
       expect(lib.linkGoogle).toHaveBeenCalledTimes(1);
     });
@@ -346,14 +346,14 @@ describe("GET /api/monsoon/google/callback", () => {
   describe("linking (started from Your page)", () => {
     const linkState = () => {
       const nonce = newNonce();
-      return { nonce, state: signState({ nonce, link: { customerId: CUSTOMER, personId: PERSON } }) };
+      return { nonce, state: signState({ nonce, link: { customerId: CUSTOMER, personId: PERSON, sessionNo: 7 } }) };
     };
 
     it("links the Google id to the person in the state, then /monsoon: no new session, no sign-in lookup", async () => {
       const { nonce, state } = linkState();
       const res = await GET(callback({ state, cookie: nonce }));
       await expectPage(res, "/monsoon");
-      expect(lib.linkGoogle).toHaveBeenCalledWith({ customerId: CUSTOMER, personId: PERSON }, SUB);
+      expect(lib.linkGoogle).toHaveBeenCalledWith({ customerId: CUSTOMER, personId: PERSON, sessionNo: 7 }, SUB);
       expect(sessionCookie(res)).toBeUndefined();
       expect(lib.findPersonByGoogleSub).not.toHaveBeenCalled();
       expect(lib.findSignup).not.toHaveBeenCalled();
@@ -368,6 +368,14 @@ describe("GET /api/monsoon/google/callback", () => {
       await expectPage(res, "/monsoon/request?status=taken");
       expect(sessionCookie(res)).toBeUndefined();
       expect(lib.findPersonByGoogleSub).not.toHaveBeenCalled();
+    });
+
+    it("a link started before the seat was reset is treated like an expired one: the error page, not taken", async () => {
+      lib.linkGoogle.mockResolvedValue("expired");
+      const { nonce, state } = linkState();
+      const res = await GET(callback({ state, cookie: nonce }));
+      await expectPage(res, ERROR);
+      expect(sessionCookie(res)).toBeUndefined();
     });
 
     it("a link state replayed in another browser does nothing", async () => {

@@ -191,11 +191,23 @@ export async function reopenSignup(id: string): Promise<boolean> {
  * (the person tapped Sign in with Google before linking): the link succeeds and the request is
  * marked `linked` in the same transaction. That runs under the lock the approval takes before it
  * creates the person, so a link and an approval of one Google id can never both win.
+ *
+ * `who.sessionNo` is the session number the person was signed in under when the link was started.
+ * `expired` when it is no longer their session number (their seat was reset in between): nothing
+ * is looked up further and nothing changes, exactly as for a link that ran out of time.
  */
-export async function linkGoogle(who: { customerId: string; personId: string }, sub: string): Promise<"linked" | "taken"> {
+export async function linkGoogle(
+  who: { customerId: string; personId: string; sessionNo: number },
+  sub: string,
+): Promise<"linked" | "taken" | "expired"> {
   if (typeof sub !== "string" || !GOOGLE_SUB.test(sub)) return "taken";
   if (!UUID.test(who.customerId) || !UUID.test(who.personId)) return "taken";
-  const outcome = await locked(async (db): Promise<"linked" | "already" | "taken"> => {
+  if (!Number.isInteger(who.sessionNo) || who.sessionNo < 1 || who.sessionNo > 2147483647) return "expired";
+  const outcome = await locked(async (db): Promise<"linked" | "already" | "taken" | "expired"> => {
+    // Held until the end of the transaction, so a reset cannot slip in between this look and the update.
+    const me = await db.query("SELECT session_no FROM people WHERE id = $1 AND customer_id = $2 FOR UPDATE", [who.personId, who.customerId]);
+    if (me.rowCount !== 1) return "taken";
+    if (me.rows[0].session_no !== who.sessionNo) return "expired";
     const holder = await db.query("SELECT id, customer_id FROM people WHERE google_sub = $1", [sub]);
     if (holder.rowCount) {
       const h = holder.rows[0] as { id: string; customer_id: string };
@@ -206,9 +218,9 @@ export async function linkGoogle(who: { customerId: string; personId: string }, 
     if (request && request.status === "approved") return "taken";
     const r = await db.query(
       `UPDATE people SET google_sub = $3
-        WHERE id = $1 AND customer_id = $2 AND status = 'active' AND google_sub IS NULL
+        WHERE id = $1 AND customer_id = $2 AND status = 'active' AND google_sub IS NULL AND session_no = $4
           AND EXISTS (SELECT 1 FROM customers c WHERE c.id = $2 AND c.status = 'active')`,
-      [who.personId, who.customerId, sub],
+      [who.personId, who.customerId, sub, who.sessionNo],
     );
     if (r.rowCount !== 1) return "taken";
     if (request && request.status !== "linked") {
@@ -221,7 +233,7 @@ export async function linkGoogle(who: { customerId: string; personId: string }, 
     }
     return "linked";
   });
-  if (outcome === "taken") return "taken";
+  if (outcome === "taken" || outcome === "expired") return outcome;
   if (outcome === "linked") {
     await recordActivity({ customerId: who.customerId, personId: who.personId, pipelineKey: null, action: "google_link" });
   }

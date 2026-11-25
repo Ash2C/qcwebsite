@@ -86,12 +86,12 @@ describe.skipIf(!accounts.available)("approveSignup (real accounts database)", {
   }
   const count = async (table: string) => (await db.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n as number;
   /** A passcode user in a company that already exists. */
-  async function existingPerson(): Promise<{ customerId: string; personId: string }> {
+  async function existingPerson(): Promise<{ customerId: string; personId: string; sessionNo: number }> {
     const customerId = (await db.query("INSERT INTO customers (code, name) VALUES ('old-co', 'Old Co') RETURNING id")).rows[0].id as string;
     const personId = (
       await db.query("INSERT INTO people (customer_id, display_name, owner_key, passcode_hash) VALUES ($1, 'Ann', 'AN', 'h') RETURNING id", [customerId])
     ).rows[0].id as string;
-    return { customerId, personId };
+    return { customerId, personId, sessionNo: 1 };
   }
   const signup = async (id: string) => (await db.query("SELECT status, customer_id, decided_at FROM signups WHERE id = $1", [id])).rows[0];
 

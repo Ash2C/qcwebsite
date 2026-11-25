@@ -1,8 +1,10 @@
 // Starts Sign in with Google: gives this browser a one-time nonce cookie and sends it to Google with
 // a signed state carrying the same nonce. With ?link=1 a signed-in person is linking their Google
-// account, and that person (from the session, never from the request) goes into the signed state.
+// account, and that person (from the session, never from the request) goes into the signed state,
+// with the session number they are signed in under: a seat reset before they return makes it stale.
 import { NextResponse } from "next/server";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
+import { SESSION_COOKIE, cookieValue, verifySession } from "@/lib/monsoon/auth";
 import {
   GOOGLE_COOKIE_PATH,
   GOOGLE_NONCE_COOKIE,
@@ -26,7 +28,12 @@ export async function GET(request: Request) {
   if (new URL(request.url).searchParams.get("link") === "1") {
     const auth = await requireAccount(request);
     if (!auth.ok) return auth.response;
-    link = { customerId: auth.account.customer.id, personId: auth.account.person.id };
+    // The account was loaded from this same cookie, and only when its session number is the current one.
+    const claims = verifySession(cookieValue(request, SESSION_COOKIE));
+    if (!claims || claims.customerId !== auth.account.customer.id || claims.personId !== auth.account.person.id) {
+      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    }
+    link = { customerId: auth.account.customer.id, personId: auth.account.person.id, sessionNo: claims.sessionNo };
   }
 
   const nonce = newNonce();
