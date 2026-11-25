@@ -11,6 +11,7 @@ import { makeAccountsTestDb, makeTestDb } from "../testing/db";
 import { NotConnected, requireAccount } from "./account";
 import { encryptSecret } from "./crypto";
 import { ProvisionError, checkWall, clientNames, provisionSharedCrm } from "./provision";
+import { runSetupChecks } from "./setup-check";
 import { MONSOON_TABLES } from "./setup-script";
 import { clearAccountCache } from "./store";
 
@@ -275,6 +276,46 @@ describe.skipIf(!shared.available)("the wall between clients in the shared datab
     // The other client is untouched and its address still works.
     expect(await names(await login(urlB))).toEqual(["Bob of B"]);
     expect(await code(await login(urlA), `SELECT * FROM ${namesB.schema}.people`)).toBe(DENIED);
+  });
+
+  it("waits for a pooler that still refuses the new password for a moment, then finishes", async () => {
+    // Supabase's pooler accepts a changed password a few seconds late: the first sign-ins are refused.
+    const before = await names(await login(urlA));
+    let calls = 0;
+    const checks: typeof runSetupChecks = async (input) => {
+      calls += 1;
+      return calls <= 2 ? { ok: false, failure: "connect" } : runSetupChecks(input);
+    };
+    const r = await provisionSharedCrm({ customerId: A, vocabulary }, { runChecks: checks, settleWaitMs: 1 });
+    expect(calls).toBe(3);
+    urlA = r.dbUrl;
+    expect(await names(await login(urlA))).toEqual(before);
+  });
+
+  it("gives up after a bounded number of refused sign-ins, and any other failed check is not retried", async () => {
+    let calls = 0;
+    const never: typeof runSetupChecks = async () => {
+      calls += 1;
+      return { ok: false, failure: "connect" };
+    };
+    const err = await provisionSharedCrm({ customerId: newCustomer(), vocabulary }, { runChecks: never, settleWaitMs: 1 }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect((err as ProvisionError).failure).toBe("connect");
+    expect(calls).toBe(8);
+
+    calls = 0;
+    const tables: typeof runSetupChecks = async () => {
+      calls += 1;
+      return { ok: false, failure: "tables" };
+    };
+    const other = await provisionSharedCrm({ customerId: newCustomer(), vocabulary }, { runChecks: tables, settleWaitMs: 1 }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect((other as ProvisionError).failure).toBe("tables");
+    expect(calls).toBe(1);
   });
 
   it("two clients provisioned at the same moment both come out whole", async () => {

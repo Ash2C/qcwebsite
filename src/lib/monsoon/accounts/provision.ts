@@ -29,6 +29,12 @@ export class ProvisionError extends Error {
 }
 
 const BUILD_TIMEOUT_MS = 30_000;
+// Supabase's pooler goes on refusing a changed password for a few seconds (measured: under five).
+// The new login's first sign-ins are therefore tried again, a bounded number of times.
+const SETTLE_TRIES = 8;
+const SETTLE_WAIT_MS = 2_000;
+
+export type ProvisionDeps = { runChecks?: typeof runSetupChecks; settleWaitMs?: number };
 
 // One provisioning at a time: two at once would both change who may use `public`.
 const LOCK = "SELECT pg_advisory_xact_lock(hashtext('monsoon:provision'))";
@@ -133,7 +139,7 @@ export async function provisionSharedCrm(input: {
   vocabulary: SetupVocabulary;
   /** The pipeline's default role (default: the vocabulary's first role). It must be in the vocabulary. */
   defaultRole?: string;
-}): Promise<{ dbUrl: string; schema: string }> {
+}, deps: ProvisionDeps = {}): Promise<{ dbUrl: string; schema: string }> {
   const names = clientNames(input.customerId);
   const adminUrl = process.env.MONSOON_SHARED_DB_ADMIN_URL;
   if (!adminUrl) throw new ProvisionError("not_configured");
@@ -163,7 +169,9 @@ export async function provisionSharedCrm(input: {
   }
 
   // Everything below runs as the new login itself, so it sees exactly what the client's requests will.
-  const checks = await runSetupChecks({
+  const runChecks = deps.runChecks ?? runSetupChecks;
+  const waitMs = deps.settleWaitMs ?? SETTLE_WAIT_MS;
+  let checks = await runChecks({
     dbUrl,
     claudeKey: null,
     roleName: names.role,
@@ -171,6 +179,17 @@ export async function provisionSharedCrm(input: {
     schema: names.schema,
     tryClaude: async () => false,
   });
+  for (let tries = 1; !checks.ok && checks.failure === "connect" && tries < SETTLE_TRIES; tries += 1) {
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    checks = await runChecks({
+      dbUrl,
+      claudeKey: null,
+      roleName: names.role,
+      defaultRole,
+      schema: names.schema,
+      tryClaude: async () => false,
+    });
+  }
   if (!checks.ok) throw new ProvisionError(checks.failure);
 
   let wall: WallFailure | null;
