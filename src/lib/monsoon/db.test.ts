@@ -86,6 +86,16 @@ describe("withPipelineDb", () => {
   });
 });
 
+describe("withPipelineDb with a shared schema", () => {
+  it("refuses a schema name that is not a client schema, before connecting", async () => {
+    const fn = vi.fn();
+    for (const schema of ["public", "c_1", "c_0B9D2A476A3E4C1F9D552F7A3C1E8B10", "c_0b9d2a476a3e4c1f9d552f7a3c1e8b10, public", "", "pg_catalog"]) {
+      await expect(withPipelineDb("postgresql://u:p@127.0.0.1:1/x", fn, schema), schema).rejects.toThrow("invalid schema name");
+    }
+    expect(fn).not.toHaveBeenCalled();
+  });
+});
+
 describe("pipelineClientConfig", () => {
   it("uses explicit fields from the validated URL and no connectionString", () => {
     vi.stubEnv("MONSOON_DB_CA_CERT", "CA");

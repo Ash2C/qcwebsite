@@ -4,7 +4,7 @@
 import type { Client } from "pg";
 import { parseAllowedDbUrl } from "./address";
 import { withPipelineDb } from "../db";
-import { MONSOON_TABLES } from "./setup-script";
+import { MONSOON_TABLES, checkSchemaName } from "./setup-script";
 
 export type SetupFailure =
   | "address"
@@ -56,9 +56,17 @@ async function step<T>(failure: SetupFailure, run: () => Promise<T>): Promise<T>
 
 const TABLES = [...MONSOON_TABLES];
 
-async function checkDatabase(db: Client, roleName: string, defaultRole: string): Promise<SetupFailure | null> {
+// The statements below are written for `public`, exactly as they were before a schema could be
+// named, and are sent unchanged for it. For a client's schema in the shared database the two places
+// that name `public` are rewritten. `schema` is a checked identifier (checkSchemaName).
+function inSchema(sql: string, schema: string): string {
+  if (schema === "public") return sql;
+  return sql.split("'public.'").join(`'${schema}.'`).split("schemaname = 'public'").join(`schemaname = '${schema}'`);
+}
+
+async function checkDatabase(db: Client, roleName: string, defaultRole: string, schema: string): Promise<SetupFailure | null> {
   const present = await step("tables", () =>
-    db.query("SELECT count(*)::int AS n FROM unnest($1::text[]) AS t(name) WHERE to_regclass('public.' || t.name) IS NOT NULL", [
+    db.query(inSchema("SELECT count(*)::int AS n FROM unnest($1::text[]) AS t(name) WHERE to_regclass('public.' || t.name) IS NOT NULL", schema), [
       TABLES,
     ]),
   );
@@ -92,9 +100,12 @@ async function checkDatabase(db: Client, roleName: string, defaultRole: string):
   // Backstop for grants another role made: nothing may remove rows from any Monsoon table.
   const privileges = await step("privileges", () =>
     db.query(
-      `SELECT count(*)::int AS n FROM unnest($2::text[]) AS t(name)
+      inSchema(
+        `SELECT count(*)::int AS n FROM unnest($2::text[]) AS t(name)
         WHERE has_table_privilege($1, 'public.' || quote_ident(t.name), 'DELETE')
            OR has_table_privilege($1, 'public.' || quote_ident(t.name), 'TRUNCATE')`,
+        schema,
+      ),
       [roleName, TABLES],
     ),
   );
@@ -113,9 +124,12 @@ async function checkDatabase(db: Client, roleName: string, defaultRole: string):
   // A policy for PUBLIC applies to anon and authenticated too.
   const policies = await step("public_policies", () =>
     db.query(
-      `SELECT count(*)::int AS n FROM pg_policies
+      inSchema(
+        `SELECT count(*)::int AS n FROM pg_policies
         WHERE schemaname = 'public' AND tablename = ANY($1::text[])
           AND roles && ARRAY['anon', 'authenticated', 'public']::name[]`,
+        schema,
+      ),
       [TABLES],
     ),
   );
@@ -130,17 +144,25 @@ export async function runSetupChecks(input: {
   roleName: string;
   /** The pipeline's default role: it must exist in the customer's roles table. */
   defaultRole: string;
+  /**
+   * Where the Monsoon tables are (default `public`). Any other schema is a client's schema in the
+   * shared database: it is also handed to the connection, the way the app itself connects.
+   */
+  schema?: string;
   tryClaude: (key: string) => Promise<boolean>;
 }): Promise<SetupCheckResult> {
+  let schema: string;
   try {
     parseAllowedDbUrl(input.dbUrl);
+    schema = checkSchemaName(input.schema ?? "public");
   } catch {
     return { ok: false, failure: "address" };
   }
 
   let failure: SetupFailure | null;
   try {
-    failure = await withPipelineDb(input.dbUrl, (db) => checkDatabase(db, input.roleName, input.defaultRole));
+    const run = (db: Client) => checkDatabase(db, input.roleName, input.defaultRole, schema);
+    failure = schema === "public" ? await withPipelineDb(input.dbUrl, run) : await withPipelineDb(input.dbUrl, run, schema);
   } catch (err) {
     // Anything thrown outside a named step happened while signing in.
     failure = err instanceof StepFailed ? err.failure : "connect";

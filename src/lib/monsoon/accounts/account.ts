@@ -7,6 +7,7 @@ import { withPipelineDb } from "../db";
 import { claudeFailure } from "../claude-failure";
 import { decryptSecret } from "./crypto";
 import { NotConnected } from "./not-connected";
+import { sharedPipelineIsOwn } from "./shared-names";
 import {
   evictAccount,
   loadAccountRows,
@@ -73,7 +74,7 @@ export function buildAccount(rows: { customer: CustomerRow; person: PersonRow; p
     async withDb(key, fn) {
       const row = rowFor(key);
       if (!row || row.dbUrlEnc === null) throw new NotConnected("Pipeline");
-      return withPipelineDb(decryptSecret(row.dbUrlEnc, customer.id, `pipeline:${row.id}`), fn);
+      return connectPipeline(decryptSecret(row.dbUrlEnc, customer.id, `pipeline:${row.id}`), row.sharedSchema, customer.id, fn);
     },
     anthropic({ timeout }) {
       if (customer.claudeKeyEnc === null) throw new NotConnected("Claude key");
@@ -107,6 +108,17 @@ export function buildAccount(rows: { customer: CustomerRow; person: PersonRow; p
       await recordClaudeStatus(customer.id, status);
     },
   };
+}
+
+/**
+ * A pipeline with a database of its own connects as before. A pipeline in the shared database
+ * connects only when its stored schema and login are the ones derived from this customer's id, and
+ * with the search path set on the connection.
+ */
+function connectPipeline<T>(dbUrl: string, sharedSchema: string | null, customerId: string, fn: (db: Client) => Promise<T>): Promise<T> {
+  if (sharedSchema === null) return withPipelineDb(dbUrl, fn);
+  if (!sharedPipelineIsOwn(customerId, sharedSchema, dbUrl)) throw new NotConnected("Pipeline");
+  return withPipelineDb(dbUrl, fn, sharedSchema);
 }
 
 function refuse(error: string, status: number): { ok: false; response: Response } {
@@ -156,13 +168,14 @@ export async function requireAccount(
 export async function withCustomerPipelineDb<T>(code: string, key: string, fn: (db: Client) => Promise<T>): Promise<T> {
   const row = await withAccountsDb(async (db) => {
     const r = await db.query(
-      `SELECT c.id AS customer_id, p.id AS pipeline_id, p.db_url_enc
+      `SELECT c.id AS customer_id, p.id AS pipeline_id, p.db_url_enc, p.shared_schema
          FROM customers c JOIN pipelines p ON p.customer_id = c.id
         WHERE c.code = $1 AND c.status = 'active' AND p.key = $2`,
       [code.toLowerCase(), key],
     );
-    return r.rows[0] as { customer_id: string; pipeline_id: string; db_url_enc: string | null } | undefined;
+    return r.rows[0] as { customer_id: string; pipeline_id: string; db_url_enc: string | null; shared_schema: string | null } | undefined;
   });
   if (!row || row.db_url_enc === null) throw new NotConnected("Pipeline");
-  return withPipelineDb(decryptSecret(row.db_url_enc, row.customer_id, `pipeline:${row.pipeline_id}`), fn);
+  const dbUrl = decryptSecret(row.db_url_enc, row.customer_id, `pipeline:${row.pipeline_id}`);
+  return connectPipeline(dbUrl, row.shared_schema ?? null, row.customer_id, fn);
 }

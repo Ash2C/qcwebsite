@@ -1,5 +1,5 @@
 import { Client, type ClientConfig } from "pg";
-import { parseAllowedDbUrl } from "./accounts/address";
+import { SHARED_SCHEMA, parseAllowedDbUrl } from "./accounts/address";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
@@ -69,9 +69,23 @@ async function connectAndRun<T>(config: ClientConfig, fn: (db: Client) => Promis
   }
 }
 
+/**
+ * Runs fn on one connection to a pipeline's CRM. `sharedSchema` is given for a client in the shared
+ * database: the search path is then set on the connection itself, so finding the client's tables
+ * does not depend on the pooler passing on the login's own search path. This is not what keeps
+ * clients apart (the login has no rights outside its schema, whatever the path says); it only makes
+ * unqualified table names resolve. Only a client schema name is accepted (`c_` and 32 hex digits).
+ */
 export async function withPipelineDb<T>(
   dbUrl: string,
-  fn: (db: Client) => Promise<T>
+  fn: (db: Client) => Promise<T>,
+  sharedSchema?: string
 ): Promise<T> {
-  return connectAndRun(pipelineClientConfig(dbUrl), fn);
+  if (sharedSchema === undefined) return connectAndRun(pipelineClientConfig(dbUrl), fn);
+  if (typeof sharedSchema !== "string" || !SHARED_SCHEMA.test(sharedSchema)) throw new Error("invalid schema name");
+  return connectAndRun(pipelineClientConfig(dbUrl), async (db) => {
+    // The name passed the pattern above: lower-case hex and an underscore, nothing to quote.
+    await db.query(`SET search_path TO ${sharedSchema}`);
+    return fn(db);
+  });
 }

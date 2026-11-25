@@ -10,9 +10,15 @@ export type SetupVocabulary = {
   roleName?: string;
   /** When set, the script carries this password and runs unedited (Monsoon's own `host` command). */
   password?: string;
+  /**
+   * The schema the login is given USAGE on (default `public`). The tables themselves are created
+   * wherever the search path points when the script runs: the caller sets that for another schema.
+   */
+  schema?: string;
 };
 
 const DEFAULT_ROLE = "monsoon_app";
+const DEFAULT_SCHEMA = "public";
 const PASSWORD_PLACEHOLDER = "REPLACE-WITH-A-PASSWORD-OF-AT-LEAST-16-CHARACTERS";
 
 /** The eleven Monsoon CRM tables. */
@@ -31,7 +37,15 @@ function checkRole(name: string): string {
   return name;
 }
 
-function loginPart(role: string, password: string = PASSWORD_PLACEHOLDER): string {
+/** A plain lower-case identifier that is not one of Postgres's own schemas. Throws otherwise. */
+export function checkSchemaName(name: string): string {
+  if (typeof name !== "string" || !/^[a-z_][a-z0-9_]{0,62}$/.test(name) || name.startsWith("pg_") || name === "information_schema") {
+    throw new Error("invalid schema name");
+  }
+  return name;
+}
+
+function loginPart(role: string, password: string = PASSWORD_PLACEHOLDER, schema: string = DEFAULT_SCHEMA): string {
   const policies: string[] = [];
   const policy = (table: string, action: "select" | "insert" | "update") => {
     const name = `${role}_${action}`;
@@ -83,7 +97,7 @@ BEGIN
 END
 $$;
 
-GRANT USAGE ON SCHEMA public TO ${role};
+GRANT USAGE ON SCHEMA ${schema} TO ${role};
 REVOKE ALL ON ${ALL_TABLES.join(", ")} FROM ${role};
 GRANT SELECT ON ${ALL_TABLES.join(", ")} TO ${role};
 GRANT INSERT ON ${INSERT_TABLES.join(", ")} TO ${role};
@@ -94,17 +108,22 @@ ${policies.join("\n")}
 }
 
 /** Only the role, grants and policies, for a database that already holds the Monsoon tables. */
-export function loginAndPoliciesScript(roleName: string = DEFAULT_ROLE): string {
-  return `BEGIN;\n\n${loginPart(checkRole(roleName))}\nCOMMIT;\n`;
+export function loginAndPoliciesScript(roleName: string = DEFAULT_ROLE, schema: string = DEFAULT_SCHEMA): string {
+  return `BEGIN;\n\n${loginPart(checkRole(roleName), undefined, checkSchemaName(schema))}\nCOMMIT;\n`;
 }
 
 export function generateSetupScript(v: SetupVocabulary): string {
+  return `BEGIN;\n\n${setupStatements(v)}\n\nCOMMIT;\n`;
+}
+
+/** Everything the setup script runs, without its BEGIN and COMMIT, for a caller with its own transaction. */
+export function setupStatements(v: SetupVocabulary): string {
   const role = checkRole(v.roleName ?? DEFAULT_ROLE);
+  const schema = checkSchemaName(v.schema ?? DEFAULT_SCHEMA);
   // The password sits inside a dollar-quoted DO block, so a "$" could end the block early.
   if (v.password !== undefined && (v.password.length < 16 || v.password.includes("$"))) throw new Error("invalid password");
   const rows = (items: string[]) => items.join(",\n  ");
   const parts = [
-    "BEGIN;",
     CRM_SCHEMA_SQL,
     "INSERT INTO schema_migrations (version) VALUES (1) ON CONFLICT DO NOTHING;",
   ];
@@ -120,6 +139,6 @@ export function generateSetupScript(v: SetupVocabulary): string {
     const values = v.owners.map((o) => `(${lit(o.key)}, ${lit(o.name)})`);
     parts.push(`INSERT INTO owners (key, display_name) VALUES\n  ${rows(values)}\nON CONFLICT DO NOTHING;`);
   }
-  parts.push(loginPart(role, v.password), "COMMIT;");
-  return parts.join("\n\n") + "\n";
+  parts.push(loginPart(role, v.password, schema));
+  return parts.join("\n\n");
 }

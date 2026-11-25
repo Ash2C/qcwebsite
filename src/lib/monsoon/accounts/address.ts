@@ -37,6 +37,43 @@ export function buildPoolerUrl(input: {
   return `postgresql://monsoon_app.${projectRef}:${encodeURIComponent(password)}@${poolerHost.toLowerCase()}:6543/postgres`;
 }
 
+/** A client's login in the shared database: derived from the customer id, never from user text. */
+export const SHARED_ROLE = /^monsoon_c_[0-9a-f]{32}$/;
+/** A client's schema in the shared database. */
+export const SHARED_SCHEMA = /^c_[0-9a-f]{32}$/;
+
+/**
+ * The address a client's own login uses in the shared database: transaction mode (6543) for
+ * `<role>.<ref>` on the pooler host of the owner's address. The project and host come only from the
+ * owner's address, which must itself be an allowed address for `postgres.<ref>`. In development a
+ * local owner address gives the role on that same local database. The owner's password is never
+ * carried over, and no error names any part of either address.
+ */
+export function buildSharedPoolerUrl(input: { adminUrl: string; role: string; password: string }): string {
+  const { adminUrl, role, password } = input;
+  if (typeof role !== "string" || !SHARED_ROLE.test(role)) throw new AddressError("not_allowed");
+  const admin = parseAllowedDbUrl(adminUrl);
+  // eslint-disable-next-line no-control-regex
+  if (typeof password !== "string" || !password || password.length > 200 || /[\u0000-\u001f\u007f]/.test(password)) {
+    throw new AddressError("bad_password");
+  }
+  const host = admin.hostname.toLowerCase();
+  if (LOCAL_HOSTS.has(host)) {
+    // parseAllowedDbUrl lets a local host through only in development.
+    return `postgresql://${role}:${encodeURIComponent(password)}@${admin.host}${admin.pathname}`;
+  }
+  let user: string;
+  try {
+    user = decodeURIComponent(admin.username);
+  } catch {
+    throw new AddressError("bad_ref");
+  }
+  const ref = user.startsWith("postgres.") ? user.slice("postgres.".length) : "";
+  if (!PROJECT_REF.test(ref)) throw new AddressError("bad_ref");
+  if (!POOLER_HOST.test(host)) throw new AddressError("not_allowed");
+  return `postgresql://${role}.${ref}:${encodeURIComponent(password)}@${host}:6543/postgres`;
+}
+
 export function assertAllowedDbUrl(url: string): void {
   parseAllowedDbUrl(url);
 }

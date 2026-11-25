@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AddressError, assertAllowedDbUrl, buildPoolerUrl } from "./address";
+import { AddressError, assertAllowedDbUrl, buildPoolerUrl, buildSharedPoolerUrl } from "./address";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -105,5 +105,57 @@ describe("buildPoolerUrl", () => {
       expect(String(e)).not.toContain("secret");
     }
     expect(() => buildPoolerUrl({ projectRef: REF, poolerHost: HOST, password: "a".repeat(200) })).not.toThrow();
+  });
+});
+
+describe("buildSharedPoolerUrl", () => {
+  const ADMIN = `postgresql://postgres.${REF}:owner-pw@${HOST}:5432/postgres`;
+  const ROLE = "monsoon_c_0b9d2a476a3e4c1f9d552f7a3c1e8b10";
+
+  it("builds the transaction-mode address for the role on the admin address's project and host", () => {
+    const url = buildSharedPoolerUrl({ adminUrl: ADMIN, role: ROLE, password: "p@ss:/word" });
+    expect(url).toBe(`postgresql://${ROLE}.${REF}:${encodeURIComponent("p@ss:/word")}@${HOST}:6543/postgres`);
+    expect(() => assertAllowedDbUrl(url)).not.toThrow();
+    expect(url).not.toContain("owner-pw");
+  });
+
+  it("refuses an admin address that is not a Supabase pooler address for postgres.<ref>", () => {
+    const bad = [
+      `postgresql://postgres.${REF}:pw@evil.com:5432/postgres`,
+      `postgresql://postgres.${REF}:pw@db.${REF}.supabase.co:5432/postgres`,
+      `postgresql://postgres.${REF}:pw@${HOST}:5432/postgres?host=evil.com`,
+      "not a url",
+      "",
+    ];
+    for (const adminUrl of bad) expect(codeOf(() => buildSharedPoolerUrl({ adminUrl, role: ROLE, password: "x" })), adminUrl).toBe("not_allowed");
+    for (const user of ["postgres", "postgres.short", `someone.${REF}`, `postgres.${REF}.x`, `postgres.${REF.toUpperCase()}`]) {
+      expect(codeOf(() => buildSharedPoolerUrl({ adminUrl: `postgresql://${user}:pw@${HOST}:5432/postgres`, role: ROLE, password: "x" })), user).toBe("bad_ref");
+    }
+  });
+
+  it("refuses a role that is not a client login name", () => {
+    for (const role of ["monsoon_app", "postgres", "monsoon_c_", `${ROLE}x`, "monsoon_c_0B9D2A476A3E4C1F9D552F7A3C1E8B10", `${ROLE}.other`, ""]) {
+      expect(codeOf(() => buildSharedPoolerUrl({ adminUrl: ADMIN, role, password: "x" })), role).toBe("not_allowed");
+    }
+  });
+
+  it("refuses an empty, long or control-character password without echoing it or the admin password", () => {
+    for (const password of ["", "a".repeat(201), "ab\ncd"]) {
+      expect(codeOf(() => buildSharedPoolerUrl({ adminUrl: ADMIN, role: ROLE, password }))).toBe("bad_password");
+    }
+    try {
+      buildSharedPoolerUrl({ adminUrl: `postgresql://postgres:owner-pw@${HOST}:5432/postgres`, role: ROLE, password: "x" });
+    } catch (e) {
+      expect(String(e)).not.toContain("owner-pw");
+    }
+  });
+
+  it("in development, a local admin address gives the role on the same local database", () => {
+    vi.stubEnv("MONSOON_ALLOW_LOCAL_DB", "1");
+    vi.stubEnv("NODE_ENV", "test");
+    const url = buildSharedPoolerUrl({ adminUrl: "postgresql://postgres:test@127.0.0.1:55433/monsoon_x_test", role: ROLE, password: "pw-1" });
+    expect(url).toBe(`postgresql://${ROLE}:pw-1@127.0.0.1:55433/monsoon_x_test`);
+    vi.stubEnv("NODE_ENV", "production");
+    expect(codeOf(() => buildSharedPoolerUrl({ adminUrl: "postgresql://postgres:test@127.0.0.1:55433/monsoon_x_test", role: ROLE, password: "pw-1" }))).toBe("not_allowed");
   });
 });

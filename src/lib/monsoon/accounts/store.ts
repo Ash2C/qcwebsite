@@ -30,6 +30,8 @@ export type PipelineRow = {
   defaultRole: string;
   position: number;
   dbUrlEnc: string | null;
+  /** The client's schema in the shared database; null for a pipeline with a database of its own. */
+  sharedSchema: string | null;
 };
 
 export type CustomerRow = {
@@ -117,6 +119,7 @@ function toPipeline(r: Raw): PipelineRow {
     defaultRole: r.default_role as string,
     position: r.position as number,
     dbUrlEnc: (r.db_url_enc as string | null) ?? null,
+    sharedSchema: (r.shared_schema as string | null) ?? null,
   };
 }
 
@@ -175,7 +178,7 @@ export async function loadAccountRows(customerId: string, personId: string): Pro
     ]);
     if (c.rowCount === 0 || p.rowCount === 0) return null;
     const pl = await db.query(
-      "SELECT id, key, label, default_role, position, db_url_enc FROM pipelines WHERE customer_id = $1 ORDER BY position, key",
+      "SELECT id, key, label, default_role, position, db_url_enc, shared_schema FROM pipelines WHERE customer_id = $1 ORDER BY position, key",
       [customerId],
     );
     return { customer: toCustomer(c.rows[0]), person: toPerson(p.rows[0]), pipelines: pl.rows.map(toPipeline) };
