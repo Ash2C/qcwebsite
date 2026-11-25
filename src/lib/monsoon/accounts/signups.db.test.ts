@@ -10,6 +10,7 @@ import {
   findPersonByGoogleSub,
   findSignup,
   googleIdHeld,
+  googleLinked,
   linkGoogle,
   listSignups,
   reopenSignup,
@@ -287,6 +288,25 @@ describe.skipIf(!db.available)("sign-up requests and Google links", { timeout: 2
       const results = await Promise.all(Array.from({ length: 16 }, () => beginGoogleAttempt("addr-par")));
       expect(results.filter((r) => r !== null).length).toBeLessThanOrEqual(GOOGLE_ATTEMPT_LIMIT);
       expect(results.filter((r) => r === null).length).toBeGreaterThanOrEqual(6);
+    });
+  });
+
+  describe("googleLinked", () => {
+    it("is true only for the person who has a Google id, in their own customer", async () => {
+      const { ann, bob, oz } = await seed();
+      expect(await googleLinked(ann)).toBe(false);
+      expect(await linkGoogle(ann, "1001")).toBe("linked");
+      expect(await googleLinked(ann)).toBe(true);
+      expect(await googleLinked(bob)).toBe(false);
+      expect(await googleLinked(oz)).toBe(false);
+      // The person's id under another customer is nobody.
+      expect(await googleLinked({ customerId: oz.customerId, personId: ann.personId })).toBe(false);
+    });
+
+    it("is false for ids that are not ids, without asking the database", async () => {
+      vi.stubEnv("MONSOON_ACCOUNTS_DATABASE_URL", "");
+      expect(await googleLinked({ customerId: "x", personId: NONE })).toBe(false);
+      expect(await googleLinked({ customerId: NONE, personId: "' OR 1=1" })).toBe(false);
     });
   });
 

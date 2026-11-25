@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { GranolaKeyState } from "@/lib/monsoon/accounts/granola-key";
 import type { PageInput, UserPage } from "@/lib/monsoon/accounts/profile";
-import { addUserNote, loadGranolaKey, loadUserPage, saveUserPage, type EstateInfo } from "./api";
+import { addUserNote, loadGranolaKey, loadRequests, loadUserPage, saveUserPage, type EstateInfo } from "./api";
 import { shortDay } from "./ContactsPanel";
 import GranolaKeyPanel, { GRANOLA_STATE } from "./GranolaKeyPanel";
 import MonsoonLoader from "./MonsoonLoader";
+import RequestsPanel from "./RequestsPanel";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
 
 /**
@@ -85,6 +86,12 @@ export default function UserPanel({
   // this component stays mounted, so the page it loaded and the draft in MonsoonApp are untouched.
   const [granola, setGranola] = useState<GranolaKeyState["status"] | null>(null);
   const [granolaOpen, setGranolaOpen] = useState(false);
+  // Google: null while Sign in with Google is off (or not yet known), and then there is no row.
+  const [google, setGoogle] = useState<"linked" | "not_linked" | null>(null);
+  // Requests: only the approver has the entry. `waiting` is null until the count is known.
+  const [canApprove, setCanApprove] = useState(false);
+  const [waiting, setWaiting] = useState<number | null>(null);
+  const [requestsOpen, setRequestsOpen] = useState(false);
   const unauthorized = useCallback(() => calls.current.onUnauthorized(), []);
 
   // The latest props, for the moment a request returns: the parent re-renders while it is away.
@@ -111,7 +118,12 @@ export default function UserPanel({
       const res = await loadUserPage(estateKey);
       if (!alive.current || no !== loadNo.current) return;
       if (res.status === 401) return calls.current.onUnauthorized();
-      if (res.status === 200 && "page" in res.body) return setPage(res.body.page);
+      if (res.status === 200 && "page" in res.body) {
+        // Only a clear yes counts: a reply that says nothing shows no Google row and no Requests.
+        setGoogle(res.body.googleConfigured === true ? (res.body.googleLinked === true ? "linked" : "not_linked") : null);
+        setCanApprove(res.body.canApprove === true);
+        return setPage(res.body.page);
+      }
     } catch {
       if (!alive.current || no !== loadNo.current) return;
       // network error: the retry line below
@@ -134,6 +146,22 @@ export default function UserPanel({
       }
     })();
   }, []);
+
+  // How many requests are waiting, for the approver only. A failure of any kind leaves the entry
+  // without a number; the Requests screen itself says what is wrong.
+  useEffect(() => {
+    if (!canApprove) return;
+    void (async () => {
+      try {
+        const res = await loadRequests();
+        if (alive.current && res.status === 200 && res.body && "requests" in res.body && Array.isArray(res.body.requests)) {
+          setWaiting(res.body.requests.filter((r) => r.status === "pending").length);
+        }
+      } catch {
+        // unknown: the entry says "Requests" alone
+      }
+    })();
+  }, [canApprove]);
 
   const onFile = page ? fromPage(page) : null;
   const values = onFile ? (draft.fields ?? onFile) : null;
@@ -232,6 +260,16 @@ export default function UserPanel({
   if (granolaOpen) {
     return <GranolaKeyPanel onBack={() => setGranolaOpen(false)} onUnauthorized={unauthorized} onStatus={setGranola} />;
   }
+  if (requestsOpen && canApprove) {
+    return <RequestsPanel onBack={() => setRequestsOpen(false)} onUnauthorized={unauthorized} onWaiting={setWaiting} />;
+  }
+  const rowLook = "flex min-h-[52px] w-full items-center justify-between gap-3 px-4 py-3 text-left text-[17px]";
+  const rowState = "flex items-center gap-2 text-[15px] text-neutral-600 dark:text-neutral-400";
+  const chevron = (
+    <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 5l7 7-7 7" />
+    </svg>
+  );
 
   return (
     <section aria-labelledby="user-page-title" className="flex flex-col gap-4">
@@ -359,11 +397,59 @@ export default function UserPanel({
             )}
           </section>
 
+          {canApprove && (
+            <section aria-labelledby="user-signups" className="flex flex-col gap-2">
+              <h3 id="user-signups" className={sectionTitle}>
+                Sign-ups
+              </h3>
+              <div className={`${card} overflow-hidden`}>
+                <button
+                  type="button"
+                  aria-label={waiting ? `Requests, ${waiting} waiting` : "Requests"}
+                  onClick={() => setRequestsOpen(true)}
+                  disabled={saving || adding}
+                  className={`${rowLook} active:bg-neutral-100 disabled:opacity-50 dark:active:bg-white/10`}
+                >
+                  <span className="font-medium">Requests</span>
+                  <span className={rowState}>
+                    {waiting ? `${waiting} waiting` : ""}
+                    {chevron}
+                  </span>
+                </button>
+              </div>
+            </section>
+          )}
+
           <section aria-labelledby="user-connections" className="flex flex-col gap-2">
             <h3 id="user-connections" className={sectionTitle}>
               Connections
             </h3>
-            <div className={`${card} overflow-hidden`}>
+            <div className={`${card} divide-y divide-neutral-200 overflow-hidden dark:divide-white/10`}>
+              {google === "linked" && (
+                // Linked is the end of it in this version: nothing to tap, no unlink.
+                <div className={rowLook}>
+                  <span className="font-medium">Google</span>
+                  <span className={rowState}>Linked</span>
+                </div>
+              )}
+              {google === "not_linked" && (
+                // A real link: the browser goes to the server, which sends it on to Google and back.
+                <a
+                  href="/api/monsoon/google/start?link=1"
+                  aria-label="Google, Not linked"
+                  onClick={(e) => {
+                    // Leaving the app drops what is typed and not saved: ask first, as Back does.
+                    if (saving || adding || (unsaved && !window.confirm(DISCARD))) e.preventDefault();
+                  }}
+                  className={`${rowLook} text-inherit no-underline active:bg-neutral-100 dark:active:bg-white/10`}
+                >
+                  <span className="font-medium">Google</span>
+                  <span className={rowState}>
+                    Not linked
+                    {chevron}
+                  </span>
+                </a>
+              )}
               <button
                 type="button"
                 aria-label={granola ? `Granola, ${GRANOLA_STATE[granola]}` : "Granola"}

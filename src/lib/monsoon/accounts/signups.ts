@@ -94,6 +94,16 @@ export async function googleIdHeld(sub: string): Promise<boolean> {
   });
 }
 
+/** True when this person, in this customer, has a Google id. The id itself never leaves here. */
+export async function googleLinked(who: { customerId: string; personId: string }): Promise<boolean> {
+  if (typeof who.customerId !== "string" || typeof who.personId !== "string") return false;
+  if (!UUID.test(who.customerId) || !UUID.test(who.personId)) return false;
+  return withAccountsDb(async (db) => {
+    const r = await db.query("SELECT 1 FROM people WHERE id = $1 AND customer_id = $2 AND google_sub IS NOT NULL", [who.personId, who.customerId]);
+    return r.rowCount === 1;
+  });
+}
+
 export async function findSignup(sub: string): Promise<SignupRow | null> {
   if (typeof sub !== "string" || !GOOGLE_SUB.test(sub)) return null;
   return withAccountsDb(async (db) => {

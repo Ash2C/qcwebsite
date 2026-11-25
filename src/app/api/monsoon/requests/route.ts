@@ -4,6 +4,7 @@
 // detail of an error.
 import { requireAccount, type Account } from "@/lib/monsoon/accounts/account";
 import { approveSignup } from "@/lib/monsoon/accounts/approve";
+import { canApprove } from "@/lib/monsoon/accounts/approver";
 import { declineSignup, listSignups, reopenSignup } from "@/lib/monsoon/accounts/signups";
 import { readJson } from "@/lib/monsoon/body";
 import { signupsConfigured } from "@/lib/monsoon/google";
@@ -14,7 +15,6 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const MAX_BODY = 500;
-const OWNER_CODE = "quantcloud";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ACTIONS = new Set(["approve", "decline", "reopen"]);
 
@@ -27,7 +27,7 @@ async function approver(request: Request): Promise<{ ok: true; account: Account 
   const auth = await requireAccount(request);
   if (!auth.ok) return auth;
   const { account } = auth;
-  if (account.customer.code !== OWNER_CODE || account.canChangeKey !== true) {
+  if (!canApprove(account)) {
     return { ok: false, response: reply({ error: "Not found" }, 404) };
   }
   return { ok: true, account };

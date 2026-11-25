@@ -8,6 +8,9 @@ vi.mock("@/lib/monsoon/accounts/profile", async (original) => ({
   saveUserPage: (...a: unknown[]) => lib.saveUserPage(...a),
   addUserNote: (...a: unknown[]) => lib.addUserNote(...a),
 }));
+const google = { googleConfigured: vi.fn(), googleLinked: vi.fn() };
+vi.mock("@/lib/monsoon/google", () => ({ googleConfigured: () => google.googleConfigured() }));
+vi.mock("@/lib/monsoon/accounts/signups", () => ({ googleLinked: (...a: unknown[]) => google.googleLinked(...a) }));
 vi.mock("@/lib/monsoon/accounts/account", async () =>
   (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
 );
@@ -44,6 +47,9 @@ const put = (body: unknown) =>
 beforeEach(() => {
   vi.restoreAllMocks();
   for (const f of Object.values(lib)) f.mockReset();
+  for (const f of Object.values(google)) f.mockReset();
+  google.googleConfigured.mockReturnValue(false);
+  google.googleLinked.mockResolvedValue(false);
   lib.loadUserPage.mockResolvedValue(PAGE);
   lib.saveUserPage.mockResolvedValue(PAGE);
   signInAs(fakeAccount());
@@ -60,7 +66,7 @@ describe("GET /api/monsoon/me", () => {
     const res = await GET(get());
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await res.json()).toEqual({ page: PAGE });
+    expect(await res.json()).toEqual({ page: PAGE, googleConfigured: false, googleLinked: false, canApprove: false });
     expect(lib.loadUserPage).toHaveBeenCalledTimes(1);
     expect(lib.loadUserPage).toHaveBeenCalledWith(WHO, "main");
   });
@@ -100,6 +106,53 @@ describe("GET /api/monsoon/me", () => {
     expect(logged).not.toContain("pw@h");
     expect(logged).not.toContain("jo@example.com");
     expect(logged).toContain("57014");
+  });
+
+  describe("Google and the Requests screen", () => {
+    it("with Sign in with Google off, says so and never looks the link up", async () => {
+      const body = await (await GET(get())).json();
+      expect(body).toMatchObject({ googleConfigured: false, googleLinked: false });
+      expect(google.googleLinked).not.toHaveBeenCalled();
+    });
+
+    it("says whether the signed-in person has linked Google, and never the Google id", async () => {
+      google.googleConfigured.mockReturnValue(true);
+      const first = await (await GET(get())).json();
+      expect(first).toMatchObject({ googleConfigured: true, googleLinked: false });
+      expect(google.googleLinked).toHaveBeenCalledWith(WHO);
+      google.googleLinked.mockResolvedValue(true);
+      const res = await GET(get(`?estate=main&personId=${OTHER}`));
+      const text = await res.text();
+      expect(JSON.parse(text)).toMatchObject({ googleConfigured: true, googleLinked: true });
+      expect(Object.keys(JSON.parse(text)).sort()).toEqual(["canApprove", "googleConfigured", "googleLinked", "page"]);
+      expect(JSON.stringify(google.googleLinked.mock.calls)).not.toContain(OTHER);
+    });
+
+    it("a link lookup that fails leaves the page readable and says not linked", async () => {
+      google.googleConfigured.mockReturnValue(true);
+      google.googleLinked.mockRejectedValue(new Error("postgres://u:pw@h"));
+      const res = await GET(get());
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ page: PAGE, googleConfigured: true, googleLinked: false, canApprove: false });
+    });
+
+    it("canApprove is true only for the key person of quantcloud", async () => {
+      const ask = async (account: ReturnType<typeof fakeAccount>) => {
+        signInAs(account);
+        return (await (await GET(get())).json()).canApprove;
+      };
+      expect(await ask(fakeAccount({ customer: { code: "quantcloud" }, canChangeKey: true }))).toBe(true);
+      expect(await ask(fakeAccount({ customer: { code: "quantcloud" }, canChangeKey: false }))).toBe(false);
+      expect(await ask(fakeAccount({ customer: { code: "acme-co" }, canChangeKey: true }))).toBe(false);
+    });
+
+    it("an estate that is not this customer's is still a 400, with nothing about Google", async () => {
+      google.googleConfigured.mockReturnValue(true);
+      lib.loadUserPage.mockResolvedValue(null);
+      const res = await GET(get("?estate=someone-elses"));
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "Unknown estate" });
+    });
   });
 });
 

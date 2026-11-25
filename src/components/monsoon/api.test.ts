@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { actOnCrm, addUserNote, askCrm, disconnectGranolaKey, loadGranolaKey, saveGranolaKey, testGranolaKey, loadUserPage, saveUserPage, researchContact, loadEstates, loadProfile, proposeChange, searchContacts, readCards, refineCard, saveCard, signIn } from "./api";
+import { actOnCrm, addUserNote, askCrm, disconnectGranolaKey, loadGranolaKey, saveGranolaKey, testGranolaKey, loadUserPage, saveUserPage, researchContact, loadEstates, loadProfile, proposeChange, searchContacts, readCards, refineCard, saveCard, signIn, actOnRequest, loadRequests, loadSignInOptions } from "./api";
 
 // `fetch` is stubbed: nothing here touches the network.
 const fetchMock = vi.fn();
@@ -49,6 +49,11 @@ const CALLS: [string, string, number, () => Promise<unknown>][] = [
   ["disconnectGranolaKey", "/api/monsoon/granola-key", 35_000, () => disconnectGranolaKey()],
   ["saveUserPage", "/api/monsoon/me", 35_000, () => saveUserPage("traxo", PAGE_INPUT)],
   ["addUserNote", "/api/monsoon/me/notes", 35_000, () => addUserNote("traxo", "A note")],
+  ["loadSignInOptions", "/api/monsoon/version", 15_000, () => loadSignInOptions()],
+  ["loadRequests", "/api/monsoon/requests", 15_000, () => loadRequests()],
+  ["actOnRequest (approve)", "/api/monsoon/requests", 70_000, () => actOnRequest("id-1", "approve")],
+  ["actOnRequest (decline)", "/api/monsoon/requests", 35_000, () => actOnRequest("id-1", "decline")],
+  ["actOnRequest (reopen)", "/api/monsoon/requests", 35_000, () => actOnRequest("id-1", "reopen")],
 ];
 
 describe("client timeouts", () => {
@@ -86,6 +91,51 @@ describe("client timeouts", () => {
     const post = fetchMock.mock.calls[2][1] as RequestInit;
     expect(post.method).toBe("POST");
     expect(JSON.parse(post.body as string)).toEqual({ estate: "traxo", body: "A note" });
+  });
+
+  it("loadSignInOptions says yes only for a clear yes, and never rejects", async () => {
+    const answer = (body: unknown, status = 200) =>
+      fetchMock.mockImplementationOnce(async () => new Response(typeof body === "string" ? body : JSON.stringify(body), { status }));
+    answer({ build: "abc", google: true, signups: true });
+    expect(await loadSignInOptions()).toEqual({ google: true, signups: true });
+    expect(fetchMock.mock.calls[0][1].cache).toBe("no-store");
+    expect(fetchMock.mock.calls[0][1].method).toBeUndefined();
+    answer({ build: "abc", google: true, signups: false });
+    expect(await loadSignInOptions()).toEqual({ google: true, signups: false });
+    // Sign-ups without Google sign-in is not a thing.
+    answer({ google: false, signups: true });
+    expect(await loadSignInOptions()).toEqual({ google: false, signups: false });
+    for (const [body, status] of [[{ build: "abc" }, 200], [{ google: "yes", signups: 1 }, 200], [null, 200], ["<html>", 200], [{ google: true, signups: true }, 503]] as const) {
+      answer(body, status);
+      expect(await loadSignInOptions()).toEqual({ google: false, signups: false });
+    }
+    fetchMock.mockImplementationOnce(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    expect(await loadSignInOptions()).toEqual({ google: false, signups: false });
+  });
+
+  it("requests are read fresh, and answered with a POST naming the request and the action", async () => {
+    await loadRequests();
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/monsoon/requests");
+    expect(fetchMock.mock.calls[0][1].cache).toBe("no-store");
+    expect(fetchMock.mock.calls[0][1].method).toBeUndefined();
+    await actOnRequest("id-1", "approve");
+    await actOnRequest("id-2", "decline");
+    await actOnRequest("id-3", "reopen");
+    const bodies = fetchMock.mock.calls.slice(1).map(([url, init]) => {
+      expect(url).toBe("/api/monsoon/requests");
+      expect(init.method).toBe("POST");
+      expect(init.headers).toEqual({ "Content-Type": "application/json" });
+      return JSON.parse(init.body);
+    });
+    expect(bodies).toEqual([
+      { id: "id-1", action: "approve" },
+      { id: "id-2", action: "decline" },
+      { id: "id-3", action: "reopen" },
+    ]);
+    fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({ error: "busy" }), { status: 409 }));
+    expect(await actOnRequest("id-1", "approve")).toEqual({ status: 409, body: { error: "busy" } });
   });
 
   it("the Granola key is read fresh, and tested, saved and disconnected with POST", async () => {

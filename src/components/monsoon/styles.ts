@@ -7,6 +7,9 @@ export const fieldLabel =
   "block px-4 pt-2 text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400";
 export const primaryButton =
   "min-h-[52px] w-full rounded-2xl bg-[#0E7FA6] px-6 text-[17px] font-semibold text-white active:bg-[#0D6A8F] disabled:bg-neutral-300 disabled:text-neutral-500 dark:bg-[#6AE6FF] dark:text-[#04121A] dark:active:bg-[#3FB8D4] dark:disabled:bg-neutral-700 dark:disabled:text-neutral-500";
+// A link that looks like the primary button (Sign in with Google): the same colours in light and dark.
+export const primaryLink =
+  "flex min-h-[52px] w-full items-center justify-center rounded-2xl bg-[#0E7FA6] px-6 text-center text-[17px] font-semibold text-white no-underline active:bg-[#0D6A8F] dark:bg-[#6AE6FF] dark:text-[#04121A] dark:active:bg-[#3FB8D4]";
 export const secondaryButton =
   "min-h-[44px] w-full rounded-xl bg-neutral-100 px-4 text-[16px] font-medium text-[#0E7FA6] active:bg-neutral-200 disabled:opacity-50 dark:bg-white/10 dark:text-[#6AE6FF] dark:active:bg-white/20";
 

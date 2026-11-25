@@ -12,6 +12,7 @@ import type { SignedProposal } from "@/lib/monsoon/ask/proposal";
 import type { ClaudeKeyState } from "@/lib/monsoon/accounts/claude-key";
 import type { GranolaKeyState } from "@/lib/monsoon/accounts/granola-key";
 import type { PageInput, UserPage } from "@/lib/monsoon/accounts/profile";
+import type { SignupRow } from "@/lib/monsoon/accounts/signups";
 import { claudeStatusOf, reportClaudeStatus, type ClaudeChipStatus } from "./claudeStatus";
 
 export type EstateInfo = {
@@ -52,6 +53,7 @@ const TIMEOUT_MS = {
   upload: 90_000, // readCards: the photo upload on a weak connection counts against the limit
   ask: 70_000, // askCrm
   research: 70_000, // researchContact: one bounded web search
+  approve: 70_000, // actOnRequest("approve"): builds a CRM in the shared database
 } as const;
 
 // The one place a request is made: every call gets a timeout signal. Older iOS Safari has no
@@ -314,7 +316,48 @@ export function disconnectGranolaKey(): Promise<GranolaReply> {
   return granolaPost({ disconnect: true });
 }
 
-type PageReply = ApiResult<{ page: UserPage } | { error: string }>;
+export type SignInOptions = { google: boolean; signups: boolean };
+const NO_GOOGLE: SignInOptions = { google: false, signups: false };
+
+/**
+ * Whether Sign in with Google is on, and whether new sign-ups can be taken. Asked without a
+ * session, by the passcode screen. Never rejects: anything but a clear yes is "off", which leaves
+ * the passcode screen exactly as it is without Google.
+ */
+export async function loadSignInOptions(): Promise<SignInOptions> {
+  try {
+    const res = await request("/api/monsoon/version", { cache: "no-store" }, TIMEOUT_MS.quick);
+    if (res.status !== 200) return NO_GOOGLE;
+    const body = (await res.json()) as { google?: unknown; signups?: unknown } | null;
+    return { google: body?.google === true, signups: body?.google === true && body?.signups === true };
+  } catch {
+    return NO_GOOGLE;
+  }
+}
+
+/** One sign-up request as the Requests screen sees it: never the Google id. */
+export type SignupRequest = Omit<SignupRow, "sub">;
+export type RequestAction = "approve" | "decline" | "reopen";
+
+/** Everyone who has asked to join, waiting first. Only the approver gets an answer; others a 404. */
+export async function loadRequests(): Promise<ApiResult<{ requests: SignupRequest[]; configured: boolean } | { error: string }>> {
+  return parse(await request("/api/monsoon/requests", { cache: "no-store" }, TIMEOUT_MS.quick));
+}
+
+/** Approves, declines or re-opens one request. Approving builds the person's CRM, so it may take a minute. */
+export async function actOnRequest(id: string, action: RequestAction): Promise<ApiResult<{ ok: true } | { error: string } | null>> {
+  return parse(
+    await request(
+      "/api/monsoon/requests",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, action }) },
+      action === "approve" ? TIMEOUT_MS.approve : TIMEOUT_MS.standard,
+    ),
+  );
+}
+
+/** With the page, on a read only: whether Google sign-in is on, whether this person has linked it, and whether they answer requests. */
+type PageExtras = { googleConfigured?: boolean; googleLinked?: boolean; canApprove?: boolean };
+type PageReply = ApiResult<({ page: UserPage } & PageExtras) | { error: string }>;
 
 /** The signed-in person's own page for one CRM. */
 export async function loadUserPage(estate: string): Promise<PageReply> {

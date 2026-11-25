@@ -31,6 +31,9 @@ vi.mock("./api", () => ({
   saveGranolaKey: vi.fn(),
   testGranolaKey: vi.fn(),
   disconnectGranolaKey: vi.fn(),
+  loadSignInOptions: vi.fn(),
+  loadRequests: vi.fn(),
+  actOnRequest: vi.fn(),
 }));
 vi.mock("./image", () => ({
   downsizeImage: vi.fn(),
@@ -130,6 +133,89 @@ describe("MonsoonApp", () => {
     await user.click(screen.getByRole("button", { name: "Unlock" }));
     expect(m.signIn).toHaveBeenCalledWith("acme", "a-long-passcode-here");
     await ready();
+  });
+
+  describe("Sign in with Google on the passcode screen", () => {
+    const locked = () => m.loadEstates.mockResolvedValue({ status: 401, body: { error: "unauthorized" } });
+    const googleLink = () => screen.queryByRole("link", { name: "Sign in with Google" });
+
+    it("with Google off the passcode screen is exactly as before: no button, no extra line", async () => {
+      locked();
+      m.loadSignInOptions.mockResolvedValue({ google: false, signups: false });
+      render(<MonsoonApp />);
+      const form = (await screen.findByLabelText("Passcode")).closest("form") as HTMLElement;
+      await waitFor(() => expect(m.loadSignInOptions).toHaveBeenCalledTimes(1));
+      expect(googleLink()).not.toBeInTheDocument();
+      expect(screen.queryByRole("link")).not.toBeInTheDocument();
+      expect(screen.queryByText("or use a company code")).not.toBeInTheDocument();
+      expect(screen.queryByText(/Google/)).not.toBeInTheDocument();
+      // Logo, the two fields in their card, and Unlock: nothing else.
+      expect(form.children).toHaveLength(3);
+      expect(screen.getByLabelText("Company code")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Unlock" })).toBeDisabled();
+    });
+
+    it("stays as before when the answer does not come, is not a clear yes, or fails", async () => {
+      locked();
+      for (const answer of [undefined, null, { google: "yes" }, {}]) {
+        m.loadSignInOptions.mockResolvedValue(answer as never);
+        render(<MonsoonApp />);
+        await screen.findByLabelText("Passcode");
+        await waitFor(() => expect(m.loadSignInOptions).toHaveBeenCalled());
+        await act(async () => {});
+        expect(googleLink()).not.toBeInTheDocument();
+        cleanup();
+        m.loadSignInOptions.mockClear();
+      }
+      m.loadSignInOptions.mockRejectedValue(new Error("net"));
+      render(<MonsoonApp />);
+      await screen.findByLabelText("Passcode");
+      await waitFor(() => expect(m.loadSignInOptions).toHaveBeenCalled());
+      await act(async () => {});
+      expect(googleLink()).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Unlock" })).toBeInTheDocument();
+    });
+
+    it("with Google on, shows a full-width link to start, above the code fields, with the or line between", async () => {
+      locked();
+      m.loadSignInOptions.mockResolvedValue({ google: true, signups: false });
+      render(<MonsoonApp />);
+      const link = await screen.findByRole("link", { name: "Sign in with Google" });
+      expect(link).toHaveAttribute("href", "/api/monsoon/google/start");
+      expect(link.className).toMatch(/\bw-full\b/);
+      expect(link.className).toMatch(/min-h-\[52px\]/);
+      // Readable in both modes: its own colours for light and for dark.
+      expect(link.className).toMatch(/\bbg-\[#0E7FA6\]/);
+      expect(link.className).toMatch(/dark:bg-\[#6AE6FF\]/);
+      expect(link).not.toHaveAttribute("target");
+      const or = screen.getByText("or use a company code");
+      const code = screen.getByLabelText("Company code");
+      expect(link.compareDocumentPosition(or) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(or.compareDocumentPosition(code) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(document.querySelector("img[src*='google' i]")).toBeNull();
+    });
+
+    it("the passcode fields still sign in with the Google button showing", async () => {
+      const user = userEvent.setup();
+      m.loadEstates.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } });
+      m.loadSignInOptions.mockResolvedValue({ google: true, signups: true });
+      m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+      render(<MonsoonApp />);
+      await screen.findByRole("link", { name: "Sign in with Google" });
+      signedIn();
+      await user.type(screen.getByLabelText("Passcode"), "pw-123");
+      await user.click(screen.getByRole("button", { name: "Unlock" }));
+      expect(m.signIn).toHaveBeenCalledWith("acme", "pw-123");
+      await ready();
+      expect(googleLink()).not.toBeInTheDocument();
+    });
+
+    it("is not asked while signed in", async () => {
+      signedIn();
+      render(<MonsoonApp />);
+      await ready();
+      expect(m.loadSignInOptions).not.toHaveBeenCalled();
+    });
   });
 
   describe("company code sign-in", () => {

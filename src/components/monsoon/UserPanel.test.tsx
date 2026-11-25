@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UserPage } from "@/lib/monsoon/accounts/profile";
@@ -17,6 +17,8 @@ vi.mock("./api", () => ({
   saveGranolaKey: vi.fn(),
   testGranolaKey: vi.fn(),
   disconnectGranolaKey: vi.fn(),
+  loadRequests: vi.fn(),
+  actOnRequest: vi.fn(),
 }));
 const m = vi.mocked(api);
 
@@ -34,6 +36,11 @@ const reply = (page: UserPage) => ({ status: 200, body: { page } }) as never;
 const GRANOLA_OFF = { status: "missing" as const, last4: null, setAt: null, checkedAt: null };
 const GRANOLA_ON = { status: "ok" as const, last4: "4f2A", setAt: "2025-03-02T09:00:00Z", checkedAt: "2025-03-05T09:00:00Z" };
 const granola = (key: object) => ({ status: 200, body: { key } }) as never;
+/** The page as a read answers it, with what the server says about Google and the Requests screen. */
+const withExtras = (extras: { googleConfigured?: boolean; googleLinked?: boolean; canApprove?: boolean }) =>
+  ({ status: 200, body: { page: PAGE, googleConfigured: false, googleLinked: false, canApprove: false, ...extras } }) as never;
+const REQ = (id: string, status: string, name = `Person ${id}`) => ({ id, email: `${id}@example.com`, name, status, customerId: null, createdAt: "2025-03-02T09:00:00Z" });
+const requests = (rows: object[], configured = true) => ({ status: 200, body: { requests: rows, configured } }) as never;
 
 let onBack: ReturnType<typeof vi.fn>;
 let onUnauthorized: ReturnType<typeof vi.fn>;
@@ -420,6 +427,158 @@ describe("UserPanel", () => {
       expect(rowButton).toBeDisabled();
       finishAdd(reply(PAGE));
       await waitFor(() => expect(rowButton).toBeEnabled());
+    });
+  });
+
+  describe("the Google row", () => {
+    const START = "/api/monsoon/google/start?link=1";
+
+    it("is not there when Sign in with Google is off, or when the server does not say", async () => {
+      await view();
+      expect(screen.queryByText("Google")).not.toBeInTheDocument();
+      expect(screen.queryByRole("link")).not.toBeInTheDocument();
+      cleanup();
+      m.loadUserPage.mockResolvedValue(withExtras({ googleConfigured: false, googleLinked: true }));
+      await view();
+      expect(screen.queryByText("Google")).not.toBeInTheDocument();
+      expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    });
+
+    it("not linked: a link in Connections that starts linking", async () => {
+      m.loadUserPage.mockResolvedValue(withExtras({ googleConfigured: true }));
+      await view();
+      const connections = within(screen.getByRole("region", { name: "Connections" }));
+      const link = connections.getByRole("link", { name: "Google, Not linked" });
+      expect(link).toHaveAttribute("href", START);
+      expect(link).toHaveTextContent("Google");
+      expect(link).toHaveTextContent("Not linked");
+      expect(link.className).toMatch(/min-h-\[52px\]/);
+      // Granola is still there beside it.
+      expect(await connections.findByRole("button", { name: "Granola, Not connected" })).toBeInTheDocument();
+    });
+
+    it("linked: plain words, nothing to tap and no way to unlink", async () => {
+      m.loadUserPage.mockResolvedValue(withExtras({ googleConfigured: true, googleLinked: true }));
+      await view();
+      const connections = within(screen.getByRole("region", { name: "Connections" }));
+      expect(connections.getByText("Google")).toBeInTheDocument();
+      expect(connections.getByText("Linked")).toBeInTheDocument();
+      expect(connections.queryByRole("link")).not.toBeInTheDocument();
+      expect(connections.queryByRole("button", { name: /Google|Unlink/ })).not.toBeInTheDocument();
+      expect(screen.queryByText("Not linked")).not.toBeInTheDocument();
+    });
+
+    it("stays as the read said after a save, whose reply says nothing about Google", async () => {
+      const user = userEvent.setup();
+      m.loadUserPage.mockResolvedValue(withExtras({ googleConfigured: true, googleLinked: true }));
+      m.saveUserPage.mockResolvedValue(reply({ ...PAGE, person: { ...PAGE.person, name: "Dana L" } }));
+      await view();
+      await user.type(screen.getByLabelText("Name"), "x");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(await screen.findByText("Saved.")).toBeInTheDocument();
+      expect(within(screen.getByRole("region", { name: "Connections" })).getByText("Linked")).toBeInTheDocument();
+    });
+
+    it("with unsaved edits the link asks first, and stays put on No", async () => {
+      const user = userEvent.setup();
+      m.loadUserPage.mockResolvedValue(withExtras({ googleConfigured: true }));
+      await view();
+      await user.type(screen.getByLabelText("New note"), "half a note");
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+      const link = screen.getByRole("link", { name: "Google, Not linked" });
+      // fireEvent answers false when the click was cancelled, so nothing is followed.
+      expect(fireEvent.click(link)).toBe(false);
+      expect(confirm).toHaveBeenCalledWith("Discard your unsaved changes?");
+      expect(screen.getByLabelText("New note")).toHaveValue("half a note");
+    });
+  });
+
+  describe("Requests", () => {
+    it("is not there, and nothing is asked, for someone who cannot approve", async () => {
+      m.loadUserPage.mockResolvedValue(withExtras({ googleConfigured: true, canApprove: false }));
+      await view();
+      expect(screen.queryByRole("button", { name: /Requests/ })).not.toBeInTheDocument();
+      expect(screen.queryByText("Requests")).not.toBeInTheDocument();
+      expect(m.loadRequests).not.toHaveBeenCalled();
+      cleanup();
+      // The plain reply of before (no word on it) is a no too.
+      m.loadUserPage.mockResolvedValue(reply(PAGE));
+      await view();
+      expect(screen.queryByText("Requests")).not.toBeInTheDocument();
+      expect(m.loadRequests).not.toHaveBeenCalled();
+    });
+
+    it("shows the entry with how many are waiting", async () => {
+      m.loadUserPage.mockResolvedValue(withExtras({ canApprove: true }));
+      m.loadRequests.mockResolvedValue(requests([REQ("a", "pending"), REQ("b", "pending"), REQ("c", "approved"), REQ("d", "declined")]));
+      await view();
+      const entry = await screen.findByRole("button", { name: "Requests, 2 waiting" });
+      expect(entry).toHaveTextContent("Requests");
+      expect(entry).toHaveTextContent("2 waiting");
+      expect(entry.className).toMatch(/min-h-\[52px\]/);
+      expect(m.loadRequests).toHaveBeenCalledTimes(1);
+    });
+
+    it("shows no number when nobody is waiting, or when the count will not load", async () => {
+      m.loadUserPage.mockResolvedValue(withExtras({ canApprove: true }));
+      m.loadRequests.mockResolvedValue(requests([REQ("c", "approved")]));
+      await view();
+      await waitFor(() => expect(m.loadRequests).toHaveBeenCalledTimes(1));
+      expect(screen.getByRole("button", { name: "Requests" })).toBeEnabled();
+      expect(screen.queryByText(/waiting/)).not.toBeInTheDocument();
+      cleanup();
+
+      for (const answer of [{ status: 502, body: null }, { status: 401, body: { error: "unauthorized" } }]) {
+        m.loadRequests.mockResolvedValue(answer as never);
+        await view();
+        expect(await screen.findByRole("button", { name: "Requests" })).toBeEnabled();
+        expect(screen.queryByText(/waiting/)).not.toBeInTheDocument();
+        cleanup();
+      }
+      m.loadRequests.mockRejectedValue(new Error("net"));
+      await view();
+      expect(await screen.findByRole("button", { name: "Requests" })).toBeEnabled();
+      // The count is a nicety: failing to read it never signs anyone out.
+      expect(onUnauthorized).not.toHaveBeenCalled();
+    });
+
+    it("opens the Requests screen; Back returns to the page with the edits and the new count", async () => {
+      const user = userEvent.setup();
+      m.loadUserPage.mockResolvedValue(withExtras({ canApprove: true }));
+      m.loadRequests.mockResolvedValue(requests([REQ("a", "pending", "Gil Hale"), REQ("b", "pending", "Mia Ito")]));
+      await view();
+      await user.type(screen.getByLabelText("New note"), "half a note");
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+      await user.click(await screen.findByRole("button", { name: "Requests, 2 waiting" }));
+      expect(await screen.findByRole("heading", { name: "Requests", level: 2 })).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "Your page" })).not.toBeInTheDocument();
+      expect(await screen.findByText("Gil Hale")).toBeInTheDocument();
+
+      m.actOnRequest.mockResolvedValue({ status: 200, body: { ok: true } } as never);
+      m.loadRequests.mockResolvedValue(requests([REQ("a", "pending", "Gil Hale"), REQ("b", "declined", "Mia Ito")]));
+      await user.click(screen.getByRole("button", { name: "Decline Mia Ito" }));
+      expect(m.actOnRequest).toHaveBeenCalledWith("b", "decline");
+      await screen.findByRole("region", { name: "Declined" });
+
+      await user.click(screen.getByRole("button", { name: "Back" }));
+      expect(onBack).not.toHaveBeenCalled();
+      expect(screen.getByRole("heading", { name: "Your page" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Requests, 1 waiting" })).toBeInTheDocument();
+      expect(screen.getByLabelText("New note")).toHaveValue("half a note");
+      // Only the decline asked; opening and leaving the screen did not.
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(m.loadUserPage).toHaveBeenCalledTimes(1);
+    });
+
+    it("a 401 on the Requests screen hands over to the passcode screen", async () => {
+      const user = userEvent.setup();
+      m.loadUserPage.mockResolvedValue(withExtras({ canApprove: true }));
+      m.loadRequests.mockResolvedValue(requests([REQ("a", "pending", "Gil Hale")]));
+      await view();
+      await user.click(await screen.findByRole("button", { name: "Requests, 1 waiting" }));
+      m.actOnRequest.mockResolvedValue({ status: 401, body: { error: "unauthorized" } });
+      await user.click(await screen.findByRole("button", { name: "Approve Gil Hale" }));
+      await waitFor(() => expect(onUnauthorized).toHaveBeenCalledTimes(1));
     });
   });
 });

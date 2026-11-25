@@ -1,6 +1,9 @@
 import { requireAccount } from "@/lib/monsoon/accounts/account";
+import { canApprove } from "@/lib/monsoon/accounts/approver";
 import { loadUserPage, parsePageInput, saveUserPage } from "@/lib/monsoon/accounts/profile";
+import { googleLinked } from "@/lib/monsoon/accounts/signups";
 import { readJson } from "@/lib/monsoon/body";
+import { googleConfigured } from "@/lib/monsoon/google";
 import { estateKey, logError, pageReply, reply, unknownEstate, whoIs } from "./respond";
 
 export const runtime = "nodejs";
@@ -17,7 +20,15 @@ export async function GET(request: Request): Promise<Response> {
   const estate = estateKey(new URL(request.url).searchParams.get("estate"));
   if (estate === null) return unknownEstate();
   try {
-    return pageReply(await loadUserPage(whoIs(auth.account), estate));
+    const who = whoIs(auth.account);
+    const google = googleConfigured();
+    // The link is looked up fresh (the signed-in account is cached for a minute, and the person may
+    // have linked a moment ago) and only when Google is on. If the lookup fails the page still
+    // loads and says "not linked": linking again is harmless.
+    const [page, linked] = await Promise.all([loadUserPage(who, estate), google ? googleLinked(who).catch(() => false) : false]);
+    if (page === null) return unknownEstate();
+    // True or false only: the Google id never leaves the server.
+    return reply({ page, googleConfigured: google, googleLinked: linked === true, canApprove: canApprove(auth.account) });
   } catch (err) {
     return logError("read", err);
   }

@@ -70,7 +70,17 @@ function useRain(canvasRef: React.RefObject<HTMLCanvasElement | null>) {
   }, [canvasRef]);
 }
 
-export default function AlphaSignup({ fontClass = "" }: { fontClass?: string }) {
+export default function AlphaSignup({
+  fontClass = "",
+  google = false,
+  signups = false,
+}: {
+  fontClass?: string;
+  /** Sign in with Google is on: the button stands in for the paused email form. */
+  google?: boolean;
+  /** New requests can be taken and approved: only then does the page invite a request. */
+  signups?: boolean;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [email, setEmail] = useState("");
   const [website, setWebsite] = useState("");
@@ -115,7 +125,14 @@ export default function AlphaSignup({ fontClass = "" }: { fontClass?: string }) 
           <img className={styles.logo} src="/monsoon/brand/monsoon-logo-on-dark.svg" alt="Monsoon" width={240} height={44} />
           <h1 className={styles.line}>Make it rain.</h1>
           <p className={styles.sub}>Private alpha</p>
-          {status === "done" ? (
+          {google ? (
+            <div className={styles.form}>
+              <a className={styles.google} href="/api/monsoon/google/start">
+                Sign in with Google
+              </a>
+              {signups && <p className={styles.note}>Sign in with Google to request access.</p>}
+            </div>
+          ) : status === "done" ? (
             <p className={styles.done} role="status">
               You&apos;re on the list.
             </p>

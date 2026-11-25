@@ -72,6 +72,25 @@
 }
 .button:disabled { opacity: 0.6; cursor: default; }
 .button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+/* Sign in with Google: a link, full width, in the page's own cyan on ink (the page is always dark). */
+.google {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 16px;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  color: #04121a;
+  background: linear-gradient(180deg, var(--cyan-hi) 0%, var(--cyan) 45%, var(--cyan-deep) 140%);
+  border-radius: 14px;
+  text-decoration: none;
+}
+.google:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.note { margin: 0; font-size: 13.5px; color: var(--dim); }
 .msg { margin: 0; min-height: 1.5em; font-size: 13.5px; color: var(--dim); }
 .err { color: #ff9c8a; }
 .done { margin: 0; font-size: 18px; font-weight: 500; }

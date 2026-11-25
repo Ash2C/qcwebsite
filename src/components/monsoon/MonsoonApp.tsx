@@ -13,7 +13,7 @@ import type { CardFields, CardKind } from "@/lib/monsoon/extract";
 import type { CardMatch } from "@/lib/monsoon/match";
 import type { CaptureResult } from "@/lib/monsoon/capture";
 import type { RefineOutput } from "@/lib/monsoon/refine";
-import { loadEstates, readCards, saveCard, signIn, type EstateInfo, type SaveBody } from "./api";
+import { loadEstates, loadSignInOptions, readCards, saveCard, signIn, type EstateInfo, type SaveBody } from "./api";
 import { downsizeImage } from "./image";
 import AskPanel, { EMPTY_ASK, type AskState, type AskViewing } from "./AskPanel";
 import AskSheet from "./AskSheet";
@@ -26,7 +26,7 @@ import MatchLine, { type MatchChoice } from "./MatchLine";
 import { changeOf, choiceAfter, confidentId, NEEDS_CHOICE_HINT, needsChoice } from "./matchState";
 import { mergeRefine, type Snapshot } from "./merge";
 import SpeakNotes from "./SpeakNotes";
-import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
+import { card, fieldInput, fieldLabel, primaryButton, primaryLink, secondaryButton } from "./styles";
 
 const STORAGE_KEY = "monsoon.estate";
 const DEFAULT_ESTATE = "traxo";
@@ -123,6 +123,8 @@ export default function MonsoonApp() {
   const [passcode, setPasscode] = useState("");
   const [passError, setPassError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
+  // Whether the server says Sign in with Google is on: the passcode screen then offers it too.
+  const [googleOn, setGoogleOn] = useState(false);
   const [samePerson, setSamePerson] = useState<string | false | undefined>(undefined);
   const [batch, setBatch] = useState<Batch | null>(null);
   // Match before save: whether the person read from the photo is already on file, the choice made
@@ -245,6 +247,24 @@ export default function MonsoonApp() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // The passcode screen asks the server whether Sign in with Google is on. Until it clearly says
+  // yes (and if it never answers) the screen is the passcode screen alone.
+  useEffect(() => {
+    if (phase !== "locked") return;
+    let stopped = false;
+    void (async () => {
+      try {
+        const options = await loadSignInOptions();
+        if (!stopped) setGoogleOn(options?.google === true);
+      } catch {
+        // no answer: no Google button
+      }
+    })();
+    return () => {
+      stopped = true;
+    };
+  }, [phase]);
 
   useEffect(() => {
     try {
@@ -645,6 +665,15 @@ export default function MonsoonApp() {
           className="mx-auto flex min-h-dvh max-w-md flex-col justify-center gap-5 px-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(1.5rem,env(safe-area-inset-top))]"
         >
           <MonsoonLogo className="h-10" />
+          {googleOn && (
+            <>
+              {/* A real link: the browser itself goes to the server, which sends it on to Google. */}
+              <a href="/api/monsoon/google/start" className={primaryLink}>
+                Sign in with Google
+              </a>
+              <p className="text-center text-[14px] text-neutral-600 dark:text-neutral-400">or use a company code</p>
+            </>
+          )}
           <div className={card}>
             <label htmlFor="company-code" className={fieldLabel}>
               Company code
