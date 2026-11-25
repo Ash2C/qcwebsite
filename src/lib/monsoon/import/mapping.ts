@@ -55,7 +55,7 @@ const KNOWN: Partial<Record<Field, string[]>> = {
 const NAME_FIELDS: Field[] = ["fullName", "firstName", "lastName"];
 
 /** A heading reduced to its letters and digits, lower case ("E-mail 1 - Value" -> "email1value"). */
-function headingKey(heading: unknown): string {
+export function headingKey(heading: unknown): string {
   return typeof heading === "string" ? heading.toLowerCase().replace(/[^a-z0-9]+/g, "") : "";
 }
 
