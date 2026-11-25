@@ -191,7 +191,9 @@ export async function POST(request: Request) {
   const viewingTarget = cleanViewing(b.viewing);
 
   try {
-    // The customer's own key and model; the customer id comes from the session, never the body.
+    // One AI use for the whole question, however many rounds the loop takes. The customer's own
+    // key (or its free trial) and model; the customer id comes from the session, never the body.
+    await account.beginAi("ask");
     const client = account.anthropic({ timeout: 20_000 }).messages as unknown as ModelClient;
     const model = account.model();
     // Started before the CRM connection and awaited inside it, so the two waits overlap. The person
@@ -230,6 +232,6 @@ export async function POST(request: Request) {
     const status = (err as { status?: unknown })?.status;
     console.error("monsoon: ask failed", err instanceof Error ? err.name : "error", ...(typeof status === "number" ? [status] : []));
     await account.noteClaude(err);
-    return claudeFailureResponse(err) ?? NextResponse.json({ error: "Could not get an answer" }, { status: 502 });
+    return claudeFailureResponse(account.aiError(err)) ?? NextResponse.json({ error: "Could not get an answer" }, { status: 502 });
   }
 }

@@ -50,6 +50,7 @@ export async function POST(request: Request) {
   }
 
   try {
+    await account.beginAi("tidy"); // one AI use
     const out = await refineContact(account.anthropic({ timeout: 25_000 }), account.model(), {
       fields,
       notes: b.notes,
@@ -67,6 +68,6 @@ export async function POST(request: Request) {
       typeof status === "number" ? status : "",
     );
     await account.noteClaude(err);
-    return claudeFailureResponse(err) ?? NextResponse.json({ error: "Could not tidy the notes" }, { status: 502 });
+    return claudeFailureResponse(account.aiError(err)) ?? NextResponse.json({ error: "Could not tidy the notes" }, { status: 502 });
   }
 }

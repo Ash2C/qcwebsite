@@ -142,6 +142,9 @@ describe.skipIf(!accounts.available)("approveSignup (real accounts database)", {
     expect(c).toHaveLength(1);
     expect(c[0]).toMatchObject({ id: customerId, name: "Gil Hale", status: "active", claude_key_enc: null });
     expect(c[0].code).toMatch(/^gil-hale-[a-z0-9]{4}$/);
+    // A free trial of 150 AI uses; its clock starts at the person's first sign-in, not here.
+    const t = (await db.query("SELECT trial_uses_limit, trial_started_at, trial_ends_at FROM customers")).rows[0];
+    expect(t).toEqual({ trial_uses_limit: 150, trial_started_at: null, trial_ends_at: null });
 
     const p = (await db.query("SELECT id, customer_id, display_name, owner_key, google_sub, passcode_hash, status, session_no FROM people")).rows;
     expect(p).toEqual([

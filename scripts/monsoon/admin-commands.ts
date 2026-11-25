@@ -205,14 +205,14 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         parseArgs(argv.slice(1));
         const t = await db.query("SELECT to_regclass('public.accounts_migrations') AS t");
         if (t.rows[0].t) {
-          const v = await db.query("SELECT 1 FROM accounts_migrations WHERE version = 6");
+          const v = await db.query("SELECT 1 FROM accounts_migrations WHERE version = 7");
           if (v.rowCount) {
-            out("Schema already applied (version 6).");
+            out("Schema already applied (version 7).");
             return 0;
           }
         }
         await db.query(readFile(join(process.cwd(), "src", "lib", "monsoon", "accounts", "schema.sql")));
-        out("Schema applied (version 6).");
+        out("Schema applied (version 7).");
         return 0;
       }
       case "customer": {

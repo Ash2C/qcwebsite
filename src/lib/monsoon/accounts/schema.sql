@@ -218,3 +218,32 @@ ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
   ));
 
 INSERT INTO accounts_migrations (version) VALUES (6) ON CONFLICT DO NOTHING;
+
+-- Version 7: the free trial. A customer made by an approved sign-up is given a number of AI uses
+-- (trial_uses_limit); a customer with NULL there never has a trial. The clock (trial_started_at,
+-- trial_ends_at) starts at the person's first sign-in after approval. Each AI request on the trial
+-- is one row in trial_uses, written before Claude is called. The trial runs on one key held by the
+-- server (never stored here); trial_key_health is the result of its last real call, in one row, so
+-- its failures are never written onto a customer.
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS trial_uses_limit INT NULL;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS trial_started_at TIMESTAMPTZ NULL;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS trial_ends_at TIMESTAMPTZ NULL;
+
+CREATE TABLE IF NOT EXISTS trial_uses (
+  id BIGSERIAL PRIMARY KEY,
+  customer_id UUID NOT NULL REFERENCES customers(id),
+  person_id UUID NULL,
+  kind TEXT NOT NULL,
+  at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS trial_uses_customer ON trial_uses (customer_id);
+ALTER TABLE trial_uses ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS trial_key_health (
+  id BOOLEAN PRIMARY KEY DEFAULT true CHECK (id),
+  status TEXT NOT NULL CHECK (status IN ('ok', 'key_rejected', 'no_credit')),
+  checked_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE trial_key_health ENABLE ROW LEVEL SECURITY;
+
+INSERT INTO accounts_migrations (version) VALUES (7) ON CONFLICT DO NOTHING;

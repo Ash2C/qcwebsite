@@ -7,7 +7,7 @@ import { makeAccountsTestDb } from "../testing/db";
 const db = makeAccountsTestDb();
 const TABLES = [
   "accounts_migrations", "customers", "people", "pipelines", "setup_links", "sign_in_attempts", "activity",
-  "person_work", "person_notes", "signups",
+  "person_work", "person_notes", "signups", "trial_uses", "trial_key_health",
 ];
 
 describe.skipIf(!db.available)("accounts schema", () => {
@@ -28,11 +28,11 @@ describe.skipIf(!db.available)("accounts schema", () => {
     return r.rows[0].id;
   }
 
-  it("creates all ten tables and records migrations 1 to 6", async () => {
+  it("creates all twelve tables and records migrations 1 to 7", async () => {
     const r = await client.query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'");
     expect(r.rows.map((x) => x.tablename).sort()).toEqual([...TABLES].sort());
     const m = await client.query("SELECT version FROM accounts_migrations");
-    expect(m.rows.map((x) => x.version).sort()).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(m.rows.map((x) => x.version).sort()).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 
   it("applies defaults to customers", async () => {
@@ -120,7 +120,7 @@ describe.skipIf(!db.available)("accounts schema", () => {
     const { join } = await import("node:path");
     await client.query(readFileSync(join(__dirname, "schema.sql"), "utf8"));
     const m = await client.query("SELECT count(*)::int AS n FROM accounts_migrations");
-    expect(m.rows[0].n).toBe(6);
+    expect(m.rows[0].n).toBe(7);
   });
 
   it("version 4: people gain phone and email, and the two page tables have their columns", async () => {
@@ -331,6 +331,38 @@ describe.skipIf(!db.available)("accounts schema", () => {
     }
   });
 
+  it("version 7: a customer has no trial unless one is given, uses are counted per customer, and the trial key's health is one row", async () => {
+    const id = await customer();
+    const c = await client.query("SELECT trial_uses_limit, trial_started_at, trial_ends_at FROM customers WHERE id = $1", [id]);
+    expect(c.rows[0]).toEqual({ trial_uses_limit: null, trial_started_at: null, trial_ends_at: null });
+    await client.query("UPDATE customers SET trial_uses_limit = 150, trial_started_at = now(), trial_ends_at = now() + interval '14 days' WHERE id = $1", [id]);
+
+    await client.query("INSERT INTO trial_uses (customer_id, kind) VALUES ($1, 'ask')", [id]);
+    const u = await client.query("SELECT id, person_id, kind, at FROM trial_uses");
+    expect(u.rows[0]).toMatchObject({ person_id: null, kind: "ask" });
+    expect(u.rows[0].at).toBeInstanceOf(Date);
+    await expect(client.query("INSERT INTO trial_uses (customer_id, kind) VALUES (gen_random_uuid(), 'ask')")).rejects.toMatchObject({ code: "23503" });
+    await expect(client.query("INSERT INTO trial_uses (customer_id) VALUES ($1)", [id])).rejects.toMatchObject({ code: "23502" });
+    const ix = await client.query("SELECT indexdef FROM pg_indexes WHERE tablename = 'trial_uses'");
+    expect(ix.rows.some((r) => /\(customer_id\)/.test(r.indexdef))).toBe(true);
+
+    await client.query("INSERT INTO trial_key_health (status) VALUES ('no_credit')");
+    await expect(client.query("INSERT INTO trial_key_health (status) VALUES ('ok')")).rejects.toMatchObject({ code: "23505" });
+    await expect(client.query("INSERT INTO trial_key_health (id, status) VALUES (false, 'ok')")).rejects.toMatchObject({ code: "23514" });
+    await expect(client.query("UPDATE trial_key_health SET status = 'weird'")).rejects.toMatchObject({ code: "23514" });
+    const h = await client.query("SELECT id, status, checked_at FROM trial_key_health");
+    expect(h.rows).toHaveLength(1);
+    expect(h.rows[0]).toMatchObject({ id: true, status: "no_credit" });
+
+    // The whole file applies again with all of it present, and nothing is lost.
+    const sql = readFileSync(join(__dirname, "schema.sql"), "utf8");
+    await client.query(sql);
+    expect((await client.query("SELECT trial_uses_limit FROM customers WHERE id = $1", [id])).rows[0].trial_uses_limit).toBe(150);
+    expect((await client.query("SELECT count(*)::int AS n FROM trial_uses")).rows[0].n).toBe(1);
+    expect((await client.query("SELECT status FROM trial_key_health")).rows[0].status).toBe("no_credit");
+    await client.query("TRUNCATE trial_key_health");
+  });
+
   it("version 3: the earliest person is named key person, and the status takes only known values", async () => {
     const id = await customer();
     const late = await client.query(
@@ -395,7 +427,7 @@ describe.skipIf(!db.available)("accounts schema", () => {
       const l = await c2.query("SELECT purpose FROM setup_links WHERE token_hash = 'v1tok'");
       expect(l.rows[0].purpose).toBe("connect");
       const m = await c2.query("SELECT max(version)::int AS v FROM accounts_migrations");
-      expect(m.rows[0].v).toBe(6);
+      expect(m.rows[0].v).toBe(7);
     } finally {
       await c2.end();
       await db.reset();

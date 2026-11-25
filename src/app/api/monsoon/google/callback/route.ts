@@ -17,6 +17,7 @@ import {
   settleGoogleAttempt,
 } from "@/lib/monsoon/accounts/signups";
 import { evictAccount, recordActivity } from "@/lib/monsoon/accounts/store";
+import { startTrialClock } from "@/lib/monsoon/accounts/trial";
 import {
   GOOGLE_COOKIE_PATH,
   GOOGLE_NONCE_COOKIE,
@@ -94,6 +95,8 @@ export async function GET(request: Request) {
       // A cached row may carry the session number from before a reset or resume.
       evictAccount(found.customer.id, found.person.id);
       await recordActivity({ customerId: found.customer.id, personId: found.person.id, pipelineKey: null, action: "sign_in" });
+      // A new client's free trial starts at their first sign-in (once only; never fails the sign-in).
+      await startTrialClock(found.customer.id);
       const response = page("app");
       setSessionCookie(response, { customerId: found.customer.id, personId: found.person.id, sessionNo: found.person.sessionNo });
       return response;

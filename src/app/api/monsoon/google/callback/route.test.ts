@@ -24,6 +24,8 @@ vi.mock("@/lib/monsoon/accounts/store", async (original) => ({
   recordActivity: (...a: unknown[]) => store.recordActivity(...a),
   evictAccount: (...a: unknown[]) => store.evictAccount(...a),
 }));
+const startTrialClock = vi.fn();
+vi.mock("@/lib/monsoon/accounts/trial", () => ({ startTrialClock: (...a: unknown[]) => startTrialClock(...a) }));
 const exchangeCode = vi.fn();
 vi.mock("@/lib/monsoon/google", async (original) => ({
   ...(await original<typeof import("@/lib/monsoon/google")>()),
@@ -94,7 +96,8 @@ beforeEach(() => {
   vi.stubEnv("MONSOON_GOOGLE_CLIENT_SECRET", "FAKE-client-secret-000000");
   vi.stubEnv("MONSOON_GOOGLE_REDIRECT_URI", "https://quantcloud.com/api/monsoon/google/callback");
   vi.stubEnv("MONSOON_SHARED_DB_ADMIN_URL", "postgresql://postgres.abcdefghijklmnopqrst:pw@aws-0-eu.pooler.supabase.com:5432/postgres");
-  for (const f of [...Object.values(lib), ...Object.values(store), exchangeCode]) f.mockReset();
+  for (const f of [...Object.values(lib), ...Object.values(store), exchangeCode, startTrialClock]) f.mockReset();
+  startTrialClock.mockResolvedValue(undefined);
   lib.beginGoogleAttempt.mockResolvedValue("41");
   lib.settleGoogleAttempt.mockResolvedValue(undefined);
   lib.findPersonByGoogleSub.mockResolvedValue(null);
@@ -186,6 +189,8 @@ describe("GET /api/monsoon/google/callback", () => {
       expect(verifySession(token)).toEqual({ customerId: CUSTOMER, personId: PERSON, sessionNo: 7 });
       expect(store.recordActivity).toHaveBeenCalledWith({ customerId: CUSTOMER, personId: PERSON, pipelineKey: null, action: "sign_in" });
       expect(store.evictAccount).toHaveBeenCalledWith(CUSTOMER, PERSON);
+      // The free trial's clock starts at this sign-in (the library starts it once only).
+      expect(startTrialClock.mock.calls).toEqual([[CUSTOMER]]);
       expect(lib.settleGoogleAttempt).toHaveBeenCalledWith("41");
       expect(lib.findSignup).not.toHaveBeenCalled();
       expect(lib.requestSignup).not.toHaveBeenCalled();
@@ -227,6 +232,7 @@ describe("GET /api/monsoon/google/callback", () => {
       // Someone already waiting or declined is still told so.
       lib.findSignup.mockResolvedValue(signup("pending"));
       await expectPage(await GET(callback()), "/monsoon/request?status=waiting");
+      expect(startTrialClock).not.toHaveBeenCalled();
     });
 
     it("a pending request waits: no session", async () => {

@@ -51,7 +51,9 @@ export async function POST(request: Request) {
 
   try {
     const base64 = Buffer.from(await file.arrayBuffer()).toString("base64");
-    // Resolved per request: the customer's own key and model (NotConnected without a key).
+    // One AI use. Resolved per request: the customer's own key (or its free trial) and model
+    // (NotConnected without either).
+    await account.beginAi("read");
     const cards = await extractCards(account.anthropic({ timeout: 25_000 }), account.model(), {
       base64,
       mediaType: file.type as MediaType,
@@ -98,6 +100,6 @@ export async function POST(request: Request) {
     );
     await account.noteClaude(err);
     // The account's Claude key is the problem, not the photo: say so, so the app can tell the person.
-    return claudeFailureResponse(err) ?? NextResponse.json({ error: "Could not read the photo" }, { status: 502 });
+    return claudeFailureResponse(account.aiError(err)) ?? NextResponse.json({ error: "Could not read the photo" }, { status: 502 });
   }
 }

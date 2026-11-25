@@ -76,7 +76,9 @@ export async function POST(request: Request) {
 
   let run: ResearchRun;
   try {
-    // The customer's own key and model (a missing key is named to the app; a refused model is a 502).
+    // One AI use. The customer's own key (or its free trial) and model (a missing key is named to
+    // the app; a refused model is a 502).
+    await account.beginAi("research");
     const client = account.anthropic({ timeout: RESEARCH_TIMEOUT_MS });
     run = await runResearch(client, account.model(), subject, { timeoutMs: RESEARCH_TIMEOUT_MS });
     await account.noteClaude();
@@ -86,7 +88,7 @@ export async function POST(request: Request) {
     console.error("monsoon: research failed", (err as object)?.constructor?.name ?? "error", typeof status === "number" ? status : "");
     await account.noteClaude(err);
     return (
-      claudeFailureResponse(err) ??
+      claudeFailureResponse(account.aiError(err)) ??
       NextResponse.json({ error: "Could not run research. Check signal and try again." }, { status: 502 })
     );
   }

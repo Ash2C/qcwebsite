@@ -26,6 +26,7 @@ vi.mock("@/lib/monsoon/ask/proposal", async (importOriginal) => {
 });
 
 import type { Account } from "@/lib/monsoon/accounts/account";
+import { TrialPaused } from "@/lib/monsoon/accounts/not-connected";
 import { fakeAccount, signInAs, signOut } from "@/lib/monsoon/testing/account";
 import { POST } from "./route";
 
@@ -317,5 +318,57 @@ describe("POST /api/monsoon/research", () => {
     const all = calls(console.log) + calls(console.error);
     expect(all).toContain("monsoon: research findings");
     expect(all).not.toContain("Jane");
+  });
+});
+
+describe("POST /api/monsoon/research and the free trial", () => {
+  const ask = () => POST(post({ estate: "traxo", memberId: MEMBER }));
+
+  it("passes the AI gate once, as a research run, before Claude is asked", async () => {
+    runResearch.mockImplementation(async () => {
+      expect(account.beginAi).toHaveBeenCalledTimes(1);
+      return vetted();
+    });
+    expect((await ask()).status).toBe(200);
+    expect(vi.mocked(account.beginAi).mock.calls).toEqual([["research"]]);
+  });
+
+  it("does not pass the gate for a request it refuses or answers without Claude", async () => {
+    await POST(post({ estate: "nope", memberId: MEMBER }));
+    readSubject.mockResolvedValue({ ok: false, reason: "company" });
+    await ask();
+    signOut();
+    await ask();
+    expect(account.beginAi).not.toHaveBeenCalled();
+  });
+
+  it("a trial that is over answers as a missing key does today", async () => {
+    const over = signInAs(fakeAccount({ pipelines: PIPELINES, db: fakeClient }));
+    const res = await ask();
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "claude_key_missing" });
+    expect(over.beginAi).toHaveBeenCalledTimes(1);
+    expect(runResearch).not.toHaveBeenCalled();
+  });
+
+  it("a paused trial answers 409 claude_trial_paused and Claude is never asked", async () => {
+    vi.mocked(account.beginAi).mockRejectedValue(new TrialPaused());
+    const res = await ask();
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "claude_trial_paused" });
+    expect(anthropic).not.toHaveBeenCalled();
+    expect(runResearch).not.toHaveBeenCalled();
+    expect(account.record).not.toHaveBeenCalled();
+  });
+
+  it("answers with what the account says a failed call means (a refused trial key is the pause)", async () => {
+    const refusedKey = Object.assign(new Error("invalid x-api-key"), { status: 401 });
+    runResearch.mockRejectedValue(refusedKey);
+    vi.mocked(account.aiError).mockReturnValue(new TrialPaused());
+    const res = await ask();
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "claude_trial_paused" });
+    expect(account.aiError).toHaveBeenCalledWith(refusedKey);
+    expect(account.noteClaude).toHaveBeenCalledWith(refusedKey);
   });
 });

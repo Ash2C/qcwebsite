@@ -35,7 +35,12 @@ describe("testing/account", () => {
     const res = await route(request);
     expect(await res.json()).toEqual({ rows: [{ n: 1 }], by: "VF" });
     expect(db.query).toHaveBeenCalledWith("SELECT 1");
+    // Like the real account, it hands out no Claude client until the AI gate has been awaited.
+    expect(() => account.anthropic({ timeout: 1 })).toThrow("beginAi");
+    await account.beginAi("ask");
     expect(account.anthropic({ timeout: 1 })).toBe(claude);
+    const failure = new Error("x");
+    expect(account.aiError(failure)).toBe(failure);
     await account.record("ask", "main");
     expect(account.record).toHaveBeenCalledWith("ask", "main");
   });
@@ -46,6 +51,7 @@ describe("testing/account", () => {
     });
     await expect(account.withDb("main", async () => 1)).rejects.toBeInstanceOf(NotConnected);
     await expect(account.withDb("nope", async () => 1)).rejects.toBeInstanceOf(NotConnected);
+    await account.beginAi("ask");
     expect(() => account.anthropic({ timeout: 1 })).toThrow(NotConnected);
     expect(account.pipeline("main")?.label).toBe("Main");
   });

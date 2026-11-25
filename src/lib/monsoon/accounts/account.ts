@@ -6,7 +6,7 @@ import { SESSION_COOKIE, accountsConfigured, cookieValue, verifySession } from "
 import { withPipelineDb } from "../db";
 import { claudeFailure } from "../claude-failure";
 import { decryptSecret } from "./crypto";
-import { NotConnected } from "./not-connected";
+import { NotConnected, TrialPaused } from "./not-connected";
 import { sharedPipelineIsOwn } from "./shared-names";
 import {
   evictAccount,
@@ -20,6 +20,7 @@ import {
   type PersonRow,
   type PipelineRow,
 } from "./store";
+import { beginTrialUse, noteTrialKey, trialKey, type AiKind } from "./trial";
 
 export type PipelineInfo = { key: string; label: string; defaultRole: string; connected: boolean };
 
@@ -29,6 +30,15 @@ export type Account = {
   pipelines: PipelineInfo[];
   pipeline(key: unknown): PipelineInfo | undefined;
   withDb<T>(key: string, fn: (db: Client) => Promise<T>): Promise<T>;
+  /**
+   * Await once per request, before the first Claude call. With a key of its own the customer needs
+   * nothing and this does nothing. On the free trial it records one use and lets anthropic() use
+   * the trial key for this request only. Otherwise (no trial, or a trial that is over) it changes
+   * nothing: anthropic() then throws NotConnected("Claude key") as before. Throws TrialPaused while
+   * the trial key is failing.
+   */
+  beginAi(kind: AiKind): Promise<void>;
+  /** Throws NotConnected("Claude key") with no key of its own and no trial use granted by beginAi. */
   anthropic(opts: { timeout: number }): Anthropic;
   model(): string;
   record(action: ActivityAction, pipelineKey?: string | null): Promise<void>;
@@ -39,13 +49,18 @@ export type Account = {
    * Keeps the customer's "last real result" (what the app's chip shows). Never throws.
    */
   noteClaude(err?: unknown): Promise<void>;
+  /**
+   * What a failed AI call should be reported as: `err` itself, except that the trial key being
+   * refused or out of credit is the trial being paused, not a fault in the customer's key.
+   */
+  aiError(err: unknown): unknown;
 };
 
 // A status that has not changed is written again only this often, to keep "last checked" fresh.
 const RECHECK_MS = 10 * 60_000;
 
 // Lives in its own file so the test helper can share the class without importing this module.
-export { NotConnected };
+export { NotConnected, TrialPaused };
 
 /** The CRM schema version Monsoon needs: max(version) in a customer's schema_migrations. */
 export const CRM_SCHEMA_VERSION = 1;
@@ -63,6 +78,16 @@ export function buildAccount(rows: { customer: CustomerRow; person: PersonRow; p
   }));
   // Kept in the closure, not on the object, so a stray JSON.stringify(account) shows nothing encrypted.
   const rowFor = (key: unknown) => (typeof key === "string" ? rawPipelines.find((p) => p.key === key) : undefined);
+  // The free trial, for this account object only (one per request). The trial key is handed out
+  // only after beginAi recorded a use here: a route that forgets the gate gets no key.
+  let trialGranted = false;
+  let trialProbe = false;
+  let trialUsed = false;
+  // Which of the key's own faults `err` is, if any.
+  const keyFault = (err: unknown): ClaudeStatus | null => {
+    const reason = claudeFailure(err);
+    return reason === "claude_key_rejected" ? "key_rejected" : reason === "claude_no_credit" ? "no_credit" : null;
+  };
 
   return {
     customer: { id: customer.id, code: customer.code, name: customer.name, model: customer.model },
@@ -76,8 +101,19 @@ export function buildAccount(rows: { customer: CustomerRow; person: PersonRow; p
       if (!row || row.dbUrlEnc === null) throw new NotConnected("Pipeline");
       return connectPipeline(decryptSecret(row.dbUrlEnc, customer.id, `pipeline:${row.id}`), row.sharedSchema, customer.id, fn);
     },
+    async beginAi(kind) {
+      if (customer.claudeKeyEnc !== null || trialGranted) return;
+      const use = await beginTrialUse(customer.id, person.id, kind);
+      trialGranted = use.granted;
+      trialProbe = use.probe;
+    },
     anthropic({ timeout }) {
-      if (customer.claudeKeyEnc === null) throw new NotConnected("Claude key");
+      if (customer.claudeKeyEnc === null) {
+        const key = trialGranted ? trialKey() : null;
+        if (key === null) throw new NotConnected("Claude key");
+        trialUsed = true;
+        return new Anthropic({ apiKey: key, timeout, maxRetries: 0 });
+      }
       return new Anthropic({
         apiKey: decryptSecret(customer.claudeKeyEnc, customer.id, "claude_key"),
         timeout,
@@ -95,17 +131,20 @@ export function buildAccount(rows: { customer: CustomerRow; person: PersonRow; p
     },
     canChangeKey: customer.keyPersonId !== null && customer.keyPersonId === person.id,
     async noteClaude(...args) {
-      let status: ClaudeStatus;
-      if (args.length === 0) status = "ok";
-      else {
-        const reason = claudeFailure(args[0]);
-        if (reason === "claude_key_rejected") status = "key_rejected";
-        else if (reason === "claude_no_credit") status = "no_credit";
-        else return; // a missing key, a busy Claude or another failure says nothing about the key
+      // A missing key, a busy Claude or another failure says nothing about the key.
+      const status = args.length === 0 ? "ok" : keyFault(args[0]);
+      if (status === null) return;
+      if (customer.claudeKeyEnc === null) {
+        // The call, if there was one, used the trial key: its result is never written onto the customer.
+        if (trialUsed) await noteTrialKey(status, trialProbe);
+        return;
       }
       const fresh = customer.claudeCheckedAt !== null && Date.now() - customer.claudeCheckedAt.getTime() < RECHECK_MS;
       if (customer.claudeStatus === status && fresh) return;
       await recordClaudeStatus(customer.id, status);
+    },
+    aiError(err) {
+      return trialUsed && keyFault(err) !== null ? new TrialPaused() : err;
     },
   };
 }

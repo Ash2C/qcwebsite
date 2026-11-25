@@ -11,7 +11,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { Client } from "pg";
 import { vi } from "vitest";
 import type { Account, PipelineInfo } from "../accounts/account";
-import { NotConnected } from "../accounts/not-connected";
+import { NotConnected, TrialPaused } from "../accounts/not-connected";
 
 type Refusal = () => Response;
 
@@ -26,7 +26,7 @@ export type FakeAccountOptions = {
   pipelines?: PipelineInfo[];
   /** Passed to every withDb callback (for a connected pipeline). */
   db?: unknown;
-  /** Returned by anthropic(). Without it anthropic() throws NotConnected. */
+  /** Returned by anthropic() once beginAi() has been awaited. Without it anthropic() throws NotConnected. */
   claude?: unknown;
   model?: string;
   /** Whether this person may change the Claude key (default false). */
@@ -37,6 +37,8 @@ export function fakeAccount(over: FakeAccountOptions = {}): Account {
   const pipelines = over.pipelines ?? [{ key: "main", label: "Main", defaultRole: "investor", connected: true }];
   const model = over.model ?? "claude-haiku-5-5";
   const pipeline = (key: unknown) => (typeof key === "string" ? pipelines.find((p) => p.key === key) : undefined);
+  // Like the real account: no Claude client before the AI gate. A route that forgets the gate fails its tests.
+  let began = false;
   return {
     customer: { id: "00000000-0000-4000-8000-000000000001", code: "test-co", name: "Test Co", model, ...over.customer },
     person: { id: "00000000-0000-4000-8000-000000000002", name: "Vincent", ownerKey: "VF", ...over.person },
@@ -46,7 +48,11 @@ export function fakeAccount(over: FakeAccountOptions = {}): Account {
       if (!pipeline(key)?.connected) throw new NotConnected("Pipeline");
       return fn(over.db as Client);
     },
+    beginAi: vi.fn(async () => {
+      began = true;
+    }),
     anthropic() {
+      if (!began) throw new Error("beginAi() was not awaited before anthropic()");
       if (over.claude === undefined) throw new NotConnected("Claude key");
       return over.claude as Anthropic;
     },
@@ -54,6 +60,7 @@ export function fakeAccount(over: FakeAccountOptions = {}): Account {
     record: vi.fn(async () => undefined),
     canChangeKey: over.canChangeKey ?? false,
     noteClaude: vi.fn(async () => undefined),
+    aiError: vi.fn((err: unknown) => err),
   };
 }
 
@@ -72,6 +79,7 @@ export function signOut(refusal: Refusal = unauthorized): void {
 export function mockRequireAccount() {
   return {
     NotConnected,
+    TrialPaused,
     CRM_SCHEMA_VERSION: 1,
     requireAccount: vi.fn(async (_request: Request) =>
       typeof current === "function"

@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
-import { NotConnected } from "./accounts/not-connected";
+import { NotConnected, TrialPaused } from "./accounts/not-connected";
 
 /**
  * A failure whose cause is the customer's Claude account, not the request: the app shows these by
  * name, so nobody retries a photo or blames the signal when the key is the problem.
  */
-export type ClaudeFailure = "claude_key_missing" | "claude_key_rejected" | "claude_no_credit" | "claude_busy";
+export type ClaudeFailure = "claude_key_missing" | "claude_key_rejected" | "claude_no_credit" | "claude_busy" | "claude_trial_paused";
 
 /** Which Claude problem `err` is, or null when it is something else (database, timeout, bad output). */
 export function claudeFailure(err: unknown): ClaudeFailure | null {
   // An unconnected pipeline is a NotConnected too; only the missing key is a Claude problem.
+  // The free trial's key is failing: nothing the person can fix but adding a key of their own.
+  if (err instanceof TrialPaused) return "claude_trial_paused";
   if (err instanceof NotConnected) return err.message.startsWith("Claude key") ? "claude_key_missing" : null;
   const status = (err as { status?: unknown } | null)?.status;
   if (typeof status !== "number") return null;

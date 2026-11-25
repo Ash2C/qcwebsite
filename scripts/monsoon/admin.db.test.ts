@@ -37,27 +37,27 @@ describe.skipIf(!db.available)("monsoon admin", () => {
 
   it("migrate is idempotent", async () => {
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toContain("Schema already applied (version 6).");
-    expect((await client.query("SELECT max(version)::int AS v FROM accounts_migrations")).rows[0].v).toBe(6);
+    expect(text()).toContain("Schema already applied (version 7).");
+    expect((await client.query("SELECT max(version)::int AS v FROM accounts_migrations")).rows[0].v).toBe(7);
   });
 
-  it("migrate applies version 6 to an empty database and says so", async () => {
+  it("migrate applies version 7 to an empty database and says so", async () => {
     await client.query("DROP SCHEMA public CASCADE");
     await client.query("CREATE SCHEMA public");
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toBe("Schema applied (version 6).");
+    expect(text()).toBe("Schema applied (version 7).");
     expect((await client.query("SELECT to_regclass('public.person_notes') AS t")).rows[0].t).not.toBeNull();
   });
 
-  it("migrate brings a version 3 database up to version 6", async () => {
+  it("migrate brings a version 3 database up to version 7", async () => {
     await client.query("DELETE FROM accounts_migrations WHERE version >= 4");
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toBe("Schema applied (version 6).");
+    expect(text()).toBe("Schema applied (version 7).");
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toBe("Schema already applied (version 6).");
+    expect(text()).toBe("Schema already applied (version 7).");
   });
 
-  it("migrate brings a version 4 database up to version 6", async () => {
+  it("migrate brings a version 4 database up to version 7", async () => {
     // A database as the live one is today: version 4 applied, with no Granola columns, the version 4
     // action list, a profile activity row, and no version 5 marker.
     await run(["customer", "add", "acme", "Acme"]);
@@ -77,18 +77,18 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     await expect(granola()).rejects.toMatchObject({ code: "23514" });
 
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toBe("Schema applied (version 6).");
-    expect((await client.query("SELECT max(version)::int AS v FROM accounts_migrations")).rows[0].v).toBe(6);
+    expect(text()).toBe("Schema applied (version 7).");
+    expect((await client.query("SELECT max(version)::int AS v FROM accounts_migrations")).rows[0].v).toBe(7);
     const p = await client.query("SELECT display_name, granola_key_enc, granola_status, granola_checked_at, granola_key_set_at FROM people");
     expect(p.rows).toEqual([
       { display_name: "Ann", granola_key_enc: null, granola_status: null, granola_checked_at: null, granola_key_set_at: null },
     ]);
     await granola();
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toBe("Schema already applied (version 6).");
+    expect(text()).toBe("Schema already applied (version 7).");
   });
 
-  it("migrate brings a version 5 database up to version 6, keeping people and their passcodes", async () => {
+  it("migrate brings a version 5 database up to version 7, keeping people and their passcodes", async () => {
     // A database as the live one is today: version 5, no signups table, passcodes required, no Google
     // id, no shared schema, and the version 5 action list.
     await run(["customer", "add", "acme", "Acme"]);
@@ -97,7 +97,7 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     await client.query("DROP TABLE signups");
     await client.query("ALTER TABLE people DROP COLUMN google_sub, ALTER COLUMN passcode_hash SET NOT NULL");
     await client.query("ALTER TABLE pipelines DROP COLUMN shared_schema");
-    await client.query("DELETE FROM accounts_migrations WHERE version = 6");
+    await client.query("DELETE FROM accounts_migrations WHERE version >= 6");
     await client.query(
       `ALTER TABLE activity DROP CONSTRAINT activity_action_check,
          ADD CONSTRAINT activity_action_check CHECK (action IN (
@@ -109,13 +109,13 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     await expect(approve()).rejects.toMatchObject({ code: "23514" });
 
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toBe("Schema applied (version 6).");
+    expect(text()).toBe("Schema applied (version 7).");
     const p = await client.query("SELECT display_name, passcode_hash, google_sub FROM people");
     expect(p.rows).toEqual([{ display_name: "Ann", passcode_hash: before, google_sub: null }]);
     expect((await client.query("SELECT to_regclass('public.signups') AS t")).rows[0].t).not.toBeNull();
     await approve();
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toBe("Schema already applied (version 6).");
+    expect(text()).toBe("Schema already applied (version 7).");
   });
 
   it("reset gives a passcode to a person who signed up with Google and had none", async () => {

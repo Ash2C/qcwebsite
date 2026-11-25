@@ -12,6 +12,7 @@ import { encryptSecret } from "./crypto";
 import { ProvisionError, provisionSharedCrm } from "./provision";
 import type { SetupVocabulary } from "./setup-script";
 import { recordActivity, withAccountsDb } from "./store";
+import { TRIAL_USES } from "./trial";
 
 export type ApproveResult =
   | { ok: true; customerId: string; already: boolean }
@@ -128,7 +129,8 @@ async function run(db: Client, id: string, provision: typeof provisionSharedCrm)
   for (let attempt = 0; customerId === null; attempt++) {
     try {
       customerId = await inTransaction(db, async () => {
-        const c = await db.query("INSERT INTO customers (code, name) VALUES ($1, $2) RETURNING id", [customerCode(signup.name), signup.name]);
+        // A new client starts with a free trial; its clock starts at their first sign-in.
+        const c = await db.query("INSERT INTO customers (code, name, trial_uses_limit) VALUES ($1, $2, $3) RETURNING id", [customerCode(signup.name), signup.name, TRIAL_USES]);
         const linked = await db.query("UPDATE signups SET customer_id = $2 WHERE id = $1 AND customer_id IS NULL AND status = 'pending'", [id, c.rows[0].id]);
         if (linked.rowCount !== 1) throw new StepFailed("customer");
         return c.rows[0].id as string;
