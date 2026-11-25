@@ -154,3 +154,92 @@ export function listMembers(
     opts,
   );
 }
+
+// --- imports -------------------------------------------------------------------------------------
+
+/** One bulk import, as the Contacts tab's Imports filter lists it. */
+export type ImportInfo = {
+  label: string;
+  /** People that came in with it (all imports that used this label together). */
+  count: number;
+  /** When its newest contact was added (ISO time). */
+  at: string | null;
+};
+
+const IMPORT_PREFIX = "import:";
+const IMPORTS_MAX = 200;
+const IMPORTED_MAX = 5000;
+
+/** The imports, newest first: every label a contact's source carries (`import:<label>`), with its count. */
+export function listImports(db: ClientBase, opts?: QueryOptions): Promise<ImportInfo[]> {
+  return readOnly(
+    db,
+    async () => {
+      const r = await db.query(
+        `SELECT substr(p.source, ${IMPORT_PREFIX.length + 1}) AS label, count(*)::int AS n, max(p.created_at) AS at
+           FROM people p
+          WHERE left(p.source, ${IMPORT_PREFIX.length}) = $1 AND length(p.source) > ${IMPORT_PREFIX.length}
+          GROUP BY p.source
+          ORDER BY max(p.created_at) DESC, p.source
+          LIMIT ${IMPORTS_MAX}`,
+        [IMPORT_PREFIX],
+      );
+      return r.rows.map((x) => ({ label: x.label as string, count: x.n as number, at: iso(x.at) }));
+    },
+    opts,
+  );
+}
+
+/**
+ * The people who came in with one import (its label, compared exactly), each with the work of their
+ * pipeline entry: their own, else their company's. Optionally only the high-priority ones, in the
+ * given order. At most 100 rows; `total` counts all that matched.
+ */
+export function listImported(
+  db: ClientBase,
+  o: { label: string; high: boolean; sort: Sort; today: string },
+  opts?: QueryOptions,
+): Promise<{ contacts: SiftHit[]; total: number }> {
+  if (o.label === "") return Promise.resolve({ contacts: [], total: 0 });
+  return readOnly(
+    db,
+    async () => {
+      const r = await db.query(
+        `SELECT p.id AS person_id, p.name, p.title, p.email, p.org_id, po.name AS company,
+                own.id AS own_id, m.id AS mid, m.role, m.stage,
+                ${WORK_COLUMNS}
+           FROM people p
+           LEFT JOIN orgs po ON po.id = p.org_id
+           LEFT JOIN members own ON own.person_id = p.id
+           LEFT JOIN members co ON co.org_id = p.org_id AND own.id IS NULL
+           LEFT JOIN members m ON m.id = COALESCE(own.id, co.id)
+           LEFT JOIN stages s ON s.key = m.stage
+           LEFT JOIN LATERAL (
+             SELECT t.kind, t.summary, t.at FROM touches t
+              WHERE t.member_id = m.id AND t.kind IN ('note', 'email', 'call', 'meeting')
+              ORDER BY t.at DESC LIMIT 1
+           ) la ON true
+          WHERE p.source = $1 AND ($2::boolean IS NOT TRUE OR m.priority = 'high')
+          LIMIT ${IMPORTED_MAX}`,
+        [IMPORT_PREFIX + o.label, o.high],
+      );
+      const hits = r.rows.map((x): SiftHit => {
+        const memberKind = x.own_id !== null ? "person" : "company";
+        return {
+          kind: "person",
+          personId: x.person_id,
+          orgId: x.org_id,
+          name: x.name,
+          title: x.title,
+          company: x.company,
+          email: x.email,
+          member: x.mid === null ? null : { memberId: x.mid, memberKind, role: x.role, stage: x.stage },
+          memberOf: x.mid === null ? null : x.own_id !== null ? "self" : "company",
+          work: x.mid === null ? null : toWork(x, o.today),
+        };
+      });
+      return { contacts: sortHits(hits, o.sort).slice(0, LIST_MAX), total: hits.length };
+    },
+    opts,
+  );
+}

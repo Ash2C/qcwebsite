@@ -9,9 +9,13 @@ vi.mock("@/lib/monsoon/contacts", () => ({
 }));
 
 const listMembers = vi.fn();
+const listImports = vi.fn();
+const listImported = vi.fn();
 vi.mock("@/lib/monsoon/sift", async (original) => ({
   ...(await original<typeof import("@/lib/monsoon/sift")>()),
   listMembers: (...a: unknown[]) => listMembers(...a),
+  listImports: (...a: unknown[]) => listImports(...a),
+  listImported: (...a: unknown[]) => listImported(...a),
 }));
 
 vi.mock("@/lib/monsoon/accounts/account", async () =>
@@ -43,6 +47,8 @@ beforeEach(() => {
   searchContacts.mockReset().mockResolvedValue(HITS);
   recentContacts.mockReset().mockResolvedValue(HITS);
   listMembers.mockReset();
+  listImports.mockReset();
+  listImported.mockReset();
 });
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -130,6 +136,53 @@ describe("GET /api/monsoon/contacts", () => {
     expect(high.total).toBe(2);
     const sorted = await (await GET(get("?estate=traxo&q=mia&sort=last"))).json();
     expect(sorted.contacts.map((c: { name: string }) => c.name)).toEqual(["Bob", "Cy", "Ann"]);
+  });
+
+  it("lists the imports when imports=1 is asked", async () => {
+    const IMPORTS = [{ label: "LinkedIn import, November 2026", count: 1980, at: "2026-11-25T10:00:00.000Z" }];
+    listImports.mockResolvedValue(IMPORTS);
+    const res = await GET(get("?estate=traxo&imports=1&q=mia&high=1"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ imports: IMPORTS });
+    expect(listImports).toHaveBeenCalledWith(fakeDb);
+    expect(withDb.mock.calls[0][0]).toBe("traxo");
+    expect(searchContacts).not.toHaveBeenCalled();
+    expect(recentContacts).not.toHaveBeenCalled();
+    expect(listImported).not.toHaveBeenCalled();
+  });
+
+  it("lists the contacts of one import when import=<label> is asked, filtered and sorted like the pipeline", async () => {
+    const LIST = { contacts: [{ kind: "person", name: "Mia Chen", work: null }], total: 1980 };
+    listImported.mockResolvedValue(LIST);
+    const today = new Date().toISOString().slice(0, 10);
+    const res = await GET(get(`?estate=zeroone&import=${encodeURIComponent("  LinkedIn import, November 2026 ")}&today=${today}`));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(LIST);
+    expect(listImported).toHaveBeenCalledWith(fakeDb, { label: "LinkedIn import, November 2026", high: false, sort: "recent", today });
+    expect(withDb.mock.calls[0][0]).toBe("zeroone");
+    expect(recentContacts).not.toHaveBeenCalled();
+    expect(listMembers).not.toHaveBeenCalled();
+
+    await GET(get(`?estate=zeroone&import=${encodeURIComponent("50% off_list")}&high=1&sort=stage&q=mia&today=${today}`));
+    expect(listImported).toHaveBeenLastCalledWith(fakeDb, { label: "50% off_list", high: true, sort: "stage", today });
+    expect(searchContacts).not.toHaveBeenCalled();
+  });
+
+  it("ignores a blank import label and cuts a long one to 80 characters", async () => {
+    await GET(get("?estate=traxo&import=%20%20"));
+    expect(listImported).not.toHaveBeenCalled();
+    expect(recentContacts).toHaveBeenCalledTimes(1);
+    listImported.mockResolvedValue({ contacts: [], total: 0 });
+    await GET(get(`?estate=traxo&import=${"x".repeat(200)}`));
+    expect(listImported.mock.calls[0][1].label).toBe("x".repeat(80));
+  });
+
+  it("answers 502 when listing imports fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    listImports.mockRejectedValue(new Error("boom"));
+    const res = await GET(get("?estate=traxo&imports=1"));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "Could not reach the Traxo CRM" });
   });
 
   it("answers 502 without leaking details when the lookup throws", async () => {
