@@ -243,6 +243,18 @@ describe("exchangeCode", () => {
     }
   });
 
+  it("takes backslashes and control characters out of the name Google gives", async () => {
+    answers(claims({ name: "\\'); CREATE TABLE pwned(x int); --" }));
+    expect(await exchangeCode("c")).toMatchObject({ ok: true, name: "'); CREATE TABLE pwned(x int); --" });
+    answers(claims({ name: "Gil\\\\ \u0085Hale\u009f\u2028\u202e\ufeff\u200b Jr\\" }));
+    expect(await exchangeCode("c")).toMatchObject({ ok: true, name: "Gil Hale Jr" });
+    answers(claims({ name: "\\\u0007\\" }));
+    expect(await exchangeCode("c")).toMatchObject({ ok: true, name: "gil" });
+    answers(claims({ name: "\\".repeat(150) + "y".repeat(500) }));
+    const long = await exchangeCode("c");
+    expect(long).toMatchObject({ ok: true, name: "y".repeat(200) });
+  });
+
   it("refuses a token for another app, from another issuer, expired, unverified, or without a proper Google id", async () => {
     const bad: Record<string, unknown>[] = [
       { aud: "someone-else.apps.googleusercontent.com" },

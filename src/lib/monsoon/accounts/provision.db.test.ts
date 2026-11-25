@@ -333,6 +333,83 @@ describe.skipIf(!shared.available)("the wall between clients in the shared datab
     expect(await names(await login(urlA))).toContain("Ada of A");
   });
 
+  it("a name with a backslash and a quote is stored as plain text and adds nothing, even where a backslash escapes a quote", async () => {
+    const dbName = new URL(shared.url()).pathname.slice(1);
+    const id = newCustomer();
+    const n = clientNames(id);
+    const name = "\\'); CREATE TABLE pwned(x int); --";
+    const label = "\\'); CREATE TABLE pwned_too(x int); --";
+    // New connections to this file's own database now read a backslash and a quote as an escaped quote.
+    await admin.query(`ALTER DATABASE ${dbName} SET standard_conforming_strings = off`);
+    try {
+      const fresh = await shared.connect();
+      expect((await fresh.query("SHOW standard_conforming_strings")).rows[0].standard_conforming_strings).toBe("off");
+      await fresh.end();
+      await provisionSharedCrm({
+        customerId: id,
+        vocabulary: { ...vocabulary, roles: [{ key: "contact", label }], owners: [{ key: "PW", name }] },
+      });
+    } finally {
+      await admin.query(`ALTER DATABASE ${dbName} RESET standard_conforming_strings`);
+    }
+    expect((await admin.query("SELECT relname FROM pg_class WHERE relname LIKE 'pwned%'")).rows).toEqual([]);
+    const tables = await admin.query("SELECT tablename::text AS t FROM pg_tables WHERE schemaname = $1 ORDER BY 1", [n.schema]);
+    expect(tables.rows.map((r) => r.t)).toEqual([...MONSOON_TABLES].sort());
+    expect((await admin.query(`SELECT key, display_name FROM ${n.schema}.owners`)).rows).toEqual([{ key: "PW", display_name: name }]);
+    expect((await admin.query(`SELECT key, label FROM ${n.schema}.roles`)).rows).toEqual([{ key: "contact", label }]);
+  });
+
+  it("no name or label from the vocabulary is ever part of the SQL text sent to the shared database", async () => {
+    const id = newCustomer();
+    const texts: string[] = [];
+    const real = Client.prototype.query;
+    const spy = vi.spyOn(Client.prototype, "query").mockImplementation(function (this: Client, ...args: unknown[]) {
+      const first = args[0] as string | { text?: string };
+      texts.push(typeof first === "string" ? first : String(first?.text ?? ""));
+      return (real as (...a: unknown[]) => unknown).apply(this, args);
+    } as never);
+    try {
+      await provisionSharedCrm({
+        customerId: id,
+        vocabulary: {
+          stages: [{ key: "zzstagekey", ord: 0, label: "Zzstagelabel", terminal: false }],
+          roles: [{ key: "zzrolekey", label: "Zzrolelabel" }],
+          owners: [{ key: "ZZ", name: "Zzownername" }],
+        },
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(texts.length).toBeGreaterThan(5);
+    for (const t of texts) expect(t).not.toMatch(/zzstagekey|Zzstagelabel|zzrolekey|Zzrolelabel|Zzownername/);
+    const n = clientNames(id);
+    expect((await admin.query(`SELECT key, ord, label, terminal FROM ${n.schema}.stages`)).rows).toEqual([
+      { key: "zzstagekey", ord: 0, label: "Zzstagelabel", terminal: false },
+    ]);
+  });
+
+  it("builds nothing unless the connection confirms that a backslash is only a backslash", async () => {
+    const id = newCustomer();
+    const real = Client.prototype.query;
+    const seen: string[] = [];
+    const spy = vi.spyOn(Client.prototype, "query").mockImplementation(function (this: Client, ...args: unknown[]) {
+      if (typeof args[0] === "string") seen.push(args[0]);
+      if (args[0] === "SHOW standard_conforming_strings") return Promise.resolve({ rows: [{ standard_conforming_strings: "off" }], rowCount: 1 });
+      return (real as (...a: unknown[]) => unknown).apply(this, args);
+    } as never);
+    let err: unknown;
+    try {
+      err = await provisionSharedCrm({ customerId: id, vocabulary }).catch((e: unknown) => e);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(err).toBeInstanceOf(ProvisionError);
+    expect((err as ProvisionError).failure).toBe("build");
+    // The setting was asked for on its own, before anything else, and nothing followed the refusal.
+    expect(seen).toEqual(["SET standard_conforming_strings = on", "SHOW standard_conforming_strings"]);
+    expect((await admin.query("SELECT 1 FROM pg_namespace WHERE nspname = $1", [clientNames(id).schema])).rowCount).toBe(0);
+  });
+
   describe.skipIf(!accounts.available)("through the signed-in account", () => {
     let db: Client;
     let cookie: string;

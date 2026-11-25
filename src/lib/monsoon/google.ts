@@ -153,10 +153,14 @@ function idClaims(token: unknown): Record<string, unknown> | null {
 }
 
 function displayName(raw: unknown, email: string): string {
+  // A name is only ever shown and stored as text. Still, nothing in it should be able to act as
+  // an escape or hide what it says: no backslash, no control character, no invisible direction mark.
   const clean = (v: string) =>
     v
+      .replace(/\\/g, "")
       // eslint-disable-next-line no-control-regex
-      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
+      .replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, "")
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, MAX_NAME)

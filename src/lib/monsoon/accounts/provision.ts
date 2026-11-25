@@ -9,7 +9,7 @@ import { Client } from "pg";
 import { pipelineClientConfig, withPipelineDb } from "../db";
 import { buildSharedPoolerUrl } from "./address";
 import { runSetupChecks, type SetupFailure } from "./setup-check";
-import { setupStatements, type SetupVocabulary } from "./setup-script";
+import { loginStatements, schemaStatements, type SetupVocabulary } from "./setup-script";
 import { clientNames, type ClientNames } from "./shared-names";
 
 export { clientNames, type ClientNames };
@@ -31,27 +31,65 @@ export class ProvisionError extends Error {
 const BUILD_TIMEOUT_MS = 30_000;
 
 // One provisioning at a time: two at once would both change who may use `public`.
-const LOCK = "SELECT pg_advisory_xact_lock(hashtext('monsoon:provision'));";
+const LOCK = "SELECT pg_advisory_xact_lock(hashtext('monsoon:provision'))";
 
-function buildScript(names: ClientNames, vocabulary: SetupVocabulary, password: string): string {
+/**
+ * Builds the schema, the tables, the vocabulary rows and the login on the owner's connection.
+ * Nothing that is not derived from the customer id is ever part of the SQL text: every key, label
+ * and name travels as a parameter. Statements go one at a time inside one transaction.
+ */
+async function build(admin: Client, names: ClientNames, vocabulary: SetupVocabulary, password: string): Promise<void> {
   const { schema, role } = names;
-  return [
-    "BEGIN;",
-    // Names in the vocabulary go into the script as quoted text: make sure a backslash is only a backslash.
-    "SET LOCAL standard_conforming_strings = on;",
-    LOCK,
+  // Belt and braces, on its own and before anything else: a backslash must be only a backslash.
+  // (Set inside a longer script it would protect nothing: Postgres reads a whole script before running any of it.)
+  await admin.query("SET standard_conforming_strings = on");
+  const conforming = await admin.query("SHOW standard_conforming_strings");
+  if (conforming.rows[0]?.standard_conforming_strings !== "on") throw new Error("standard_conforming_strings is not on");
+
+  await admin.query("BEGIN");
+  try {
+    await admin.query(LOCK);
     // Nobody gets into `public` by default. Asked for on every run; it changes nothing after the first.
-    "REVOKE ALL ON SCHEMA public FROM PUBLIC;",
+    await admin.query("REVOKE ALL ON SCHEMA public FROM PUBLIC");
     // Before the search path moves, so it can never land inside a client's schema.
-    "CREATE EXTENSION IF NOT EXISTS pgcrypto;",
-    `CREATE SCHEMA IF NOT EXISTS ${schema};`,
-    `REVOKE ALL ON SCHEMA ${schema} FROM PUBLIC;`,
+    await admin.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+    await admin.query(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
+    await admin.query(`REVOKE ALL ON SCHEMA ${schema} FROM PUBLIC`);
     // The CRM SQL names no schema: for this transaction only, everything it makes goes here.
-    `SET LOCAL search_path TO ${schema};`,
-    setupStatements({ stages: vocabulary.stages, roles: vocabulary.roles, owners: vocabulary.owners, roleName: role, password, schema }),
-    `ALTER ROLE ${role} SET search_path TO ${schema};`,
-    "COMMIT;",
-  ].join("\n\n");
+    await admin.query(`SET LOCAL search_path TO ${schema}`);
+    await admin.query(schemaStatements());
+    if (vocabulary.stages.length > 0) {
+      await admin.query(
+        `INSERT INTO stages (key, ord, label, terminal)
+         SELECT * FROM unnest($1::text[], $2::int[], $3::text[], $4::boolean[])
+         ON CONFLICT DO NOTHING`,
+        [
+          vocabulary.stages.map((s) => String(s.key)),
+          vocabulary.stages.map((s) => Math.trunc(s.ord)),
+          vocabulary.stages.map((s) => String(s.label)),
+          vocabulary.stages.map((s) => s.terminal === true),
+        ],
+      );
+    }
+    if (vocabulary.roles.length > 0) {
+      await admin.query("INSERT INTO roles (key, label) SELECT * FROM unnest($1::text[], $2::text[]) ON CONFLICT DO NOTHING", [
+        vocabulary.roles.map((r) => String(r.key)),
+        vocabulary.roles.map((r) => String(r.label)),
+      ]);
+    }
+    if (vocabulary.owners.length > 0) {
+      await admin.query("INSERT INTO owners (key, display_name) SELECT * FROM unnest($1::text[], $2::text[]) ON CONFLICT DO NOTHING", [
+        vocabulary.owners.map((o) => String(o.key)),
+        vocabulary.owners.map((o) => String(o.name)),
+      ]);
+    }
+    await admin.query(loginStatements(role, schema, password));
+    await admin.query(`ALTER ROLE ${role} SET search_path TO ${schema}`);
+    await admin.query("COMMIT");
+  } catch (err) {
+    await admin.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  }
 }
 
 /**
@@ -98,15 +136,13 @@ export async function provisionSharedCrm(input: {
   const defaultRole = input.defaultRole ?? input.vocabulary.roles[0]?.key;
   if (!defaultRole) throw new ProvisionError("vocabulary");
 
-  // 32 random bytes as base64url: no "$" (the script carries it inside a dollar-quoted block).
+  // 32 random bytes as base64url: letters, digits, "-" and "_" only.
   const password = randomBytes(32).toString("base64url");
   let dbUrl: string;
   let admin: Client;
-  let script: string;
   try {
     dbUrl = buildSharedPoolerUrl({ adminUrl, role: names.role, password });
     admin = new Client({ ...pipelineClientConfig(adminUrl), query_timeout: BUILD_TIMEOUT_MS });
-    script = buildScript(names, input.vocabulary, password);
   } catch {
     throw new ProvisionError("address");
   }
@@ -114,7 +150,7 @@ export async function provisionSharedCrm(input: {
   // One transaction: a failure anywhere leaves the database as it was.
   try {
     await admin.connect();
-    await admin.query(script);
+    await build(admin, names, input.vocabulary, password);
   } catch (err) {
     const code = (err as { code?: unknown } | null)?.code;
     throw new ProvisionError("build", typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) ? code : null);

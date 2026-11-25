@@ -116,6 +116,20 @@ export function generateSetupScript(v: SetupVocabulary): string {
   return `BEGIN;\n\n${setupStatements(v)}\n\nCOMMIT;\n`;
 }
 
+/**
+ * The tables alone, for the shared database. Fixed text: it carries no vocabulary, because the
+ * shared database's rows are added with parameterised queries, never as quoted text.
+ */
+export function schemaStatements(): string {
+  return [CRM_SCHEMA_SQL, "INSERT INTO schema_migrations (version) VALUES (1) ON CONFLICT DO NOTHING;"].join("\n\n");
+}
+
+/** The login, its grants and its policies for the shared database. Built from the two checked names and the password only. */
+export function loginStatements(roleName: string, schema: string, password: string): string {
+  if (typeof password !== "string" || password.length < 16 || !/^[A-Za-z0-9_-]+$/.test(password)) throw new Error("invalid password");
+  return loginPart(checkRole(roleName), password, checkSchemaName(schema));
+}
+
 /** Everything the setup script runs, without its BEGIN and COMMIT, for a caller with its own transaction. */
 export function setupStatements(v: SetupVocabulary): string {
   const role = checkRole(v.roleName ?? DEFAULT_ROLE);
