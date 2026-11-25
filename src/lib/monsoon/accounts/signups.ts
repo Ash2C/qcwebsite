@@ -1,7 +1,9 @@
 // Sign up with Google: requests waiting for approval, and the Google id on a person. Everything is
 // matched on Google's permanent account id (`sub`), never on an email. Nothing here creates a
 // customer, a database object or a session: a request is one row until it is approved elsewhere.
-// A request is never removed; declining and re-opening are status changes.
+// A request is never removed; declining and re-opening are status changes. A request whose Google
+// id was then linked to a person who already had an account is marked `linked`: it stays as a
+// record, is not listed, and can never be approved, declined or re-opened.
 import type { Client } from "pg";
 import {
   CUSTOMER_COLUMNS,
@@ -17,7 +19,7 @@ import {
   type PersonRow,
 } from "./store";
 
-export type SignupStatus = "pending" | "approved" | "declined";
+export type SignupStatus = "pending" | "approved" | "declined" | "linked";
 
 export type SignupRow = {
   id: string;
@@ -151,11 +153,12 @@ export async function requestSignup(input: {
   });
 }
 
-/** Pending first, then newest first; at most 300. */
+/** Pending first, then newest first; at most 300. A `linked` request is nobody's to decide and is left out. */
 export async function listSignups(): Promise<SignupRow[]> {
   return withAccountsDb(async (db) => {
     const r = await db.query(
-      `SELECT ${SIGNUP_COLUMNS} FROM signups ORDER BY (status = 'pending') DESC, created_at DESC, id LIMIT ${MAX_LISTED}`,
+      `SELECT ${SIGNUP_COLUMNS} FROM signups WHERE status <> 'linked'
+        ORDER BY (status = 'pending') DESC, created_at DESC, id LIMIT ${MAX_LISTED}`,
     );
     return r.rows.map(toSignup);
   });
@@ -180,28 +183,43 @@ export async function reopenSignup(id: string): Promise<boolean> {
 }
 
 /**
- * Puts a Google id on a signed-in person. `taken` when the id is on another person or on any
- * request, when this person already has a different Google id (a link is never replaced here), or
- * when there is no such person in that customer.
+ * Puts a Google id on a signed-in person. `taken` when the id is on another person or on an
+ * approved request, when this person already has a different Google id (a link is never replaced
+ * here), or when there is no such person in that customer.
+ *
+ * A request for that Google id that is still pending, or was declined, does not stand in the way
+ * (the person tapped Sign in with Google before linking): the link succeeds and the request is
+ * marked `linked` in the same transaction. That runs under the lock the approval takes before it
+ * creates the person, so a link and an approval of one Google id can never both win.
  */
 export async function linkGoogle(who: { customerId: string; personId: string }, sub: string): Promise<"linked" | "taken"> {
   if (typeof sub !== "string" || !GOOGLE_SUB.test(sub)) return "taken";
   if (!UUID.test(who.customerId) || !UUID.test(who.personId)) return "taken";
   const outcome = await locked(async (db): Promise<"linked" | "already" | "taken"> => {
-    const signup = await db.query("SELECT 1 FROM signups WHERE google_sub = $1", [sub]);
-    if (signup.rowCount) return "taken";
     const holder = await db.query("SELECT id, customer_id FROM people WHERE google_sub = $1", [sub]);
     if (holder.rowCount) {
       const h = holder.rows[0] as { id: string; customer_id: string };
       return h.id === who.personId.toLowerCase() && h.customer_id === who.customerId.toLowerCase() ? "already" : "taken";
     }
+    const signup = await db.query("SELECT id, status FROM signups WHERE google_sub = $1 FOR UPDATE", [sub]);
+    const request = signup.rows[0] as { id: string; status: SignupStatus } | undefined;
+    if (request && request.status === "approved") return "taken";
     const r = await db.query(
       `UPDATE people SET google_sub = $3
         WHERE id = $1 AND customer_id = $2 AND status = 'active' AND google_sub IS NULL
           AND EXISTS (SELECT 1 FROM customers c WHERE c.id = $2 AND c.status = 'active')`,
       [who.personId, who.customerId, sub],
     );
-    return r.rowCount === 1 ? "linked" : "taken";
+    if (r.rowCount !== 1) return "taken";
+    if (request && request.status !== "linked") {
+      const marked = await db.query(
+        "UPDATE signups SET status = 'linked', decided_at = now() WHERE id = $1 AND status IN ('pending', 'declined')",
+        [request.id],
+      );
+      // Cannot happen while the row is locked; if it did, the link is undone with the transaction.
+      if (marked.rowCount !== 1) throw new Error("signup changed while linking");
+    }
+    return "linked";
   });
   if (outcome === "taken") return "taken";
   if (outcome === "linked") {

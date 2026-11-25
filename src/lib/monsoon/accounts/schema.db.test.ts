@@ -280,6 +280,7 @@ describe.skipIf(!db.available)("accounts schema", () => {
     await expect(ins("1001")).rejects.toMatchObject({ code: "23505" });
     await ins("1002", "approved");
     await ins("1003", "declined");
+    await ins("1005", "linked");
     await expect(ins("1004", "weird")).rejects.toMatchObject({ code: "23514" });
     const r = await client.query("SELECT status, customer_id, decided_at, created_at FROM signups WHERE google_sub = '1001'");
     expect(r.rows[0]).toMatchObject({ status: "pending", customer_id: null, decided_at: null });

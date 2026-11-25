@@ -333,16 +333,80 @@ describe.skipIf(!db.available)("sign-up requests and Google links", { timeout: 2
       expect(await subOf(ann)).toBe("1001");
     });
 
-    it("taken: the Google id is on any signup, whatever its status", async () => {
+    it("taken: the Google id is on an approved signup", async () => {
+      const { ann } = await seed();
+      await ask("1003");
+      await client.query("UPDATE signups SET status = 'approved' WHERE google_sub = '1003'");
+      expect(await linkGoogle(ann, "1003")).toBe("taken");
+      expect(await subOf(ann)).toBeNull();
+      expect(await findSignup("1003")).toMatchObject({ status: "approved" });
+      expect((await client.query("SELECT count(*)::int AS n FROM activity")).rows[0].n).toBe(0);
+    });
+
+    it("a stray Sign in with Google does not block linking: a waiting request for that Google id becomes linked", async () => {
+      const { ann } = await seed();
+      // Ann tapped Sign in with Google before linking: a request now waits for her Google id.
+      await ask("1001");
+      expect(await linkGoogle(ann, "1001")).toBe("linked");
+      expect(await subOf(ann)).toBe("1001");
+      expect(await findPersonByGoogleSub("1001")).toMatchObject({ person: { id: ann.personId } });
+      const row = (await client.query("SELECT status, customer_id, decided_at FROM signups WHERE google_sub = '1001'")).rows[0];
+      expect(row).toMatchObject({ status: "linked", customer_id: null });
+      expect(row.decided_at).toBeInstanceOf(Date);
+      expect((await client.query("SELECT count(*)::int AS n FROM signups")).rows[0].n).toBe(1);
+      expect((await client.query("SELECT action FROM activity")).rows).toEqual([{ action: "google_link" }]);
+    });
+
+    it("a declined request for that Google id does not block linking either", async () => {
+      const { ann } = await seed();
+      await ask("1002");
+      await client.query("UPDATE signups SET status = 'declined', decided_at = now() WHERE google_sub = '1002'");
+      expect(await linkGoogle(ann, "1002")).toBe("linked");
+      expect(await subOf(ann)).toBe("1002");
+      expect(await findSignup("1002")).toMatchObject({ status: "linked" });
+    });
+
+    it("a waiting request does not let a Google id onto a second person", async () => {
+      const { ann, bob, oz } = await seed();
+      await ask("1001");
+      expect(await linkGoogle(ann, "1001")).toBe("linked");
+      expect(await linkGoogle(bob, "1001")).toBe("taken");
+      expect(await linkGoogle(oz, "1001")).toBe("taken");
+      // The person who has it may ask again, and after a reset took the link away, link once more.
+      expect(await linkGoogle(ann, "1001")).toBe("linked");
+      await client.query("UPDATE people SET google_sub = NULL WHERE id = $1", [ann.personId]);
+      expect(await linkGoogle(ann, "1001")).toBe("linked");
+      expect(await subOf(ann)).toBe("1001");
+      expect(await findSignup("1001")).toMatchObject({ status: "linked" });
+    });
+
+    it("a linked request is not listed, cannot be declined or re-opened, and does not count towards the 200", async () => {
       const { ann } = await seed();
       await ask("1001");
-      await ask("1002");
-      await ask("1003");
-      await client.query("UPDATE signups SET status = 'declined' WHERE google_sub = '1002'");
-      await client.query("UPDATE signups SET status = 'approved' WHERE google_sub = '1003'");
-      for (const sub of ["1001", "1002", "1003"]) expect(await linkGoogle(ann, sub)).toBe("taken");
-      expect(await subOf(ann)).toBeNull();
-      expect((await client.query("SELECT count(*)::int AS n FROM activity")).rows[0].n).toBe(0);
+      const id = (await findSignup("1001"))!.id;
+      expect(await linkGoogle(ann, "1001")).toBe("linked");
+      expect(await listSignups()).toEqual([]);
+      expect(await declineSignup(id)).toBe(false);
+      expect(await reopenSignup(id)).toBe(false);
+      expect(await findSignup("1001")).toMatchObject({ status: "linked" });
+      await client.query(
+        `INSERT INTO signups (google_sub, email, name, address_hash)
+         SELECT (5000 + g)::text, 'x@example.com', 'X', 'bulk-' || g FROM generate_series(1, 199) g`,
+      );
+      expect(await ask("7001", "addr-a")).toBe("created");
+      expect(await ask("7002", "addr-b")).toBe("paused");
+      // Asking again with the linked Google id adds and changes nothing.
+      expect(await ask("1001", "addr-c")).toBe("created");
+      expect(await findSignup("1001")).toMatchObject({ status: "linked" });
+    });
+
+    it("two people linking a Google id that has a waiting request, at once: exactly one wins", async () => {
+      const { ann, bob, oz } = await seed();
+      await ask("1001");
+      const results = await Promise.all([linkGoogle(ann, "1001"), linkGoogle(bob, "1001"), linkGoogle(oz, "1001")]);
+      expect(results.filter((r) => r === "linked")).toHaveLength(1);
+      expect(results.filter((r) => r === "taken")).toHaveLength(2);
+      expect((await client.query("SELECT count(*)::int AS n FROM people WHERE google_sub = '1001'")).rows[0].n).toBe(1);
     });
 
     it("taken: the person already has a different Google id (a link is never replaced)", async () => {
@@ -379,12 +443,14 @@ describe.skipIf(!db.available)("sign-up requests and Google links", { timeout: 2
       expect((await client.query("SELECT count(*)::int AS n FROM people WHERE google_sub = '1001'")).rows[0].n).toBe(1);
     });
 
-    it("a link and a request for the same Google id at once never both land", async () => {
+    it("a link and a request for the same Google id at once never leave both a person and a waiting request", async () => {
       const { ann } = await seed();
       await Promise.all([linkGoogle(ann, "1001"), ask("1001")]);
-      const people = (await client.query("SELECT count(*)::int AS n FROM people WHERE google_sub = '1001'")).rows[0].n;
-      const signups = (await client.query("SELECT count(*)::int AS n FROM signups WHERE google_sub = '1001'")).rows[0].n;
-      expect(people + signups).toBe(1);
+      // The link always lands. A request that got in first is marked linked; one that came second adds nothing.
+      expect(await subOf(ann)).toBe("1001");
+      const signups = (await client.query("SELECT status FROM signups WHERE google_sub = '1001'")).rows;
+      expect(signups.length).toBeLessThanOrEqual(1);
+      for (const s of signups) expect(s.status).toBe("linked");
     });
   });
 });

@@ -183,13 +183,15 @@ INSERT INTO accounts_migrations (version) VALUES (5) ON CONFLICT DO NOTHING;
 -- only, never on an email. A person who signed up with Google has no passcode, so passcode_hash may
 -- be NULL (the code screen skips such a person). A pipeline hosted in the shared database names its
 -- schema there. Every action list above also names 'google_link' and 'approve', for the same reason
--- as 'profile' and 'granola'.
+-- as 'profile' and 'granola'. A request whose Google id was linked to a person who already had an
+-- account (they tapped Sign in with Google before linking) is marked 'linked': it is kept, but it
+-- no longer waits, can never be approved or re-opened, and does not count as waiting.
 CREATE TABLE IF NOT EXISTS signups (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   google_sub TEXT NOT NULL UNIQUE,
   email TEXT NOT NULL,
   name TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'declined')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'declined', 'linked')),
   customer_id UUID NULL REFERENCES customers(id),
   address_hash TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -198,6 +200,9 @@ CREATE TABLE IF NOT EXISTS signups (
 CREATE INDEX IF NOT EXISTS signups_address_at ON signups (address_hash, created_at);
 CREATE INDEX IF NOT EXISTS signups_status_at ON signups (status, created_at DESC);
 ALTER TABLE signups ENABLE ROW LEVEL SECURITY;
+-- The same check again by name, for a signups table made before 'linked' was in the list.
+ALTER TABLE signups DROP CONSTRAINT IF EXISTS signups_status_check,
+  ADD CONSTRAINT signups_status_check CHECK (status IN ('pending', 'approved', 'declined', 'linked'));
 
 ALTER TABLE people ADD COLUMN IF NOT EXISTS google_sub TEXT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS people_google_sub_key ON people (google_sub);

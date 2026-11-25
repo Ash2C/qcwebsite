@@ -118,6 +118,8 @@ async function run(db: Client, id: string, provision: typeof provisionSharedCrm)
   if (found.rowCount !== 1) return { ok: false, reason: "not_found" };
   const signup = found.rows[0] as { google_sub: string; email: string; name: string; status: string; customer_id: string | null };
   if (signup.status === "declined") return { ok: false, reason: "declined" };
+  // Its Google id now belongs to a person who already had an account: there is nothing to approve.
+  if (signup.status === "linked") return { ok: false, reason: "not_found" };
   if (signup.status === "approved" && signup.customer_id) return { ok: true, customerId: signup.customer_id, already: true };
   if (signup.status !== "pending") throw new StepFailed("state");
 
@@ -132,6 +134,13 @@ async function run(db: Client, id: string, provision: typeof provisionSharedCrm)
         return c.rows[0].id as string;
       });
     } catch (err) {
+      if (err instanceof StepFailed) {
+        // The request stopped waiting between the two looks at it. Nothing was made (the company went with the transaction).
+        const now = await db.query("SELECT status FROM signups WHERE id = $1", [id]);
+        if (now.rows[0]?.status === "linked") return { ok: false, reason: "not_found" };
+        if (now.rows[0]?.status === "declined") return { ok: false, reason: "declined" };
+        throw err;
+      }
       // The random code was taken: try another. Anything else is a failure.
       if ((err as { code?: string }).code !== "23505" || attempt >= CODE_TRIES - 1) throw err instanceof StepFailed ? err : new StepFailed("customer");
     }
@@ -170,8 +179,10 @@ async function run(db: Client, id: string, provision: typeof provisionSharedCrm)
       customerId,
     ]);
     if (approved.rowCount !== 1) {
-      // Declined while the CRM was being built. Nothing was changed here and nothing is removed; nobody gets in.
+      // Declined, or its Google id linked to an existing person, while the CRM was being built.
+      // Nothing was changed here and nothing is removed; nobody gets in through this request.
       const now = await db.query("SELECT status FROM signups WHERE id = $1", [id]);
+      if (now.rows[0]?.status === "linked") return { ok: false, reason: "not_found" };
       if (now.rows[0]?.status !== "declined") throw new StepFailed("state");
       return { ok: false, reason: "declined" };
     }

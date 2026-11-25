@@ -11,7 +11,7 @@ import { requireAccount } from "./account";
 import { DEFAULT_PIPELINE, DEFAULT_VOCABULARY, approveSignup, customerCode, ownerKeyFor, type ApproveDeps } from "./approve";
 import { decryptSecret } from "./crypto";
 import { ProvisionError, clientNames, provisionSharedCrm } from "./provision";
-import { declineSignup, findPersonByGoogleSub, requestSignup } from "./signups";
+import { declineSignup, findPersonByGoogleSub, linkGoogle, requestSignup } from "./signups";
 import { clearAccountCache } from "./store";
 
 const accounts = makeAccountsTestDb();
@@ -85,6 +85,14 @@ describe.skipIf(!accounts.available)("approveSignup (real accounts database)", {
     return (await db.query("SELECT id FROM signups WHERE google_sub = $1", [sub])).rows[0].id;
   }
   const count = async (table: string) => (await db.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n as number;
+  /** A passcode user in a company that already exists. */
+  async function existingPerson(): Promise<{ customerId: string; personId: string }> {
+    const customerId = (await db.query("INSERT INTO customers (code, name) VALUES ('old-co', 'Old Co') RETURNING id")).rows[0].id as string;
+    const personId = (
+      await db.query("INSERT INTO people (customer_id, display_name, owner_key, passcode_hash) VALUES ($1, 'Ann', 'AN', 'h') RETURNING id", [customerId])
+    ).rows[0].id as string;
+    return { customerId, personId };
+  }
   const signup = async (id: string) => (await db.query("SELECT status, customer_id, decided_at FROM signups WHERE id = $1", [id])).rows[0];
 
   beforeAll(async () => {
@@ -277,6 +285,61 @@ describe.skipIf(!accounts.available)("approveSignup (real accounts database)", {
     expect(await count("people")).toBe(0);
     expect(await findPersonByGoogleSub("7001")).toBeNull();
     expect(recordInCrm).not.toHaveBeenCalled();
+  });
+
+  it("a request whose Google id was linked to an existing person can no longer be approved, and makes nothing", async () => {
+    const id = await ask("7001");
+    const who = await existingPerson();
+    expect(await linkGoogle(who, "7001")).toBe("linked");
+    expect(await approveSignup(id, deps)).toEqual({ ok: false, reason: "not_found" });
+    expect(provision).not.toHaveBeenCalled();
+    expect(await signup(id)).toMatchObject({ status: "linked", customer_id: null });
+    expect(await count("customers")).toBe(1);
+    expect(await count("people")).toBe(1);
+    expect(recordInCrm).not.toHaveBeenCalled();
+  });
+
+  it("a link made while the CRM was being built wins: the approval makes no person and the request is linked", async () => {
+    const id = await ask("7001");
+    const who = await existingPerson();
+    provision.mockImplementation(async (input: { customerId: string }) => {
+      expect(await linkGoogle(who, "7001")).toBe("linked");
+      return fakeProvision(input);
+    });
+    expect(await approveSignup(id, deps)).toEqual({ ok: false, reason: "not_found" });
+    expect(await signup(id)).toMatchObject({ status: "linked" });
+    expect((await db.query("SELECT id FROM people WHERE google_sub = '7001'")).rows).toEqual([{ id: who.personId }]);
+    expect(await count("people")).toBe(1);
+    expect(recordInCrm).not.toHaveBeenCalled();
+    // Run again, it still does nothing.
+    expect(await approveSignup(id, deps)).toEqual({ ok: false, reason: "not_found" });
+    expect(await count("people")).toBe(1);
+  });
+
+  it("an approval that finished first wins: the Google id can no longer be linked to someone else", async () => {
+    const id = await ask("7001");
+    const who = await existingPerson();
+    expect(await approveSignup(id, deps)).toMatchObject({ ok: true, already: false });
+    expect(await linkGoogle(who, "7001")).toBe("taken");
+    expect(await signup(id)).toMatchObject({ status: "approved" });
+    expect((await db.query("SELECT google_sub FROM people WHERE id = $1", [who.personId])).rows[0].google_sub).toBeNull();
+  });
+
+  it("a link and an approval of the same request at the same moment never both win", async () => {
+    const id = await ask("7001");
+    const who = await existingPerson();
+    const [approved, linked] = await Promise.all([approveSignup(id, deps), linkGoogle(who, "7001")]);
+    const holders = (await db.query("SELECT id FROM people WHERE google_sub = '7001'")).rows;
+    expect(holders).toHaveLength(1);
+    if (linked === "linked") {
+      expect(approved).toEqual({ ok: false, reason: "not_found" });
+      expect(holders[0].id).toBe(who.personId);
+      expect(await signup(id)).toMatchObject({ status: "linked" });
+    } else {
+      expect(approved).toMatchObject({ ok: true });
+      expect(holders[0].id).not.toBe(who.personId);
+      expect(await signup(id)).toMatchObject({ status: "approved" });
+    }
   });
 
   describe("the contact in the Zero One CRM", () => {
