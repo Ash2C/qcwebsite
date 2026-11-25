@@ -37,33 +37,33 @@ describe.skipIf(!db.available)("monsoon admin", () => {
 
   it("migrate is idempotent", async () => {
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toContain("Schema already applied (version 5).");
-    expect((await client.query("SELECT max(version)::int AS v FROM accounts_migrations")).rows[0].v).toBe(5);
+    expect(text()).toContain("Schema already applied (version 6).");
+    expect((await client.query("SELECT max(version)::int AS v FROM accounts_migrations")).rows[0].v).toBe(6);
   });
 
-  it("migrate applies version 5 to an empty database and says so", async () => {
+  it("migrate applies version 6 to an empty database and says so", async () => {
     await client.query("DROP SCHEMA public CASCADE");
     await client.query("CREATE SCHEMA public");
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toBe("Schema applied (version 5).");
+    expect(text()).toBe("Schema applied (version 6).");
     expect((await client.query("SELECT to_regclass('public.person_notes') AS t")).rows[0].t).not.toBeNull();
   });
 
-  it("migrate brings a version 3 database up to version 5", async () => {
+  it("migrate brings a version 3 database up to version 6", async () => {
     await client.query("DELETE FROM accounts_migrations WHERE version >= 4");
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toBe("Schema applied (version 5).");
+    expect(text()).toBe("Schema applied (version 6).");
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toBe("Schema already applied (version 5).");
+    expect(text()).toBe("Schema already applied (version 6).");
   });
 
-  it("migrate brings a version 4 database up to version 5", async () => {
+  it("migrate brings a version 4 database up to version 6", async () => {
     // A database as the live one is today: version 4 applied, with no Granola columns, the version 4
     // action list, a profile activity row, and no version 5 marker.
     await run(["customer", "add", "acme", "Acme"]);
     await run(["person", "add", "acme", "Ann", "AN"]);
     await client.query("INSERT INTO activity (customer_id, action) SELECT id, 'profile' FROM customers");
-    await client.query("DELETE FROM accounts_migrations WHERE version = 5");
+    await client.query("DELETE FROM accounts_migrations WHERE version >= 5");
     await client.query(
       "ALTER TABLE people DROP COLUMN granola_key_enc, DROP COLUMN granola_status, DROP COLUMN granola_checked_at, DROP COLUMN granola_key_set_at",
     );
@@ -77,15 +77,81 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     await expect(granola()).rejects.toMatchObject({ code: "23514" });
 
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toBe("Schema applied (version 5).");
-    expect((await client.query("SELECT max(version)::int AS v FROM accounts_migrations")).rows[0].v).toBe(5);
+    expect(text()).toBe("Schema applied (version 6).");
+    expect((await client.query("SELECT max(version)::int AS v FROM accounts_migrations")).rows[0].v).toBe(6);
     const p = await client.query("SELECT display_name, granola_key_enc, granola_status, granola_checked_at, granola_key_set_at FROM people");
     expect(p.rows).toEqual([
       { display_name: "Ann", granola_key_enc: null, granola_status: null, granola_checked_at: null, granola_key_set_at: null },
     ]);
     await granola();
     expect(await run(["migrate"])).toBe(0);
-    expect(text()).toBe("Schema already applied (version 5).");
+    expect(text()).toBe("Schema already applied (version 6).");
+  });
+
+  it("migrate brings a version 5 database up to version 6, keeping people and their passcodes", async () => {
+    // A database as the live one is today: version 5, no signups table, passcodes required, no Google
+    // id, no shared schema, and the version 5 action list.
+    await run(["customer", "add", "acme", "Acme"]);
+    await run(["person", "add", "acme", "Ann", "AN"]);
+    await client.query("INSERT INTO activity (customer_id, action) SELECT id, 'granola' FROM customers");
+    await client.query("DROP TABLE signups");
+    await client.query("ALTER TABLE people DROP COLUMN google_sub, ALTER COLUMN passcode_hash SET NOT NULL");
+    await client.query("ALTER TABLE pipelines DROP COLUMN shared_schema");
+    await client.query("DELETE FROM accounts_migrations WHERE version = 6");
+    await client.query(
+      `ALTER TABLE activity DROP CONSTRAINT activity_action_check,
+         ADD CONSTRAINT activity_action_check CHECK (action IN (
+           'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
+           'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola'))`,
+    );
+    const before = (await client.query("SELECT passcode_hash FROM people")).rows[0].passcode_hash;
+    const approve = () => client.query("INSERT INTO activity (customer_id, action) SELECT id, 'approve' FROM customers");
+    await expect(approve()).rejects.toMatchObject({ code: "23514" });
+
+    expect(await run(["migrate"])).toBe(0);
+    expect(text()).toBe("Schema applied (version 6).");
+    const p = await client.query("SELECT display_name, passcode_hash, google_sub FROM people");
+    expect(p.rows).toEqual([{ display_name: "Ann", passcode_hash: before, google_sub: null }]);
+    expect((await client.query("SELECT to_regclass('public.signups') AS t")).rows[0].t).not.toBeNull();
+    await approve();
+    expect(await run(["migrate"])).toBe(0);
+    expect(text()).toBe("Schema already applied (version 6).");
+  });
+
+  it("reset gives a passcode to a person who signed up with Google and had none", async () => {
+    await run(["customer", "add", "acme", "Acme"]);
+    const cid = (await client.query("SELECT id FROM customers")).rows[0].id;
+    await client.query("INSERT INTO people (customer_id, display_name, owner_key, google_sub) VALUES ($1, 'Gil', 'GI', '4001')", [cid]);
+    expect(await run(["person", "reset", "acme", "GI"])).toBe(0);
+    const passcode = lines.find((l) => /^[a-z]+(-[a-z]+){4}$/.test(l.trim()))?.trim();
+    const { rows } = await client.query("SELECT passcode_hash, session_no FROM people");
+    expect(await verifyPasscode(passcode!, rows[0].passcode_hash)).toBe(true);
+    expect(rows[0].session_no).toBe(2);
+    await run(["people", "acme"]);
+    expect(text()).toContain("Gil | GI | active");
+  });
+
+  it("forget clears the Google link of that customer's people, with or without a passcode, and leaves another customer's alone", async () => {
+    await run(["customer", "add", "acme", "Acme"]);
+    await run(["customer", "add", "other", "Other"]);
+    await run(["person", "add", "acme", "Ann", "AN"]);
+    await run(["person", "add", "other", "Oz", "OZ"]);
+    const cid = (await client.query("SELECT id FROM customers WHERE code = 'acme'")).rows[0].id;
+    await client.query("INSERT INTO people (customer_id, display_name, owner_key, google_sub) VALUES ($1, 'Gil', 'GI', '4001')", [cid]);
+    await client.query("UPDATE people SET google_sub = '4002' WHERE owner_key = 'AN'");
+    await client.query("UPDATE people SET google_sub = '4003' WHERE owner_key = 'OZ'");
+
+    expect(await run(["forget", "acme"])).toBe(0);
+    expect(text()).toContain("Google links cleared: 2.");
+    expect(text()).not.toMatch(/400\d/);
+    const people = await client.query("SELECT owner_key, google_sub, session_no FROM people ORDER BY owner_key");
+    expect(people.rows).toEqual([
+      { owner_key: "AN", google_sub: null, session_no: 2 },
+      { owner_key: "GI", google_sub: null, session_no: 2 },
+      { owner_key: "OZ", google_sub: "4003", session_no: 1 },
+    ]);
+    expect(await run(["forget", "acme"])).toBe(0);
+    expect(text()).toContain("Google links cleared: 0.");
   });
 
   it("forget clears the Granola key of that customer's people and leaves another customer's alone", async () => {

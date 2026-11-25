@@ -7,7 +7,7 @@ import { makeAccountsTestDb } from "../testing/db";
 const db = makeAccountsTestDb();
 const TABLES = [
   "accounts_migrations", "customers", "people", "pipelines", "setup_links", "sign_in_attempts", "activity",
-  "person_work", "person_notes",
+  "person_work", "person_notes", "signups",
 ];
 
 describe.skipIf(!db.available)("accounts schema", () => {
@@ -28,11 +28,11 @@ describe.skipIf(!db.available)("accounts schema", () => {
     return r.rows[0].id;
   }
 
-  it("creates all nine tables and records migrations 1 to 5", async () => {
+  it("creates all ten tables and records migrations 1 to 6", async () => {
     const r = await client.query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'");
     expect(r.rows.map((x) => x.tablename).sort()).toEqual([...TABLES].sort());
     const m = await client.query("SELECT version FROM accounts_migrations");
-    expect(m.rows.map((x) => x.version).sort()).toEqual([1, 2, 3, 4, 5]);
+    expect(m.rows.map((x) => x.version).sort()).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
   it("applies defaults to customers", async () => {
@@ -120,7 +120,7 @@ describe.skipIf(!db.available)("accounts schema", () => {
     const { join } = await import("node:path");
     await client.query(readFileSync(join(__dirname, "schema.sql"), "utf8"));
     const m = await client.query("SELECT count(*)::int AS n FROM accounts_migrations");
-    expect(m.rows[0].n).toBe(5);
+    expect(m.rows[0].n).toBe(6);
   });
 
   it("version 4: people gain phone and email, and the two page tables have their columns", async () => {
@@ -255,6 +255,81 @@ describe.skipIf(!db.available)("accounts schema", () => {
     for (const l of lists) expect(l).toContain("'granola'");
   });
 
+  it("version 6: signups has its columns, defaults and checks", async () => {
+    const cols = (
+      await client.query(
+        "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'signups' ORDER BY column_name",
+      )
+    ).rows.map((x) => `${x.column_name} ${x.data_type} ${x.is_nullable}`);
+    expect(cols).toEqual([
+      "address_hash text NO",
+      "created_at timestamp with time zone NO",
+      "customer_id uuid YES",
+      "decided_at timestamp with time zone YES",
+      "email text NO",
+      "google_sub text NO",
+      "id uuid NO",
+      "name text NO",
+      "status text NO",
+    ]);
+    const ins = (sub: string, status?: string) =>
+      status
+        ? client.query("INSERT INTO signups (google_sub, email, name, address_hash, status) VALUES ($1,'a@b.co','A','h',$2)", [sub, status])
+        : client.query("INSERT INTO signups (google_sub, email, name, address_hash) VALUES ($1,'a@b.co','A','h')", [sub]);
+    await ins("1001");
+    await expect(ins("1001")).rejects.toMatchObject({ code: "23505" });
+    await ins("1002", "approved");
+    await ins("1003", "declined");
+    await expect(ins("1004", "weird")).rejects.toMatchObject({ code: "23514" });
+    const r = await client.query("SELECT status, customer_id, decided_at, created_at FROM signups WHERE google_sub = '1001'");
+    expect(r.rows[0]).toMatchObject({ status: "pending", customer_id: null, decided_at: null });
+    expect(r.rows[0].created_at).toBeInstanceOf(Date);
+    await expect(
+      client.query("UPDATE signups SET customer_id = '00000000-0000-0000-0000-000000000000' WHERE google_sub = '1001'"),
+    ).rejects.toMatchObject({ code: "23503" });
+  });
+
+  it("version 6: a person may have no passcode, and a Google id belongs to one person only", async () => {
+    const id = await customer();
+    const ins = (owner: string, sub: string | null) =>
+      client.query("INSERT INTO people (customer_id, display_name, owner_key, google_sub) VALUES ($1,'P',$2,$3)", [id, owner, sub]);
+    await ins("AA", "2001");
+    await expect(ins("BB", "2001")).rejects.toMatchObject({ code: "23505" });
+    await ins("CC", null);
+    await ins("DD", null);
+    const r = await client.query("SELECT passcode_hash, google_sub FROM people WHERE owner_key = 'CC'");
+    expect(r.rows[0]).toEqual({ passcode_hash: null, google_sub: null });
+  });
+
+  it("version 6: a pipeline can name its schema in the shared database", async () => {
+    const id = await customer();
+    await client.query("INSERT INTO pipelines (customer_id, key, label, default_role) VALUES ($1,'aa','L','investor')", [id]);
+    await client.query("INSERT INTO pipelines (customer_id, key, label, default_role, shared_schema) VALUES ($1,'bb','L','investor','c_abc')", [id]);
+    const r = await client.query("SELECT key, shared_schema FROM pipelines ORDER BY key");
+    expect(r.rows).toEqual([{ key: "aa", shared_schema: null }, { key: "bb", shared_schema: "c_abc" }]);
+  });
+
+  // The same trap as versions 4 and 5: every copy of the action list must name the new actions.
+  it("version 6: activity accepts google_link and approve, and the whole file applies again with them present", async () => {
+    const id = await customer();
+    await client.query("INSERT INTO people (customer_id, display_name, owner_key, google_sub) VALUES ($1,'P','PP','3001')", [id]);
+    await client.query("INSERT INTO signups (google_sub, email, name, address_hash, status) VALUES ('3002','a@b.co','A','h','declined')");
+    await client.query("INSERT INTO activity (customer_id, action) VALUES ($1, 'google_link'), ($1, 'approve')", [id]);
+    await expect(client.query("INSERT INTO activity (customer_id, action) VALUES ($1, 'delete')", [id])).rejects.toMatchObject({ code: "23514" });
+    const sql = readFileSync(join(__dirname, "schema.sql"), "utf8");
+    await client.query(sql);
+    await client.query(sql);
+    expect((await client.query("SELECT count(*)::int AS n FROM activity")).rows[0].n).toBe(2);
+    expect((await client.query("SELECT passcode_hash, google_sub FROM people")).rows[0]).toEqual({ passcode_hash: null, google_sub: "3001" });
+    expect((await client.query("SELECT status FROM signups")).rows[0].status).toBe("declined");
+    const lists = sql.match(/action IN \([^)]*\)/g) ?? [];
+    expect(lists.length).toBeGreaterThanOrEqual(5);
+    for (const l of lists) {
+      expect(l).toContain("'google_link'");
+      expect(l).toContain("'approve'");
+    }
+  });
+
   it("version 3: the earliest person is named key person, and the status takes only known values", async () => {
     const id = await customer();
     const late = await client.query(
@@ -319,7 +394,7 @@ describe.skipIf(!db.available)("accounts schema", () => {
       const l = await c2.query("SELECT purpose FROM setup_links WHERE token_hash = 'v1tok'");
       expect(l.rows[0].purpose).toBe("connect");
       const m = await c2.query("SELECT max(version)::int AS v FROM accounts_migrations");
-      expect(m.rows[0].v).toBe(5);
+      expect(m.rows[0].v).toBe(6);
     } finally {
       await c2.end();
       await db.reset();

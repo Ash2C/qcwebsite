@@ -69,15 +69,18 @@ async function signIn(code: string, passcode: string, addressHash: string): Prom
     const codeLocked = failures.code > CODE_LIMIT;
 
     const found = await findCustomerByCode(db, code);
+    // A person who signed up with Google has no passcode and is never a candidate here.
     const people =
-      found && found.customer.status === "active" ? found.people.filter((p) => p.status === "active") : [];
+      found && found.customer.status === "active"
+        ? found.people.filter((p) => p.status === "active" && p.passcodeHash !== null)
+        : [];
     let match: PersonRow | undefined;
     if (people.length === 0) {
       // Same work as a real check, so an unknown code cannot be told apart by timing.
       await verifyPasscode(passcode, DUMMY_PASSCODE_HASH);
     } else {
       for (const person of people) {
-        if (await verifyPasscode(passcode, person.passcodeHash)) {
+        if (person.passcodeHash !== null && (await verifyPasscode(passcode, person.passcodeHash))) {
           match = person;
           break;
         }

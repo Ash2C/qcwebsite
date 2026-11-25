@@ -19,7 +19,9 @@ export type ActivityAction =
   | "host"
   | "key"
   | "profile"
-  | "granola";
+  | "granola"
+  | "google_link"
+  | "approve";
 
 export type PipelineRow = {
   id: string;
@@ -51,7 +53,8 @@ export type PersonRow = {
   customerId: string;
   displayName: string;
   ownerKey: string;
-  passcodeHash: string;
+  /** Null for a person who signed up with Google: they cannot use the code screen. */
+  passcodeHash: string | null;
   sessionNo: number;
   status: "active" | "suspended";
 };
@@ -75,12 +78,12 @@ export async function withAccountsDb<T>(fn: (db: Client) => Promise<T>): Promise
   }
 }
 
-const CUSTOMER_COLUMNS = "id, code, name, status, model, claude_key_enc, key_person_id, claude_status, claude_checked_at";
-const PERSON_COLUMNS = "id, customer_id, display_name, owner_key, passcode_hash, session_no, status";
+export const CUSTOMER_COLUMNS = "id, code, name, status, model, claude_key_enc, key_person_id, claude_status, claude_checked_at";
+export const PERSON_COLUMNS = "id, customer_id, display_name, owner_key, passcode_hash, session_no, status";
 
 type Raw = Record<string, unknown>;
 
-function toCustomer(r: Raw): CustomerRow {
+export function toCustomer(r: Raw): CustomerRow {
   return {
     id: r.id as string,
     code: r.code as string,
@@ -94,13 +97,13 @@ function toCustomer(r: Raw): CustomerRow {
   };
 }
 
-function toPerson(r: Raw): PersonRow {
+export function toPerson(r: Raw): PersonRow {
   return {
     id: r.id as string,
     customerId: r.customer_id as string,
     displayName: r.display_name as string,
     ownerKey: r.owner_key as string,
-    passcodeHash: r.passcode_hash as string,
+    passcodeHash: (r.passcode_hash as string | null) ?? null,
     sessionNo: r.session_no as number,
     status: r.status as PersonRow["status"],
   };

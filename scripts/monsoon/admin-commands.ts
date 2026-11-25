@@ -203,14 +203,14 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         parseArgs(argv.slice(1));
         const t = await db.query("SELECT to_regclass('public.accounts_migrations') AS t");
         if (t.rows[0].t) {
-          const v = await db.query("SELECT 1 FROM accounts_migrations WHERE version = 5");
+          const v = await db.query("SELECT 1 FROM accounts_migrations WHERE version = 6");
           if (v.rowCount) {
-            out("Schema already applied (version 5).");
+            out("Schema already applied (version 6).");
             return 0;
           }
         }
         await db.query(readFile(join(process.cwd(), "src", "lib", "monsoon", "accounts", "schema.sql")));
-        out("Schema applied (version 5).");
+        out("Schema applied (version 6).");
         return 0;
       }
       case "customer": {
@@ -518,6 +518,8 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
                 AND (granola_key_enc IS NOT NULL OR granola_status IS NOT NULL OR granola_checked_at IS NOT NULL OR granola_key_set_at IS NOT NULL)`,
             [c.id],
           );
+          // The Google link goes too: a forgotten customer's people cannot sign back in with Google.
+          const google = await db.query("UPDATE people SET google_sub = NULL WHERE customer_id = $1 AND google_sub IS NOT NULL", [c.id]);
           const links = await db.query(
             "UPDATE setup_links SET expires_at = now() WHERE customer_id = $1 AND used_at IS NULL AND expires_at > now()",
             [c.id],
@@ -530,6 +532,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
           }
           out(`People signed out: ${people.rowCount ?? 0}. Unused setup links expired: ${links.rowCount ?? 0}.`);
           out(`Granola keys cleared: ${granola.rowCount ?? 0}.`);
+          out(`Google links cleared: ${google.rowCount ?? 0}.`);
           out(
             `User pages blanked: notes removed ${notes.rowCount ?? 0}, work details removed ${work.rowCount ?? 0}, phone and email cleared for ${details.rowCount ?? 0}.`,
           );

@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS activity (
   pipeline_key TEXT NULL,
   action TEXT NOT NULL CHECK (action IN (
     'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
-    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola'
+    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola',
+    'google_link', 'approve'
   )),
   at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -95,7 +96,8 @@ ALTER TABLE setup_links DROP CONSTRAINT IF EXISTS setup_links_purpose_check,
 ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
   ADD CONSTRAINT activity_action_check CHECK (action IN (
     'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
-    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola'
+    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola',
+    'google_link', 'approve'
   ));
 ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS project_ref TEXT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS pipelines_project_ref_key ON pipelines (project_ref);
@@ -147,7 +149,8 @@ CREATE INDEX IF NOT EXISTS person_notes_person_pipeline_at ON person_notes (pers
 ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
   ADD CONSTRAINT activity_action_check CHECK (action IN (
     'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
-    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola'
+    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola',
+    'google_link', 'approve'
   ));
 
 ALTER TABLE person_work ENABLE ROW LEVEL SECURITY;
@@ -169,7 +172,44 @@ ALTER TABLE people ADD COLUMN IF NOT EXISTS granola_key_set_at TIMESTAMPTZ NULL;
 ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
   ADD CONSTRAINT activity_action_check CHECK (action IN (
     'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
-    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola'
+    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola',
+    'google_link', 'approve'
   ));
 
 INSERT INTO accounts_migrations (version) VALUES (5) ON CONFLICT DO NOTHING;
+
+-- Version 6: sign up with Google. A request waits in signups until it is approved or declined (a
+-- status change; nothing is ever removed). Matching is on Google's permanent account id (google_sub)
+-- only, never on an email. A person who signed up with Google has no passcode, so passcode_hash may
+-- be NULL (the code screen skips such a person). A pipeline hosted in the shared database names its
+-- schema there. Every action list above also names 'google_link' and 'approve', for the same reason
+-- as 'profile' and 'granola'.
+CREATE TABLE IF NOT EXISTS signups (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  google_sub TEXT NOT NULL UNIQUE,
+  email TEXT NOT NULL,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'declined')),
+  customer_id UUID NULL REFERENCES customers(id),
+  address_hash TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_at TIMESTAMPTZ NULL
+);
+CREATE INDEX IF NOT EXISTS signups_address_at ON signups (address_hash, created_at);
+CREATE INDEX IF NOT EXISTS signups_status_at ON signups (status, created_at DESC);
+ALTER TABLE signups ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE people ADD COLUMN IF NOT EXISTS google_sub TEXT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS people_google_sub_key ON people (google_sub);
+ALTER TABLE people ALTER COLUMN passcode_hash DROP NOT NULL;
+
+ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS shared_schema TEXT NULL;
+
+ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
+  ADD CONSTRAINT activity_action_check CHECK (action IN (
+    'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
+    'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola',
+    'google_link', 'approve'
+  ));
+
+INSERT INTO accounts_migrations (version) VALUES (6) ON CONFLICT DO NOTHING;

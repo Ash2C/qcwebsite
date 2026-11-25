@@ -209,6 +209,32 @@ describe.skipIf(!accounts.available)("POST /api/monsoon/session", { timeout: 20_
     expect(vi.mocked(verifyPasscode).mock.calls[0][1]).toBe(DUMMY_PASSCODE_HASH);
   });
 
+  it("skips a person with no passcode (signed up with Google): never checked, never matched", async () => {
+    await client.query(
+      "INSERT INTO people (customer_id, display_name, owner_key, google_sub) VALUES ($1, 'Gil', 'GI', '1001')",
+      [cid],
+    );
+    const started = Date.now();
+    for (const attempt of ["", "null", WRONG]) {
+      const res = await POST(post({ code: "acme-co", passcode: attempt }, `198.51.100.${attempt.length}`));
+      expect(res.status).toBe(401);
+      expect(res.headers.get("set-cookie")).toBeNull();
+    }
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2900);
+    for (const call of vi.mocked(verifyPasscode).mock.calls) expect(typeof call[1]).toBe("string");
+    // Ann and Bob only, three times: the person without a passcode is never verified against.
+    expect(vi.mocked(verifyPasscode)).toHaveBeenCalledTimes(6);
+    expect((await POST(post({ code: "acme-co", passcode: ANN }, "198.51.100.200"))).status).toBe(200);
+  });
+
+  it("a company whose people all lack a passcode gets exactly one dummy verification", async () => {
+    await client.query("UPDATE people SET passcode_hash = NULL WHERE customer_id = $1", [cid]);
+    const started = Date.now();
+    await expectWrong(await POST(post({ code: "acme-co", passcode: ANN })), started);
+    expect(vi.mocked(verifyPasscode)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(verifyPasscode).mock.calls[0][1]).toBe(DUMMY_PASSCODE_HASH);
+  });
+
   it("locks the pair after 5 failures from one address, without verifying", async () => {
     await Promise.all(Array.from({ length: 5 }, () => POST(post({ code: "acme-co", passcode: WRONG }))));
     vi.mocked(verifyPasscode).mockClear();
