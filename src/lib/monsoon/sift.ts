@@ -28,7 +28,6 @@ export type Work = {
 export type SiftHit = ContactHit & { work: Work | null };
 
 const LIST_MAX = 100;
-const MEMBERS_MAX = 2000;
 
 const WORK_COLUMNS = `m.priority, m.next_action, m.next_action_date::text AS next_action_date, s.ord AS stage_ord,
        la.kind AS last_kind, la.summary AS last_summary, la.at AS last_at,
@@ -88,6 +87,17 @@ export function sortHits(hits: SiftHit[], sort: Sort): SiftHit[] {
   });
 }
 
+// `sortHits` for the pipeline's members, as SQL, so the list is cut after it is ordered: the same
+// keys, blanks last, ties by name and then id. A next action counts when it is not blank, as in toWork.
+const HAS_NEXT = "m.next_action ~ '\\S'";
+const ORDER_SQL: Record<Sort, string> = {
+  next: `(CASE WHEN ${HAS_NEXT} THEN m.next_action_date END) ASC NULLS LAST, (CASE WHEN ${HAS_NEXT} THEN 0 ELSE 1 END)`,
+  last: "la.at DESC NULLS LAST",
+  stage: "s.ord ASC",
+  recent: `${RECENT_AT_SQL} DESC NULLS LAST`,
+};
+const BY_NAME_SQL = "lower(COALESCE(p.name, o.name)), COALESCE(m.person_id, m.org_id)::text";
+
 /** Adds each hit's work from its pipeline member. One query for all of them. */
 export function withWork(db: ClientBase, hits: ContactHit[], today: string, opts?: QueryOptions): Promise<SiftHit[]> {
   const ids = [...new Set(hits.map((h) => h.member?.memberId).filter((x): x is string => typeof x === "string"))];
@@ -111,7 +121,8 @@ export function withWork(db: ClientBase, hits: ContactHit[], today: string, opts
 
 /**
  * The pipeline's members (a person or a company each), optionally only the high-priority ones,
- * in the given order. At most 100 rows; `total` counts all that matched.
+ * in the given order. At most 100 rows, the first 100 of that order however many there are;
+ * `total` counts all that matched.
  */
 export function listMembers(
   db: ClientBase,
@@ -125,6 +136,7 @@ export function listMembers(
         `SELECT m.id AS mid, m.role, m.stage, m.person_id, m.org_id AS member_org_id,
                 p.name AS person_name, p.title, p.email, p.org_id AS person_org_id,
                 po.name AS company, o.name AS org_name,
+                count(*) OVER () AS total,
                 ${WORK_COLUMNS}
            FROM members m
            ${WORK_JOINS}
@@ -132,7 +144,8 @@ export function listMembers(
            LEFT JOIN orgs po ON po.id = p.org_id
            LEFT JOIN orgs o ON o.id = m.org_id
           WHERE ($1::boolean IS NOT TRUE OR m.priority = 'high')
-          LIMIT ${MEMBERS_MAX}`,
+          ORDER BY ${ORDER_SQL[o.sort] ?? ORDER_SQL.recent}, ${BY_NAME_SQL}
+          LIMIT ${LIST_MAX}`,
         [o.high],
       );
       const hits = r.rows.map((x): SiftHit => {
@@ -150,7 +163,8 @@ export function listMembers(
           work: toWork(x, o.today),
         };
       });
-      return { contacts: sortHits(hits, o.sort).slice(0, LIST_MAX), total: hits.length };
+      // The page is already in order; sortHits settles ties exactly as it does everywhere else.
+      return { contacts: sortHits(hits, o.sort), total: Number(r.rows[0]?.total ?? 0) };
     },
     opts,
   );
