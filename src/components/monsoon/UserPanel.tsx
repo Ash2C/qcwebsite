@@ -6,6 +6,7 @@ import type { PageInput, UserPage } from "@/lib/monsoon/accounts/profile";
 import { addUserNote, loadGranolaKey, loadRequests, loadUserPage, saveUserPage, type EstateInfo } from "./api";
 import { shortDay } from "./ContactsPanel";
 import GranolaKeyPanel, { GRANOLA_STATE } from "./GranolaKeyPanel";
+import ImportPanel, { NEW_IMPORT_JOB, type ImportJob, type ImportJobChange } from "./ImportPanel";
 import MonsoonLoader from "./MonsoonLoader";
 import RequestsPanel from "./RequestsPanel";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
@@ -63,6 +64,8 @@ export default function UserPanel({
   estate,
   draft,
   onDraft,
+  importJob,
+  onImportJob,
   onBack,
   onUnauthorized,
   onName,
@@ -71,6 +74,12 @@ export default function UserPanel({
   estate: EstateInfo;
   draft: UserDraft;
   onDraft: (draft: UserDraft) => void;
+  /**
+   * The contact import in hand, or null when none is open. While there is one its screen stands in
+   * for this page. It lives in MonsoonApp, like the draft, so it survives the passcode screen.
+   */
+  importJob: ImportJob | null;
+  onImportJob: ImportJobChange;
   onBack: () => void;
   onUnauthorized: () => void;
   /** Told the name on file after a save, so the header agrees at once. */
@@ -257,6 +266,9 @@ export default function UserPanel({
     </div>
   );
 
+  if (importJob) {
+    return <ImportPanel estate={estate} job={importJob} onChange={onImportJob} onUnauthorized={unauthorized} />;
+  }
   if (granolaOpen) {
     return <GranolaKeyPanel onBack={() => setGranolaOpen(false)} onUnauthorized={unauthorized} onStatus={setGranola} />;
   }
@@ -419,6 +431,25 @@ export default function UserPanel({
               </div>
             </section>
           )}
+
+          <section aria-labelledby="user-import" className="flex flex-col gap-2">
+            <h3 id="user-import" className={sectionTitle}>
+              Contacts in {estate.label}
+            </h3>
+            <div className={`${card} overflow-hidden`}>
+              <button
+                type="button"
+                onClick={() => onImportJob({ ...NEW_IMPORT_JOB })}
+                disabled={saving || adding}
+                className={`${rowLook} active:bg-neutral-100 disabled:opacity-50 dark:active:bg-white/10`}
+              >
+                <span className="font-medium">Import contacts</span>
+                <span aria-hidden="true" className={rowState}>
+                  {chevron}
+                </span>
+              </button>
+            </div>
+          </section>
 
           <section aria-labelledby="user-connections" className="flex flex-col gap-2">
             <h3 id="user-connections" className={sectionTitle}>

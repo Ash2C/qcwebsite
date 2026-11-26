@@ -30,7 +30,7 @@ describe("parseCsv", () => {
   });
 
   it("drops a UTF-8 byte order mark and needs no trailing newline", () => {
-    expect(parseCsv("﻿Name,Email\nJane,j@x.com")).toEqual([
+    expect(parseCsv("\uFEFFName,Email\nJane,j@x.com")).toEqual([
       ["Name", "Email"],
       ["Jane", "j@x.com"],
     ]);
@@ -84,7 +84,7 @@ describe("parseCsv", () => {
 
   it("reads nothing from nothing", () => {
     expect(parseCsv("")).toEqual([]);
-    expect(parseCsv("﻿")).toEqual([]);
+    expect(parseCsv("\uFEFF")).toEqual([]);
   });
 
   it("text that looks like a formula or a script stays text", () => {

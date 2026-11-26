@@ -7,7 +7,10 @@ import type { CaptureResult } from "@/lib/monsoon/capture";
 import type { RefineInput, RefineOutput } from "@/lib/monsoon/refine";
 import type { AskMessage, AskResult } from "@/lib/monsoon/ask/loop";
 import type { Profile } from "@/lib/monsoon/contacts";
-import type { SiftHit, Sort } from "@/lib/monsoon/sift";
+import type { ImportInfo, SiftHit, Sort } from "@/lib/monsoon/sift";
+import type { RowClass } from "@/lib/monsoon/import/classify";
+import type { ImportContact, Mapping } from "@/lib/monsoon/import/mapping";
+import type { SaveOutcome } from "@/lib/monsoon/import/save";
 import type { SignedProposal } from "@/lib/monsoon/ask/proposal";
 import type { ClaudeKeyState } from "@/lib/monsoon/accounts/claude-key";
 import type { GranolaKeyState } from "@/lib/monsoon/accounts/granola-key";
@@ -49,11 +52,12 @@ export type ApiResult<T> = { status: number; body: T };
 // own limit, so the server answers first when it can.
 const TIMEOUT_MS = {
   quick: 15_000, // signIn, loadEstates, loadUserPage, loadGranolaKey
-  standard: 35_000, // saveCard, refineCard, actOnCrm, proposeChange, saveUserPage, addUserNote, the Granola key posts
+  standard: 35_000, // saveCard, refineCard, actOnCrm, proposeChange, saveUserPage, addUserNote, the Granola key posts, the import map and check
   upload: 90_000, // readCards: the photo upload on a weak connection counts against the limit
   ask: 70_000, // askCrm
   research: 70_000, // researchContact: one bounded web search
   approve: 70_000, // actOnRequest("approve"): builds a CRM in the shared database
+  importSave: 70_000, // saveImportRows: one batch of an import; the route stops starting rows after 45 seconds
 } as const;
 
 // The one place a request is made: every call gets a timeout signal. Older iOS Safari has no
@@ -387,4 +391,65 @@ export async function addUserNote(estate: string, body: string): Promise<PageRep
       TIMEOUT_MS.standard,
     ),
   );
+}
+
+// --- bulk import ---------------------------------------------------------------------------------
+
+const importPost = async <T>(step: "map" | "check" | "save", body: unknown, timeoutMs: number): Promise<ApiResult<T>> =>
+  parse(
+    await request(
+      `/api/monsoon/import/${step}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+      timeoutMs,
+    ),
+  );
+
+export type ImportMapReply = { mapping: Mapping | null; source: "known" | "claude" | "none" };
+
+/** Which column holds which field, for a file whose headings Monsoon does not know. May use one AI call. */
+export function mapImportColumns(headers: string[], samples: string[][]): Promise<ApiResult<ImportMapReply | { error: string } | null>> {
+  return importPost("map", { headers, samples }, TIMEOUT_MS.standard);
+}
+
+/** For up to 200 rows: new, already in Monsoon, a possible match, a repeat, or unreadable. Saves nothing. */
+export function checkImportRows(
+  pipeline: string,
+  rows: (ImportContact | null)[],
+): Promise<ApiResult<{ classes: RowClass[] } | { error: string } | null>> {
+  return importPost("check", { pipeline, rows }, TIMEOUT_MS.standard);
+}
+
+export type ImportSaveBody = {
+  pipeline: string;
+  importId: string;
+  label: string;
+  role: string;
+  includePossible: boolean;
+  first?: true;
+  rows: { rowNumber: number; contact: ImportContact | null }[];
+};
+
+/** Saves one batch of an import (up to 100 rows). A row sent again is answered as it was the first time. */
+export function saveImportRows(
+  body: ImportSaveBody,
+): Promise<ApiResult<{ results: { rowNumber: number; outcome: SaveOutcome }[] } | { error: string } | null>> {
+  return importPost("save", body, TIMEOUT_MS.importSave);
+}
+
+/** The pipeline's bulk imports, newest first, each with its label and how many people came in with it. */
+export async function loadImports(estate: string): Promise<ApiResult<{ imports: ImportInfo[] } | { error: string } | null>> {
+  const params = new URLSearchParams({ estate, imports: "1" });
+  return parse(await request(`/api/monsoon/contacts?${params}`, { cache: "no-store" }, TIMEOUT_MS.quick));
+}
+
+/** The contacts that came in with one import (at most 100; `total` counts them all). */
+export async function loadImportContacts(
+  estate: string,
+  label: string,
+  sift?: { high: boolean; sort: Sort },
+): Promise<ApiResult<{ contacts: SiftHit[]; total?: number } | { error: string }>> {
+  const params = new URLSearchParams({ estate, import: label, today: localDay() });
+  if (sift?.high) params.set("high", "1");
+  if (sift && sift.sort !== "recent") params.set("sort", sift.sort);
+  return parse(await request(`/api/monsoon/contacts?${params}`, { cache: "no-store" }, TIMEOUT_MS.quick));
 }

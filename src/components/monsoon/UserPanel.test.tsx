@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UserPage } from "@/lib/monsoon/accounts/profile";
 import * as api from "./api";
 import { shortDay } from "./ContactsPanel";
+import { NEW_IMPORT_JOB, type ImportJob } from "./ImportPanel";
 import UserPanel, { EMPTY_USER_DRAFT, type UserDraft } from "./UserPanel";
 
 vi.mock("./api", () => ({
@@ -46,13 +47,21 @@ let onBack: ReturnType<typeof vi.fn>;
 let onUnauthorized: ReturnType<typeof vi.fn>;
 let onName: ReturnType<typeof vi.fn>;
 let drafts: UserDraft[];
+let importJobs: (ImportJob | null)[];
 const lastDraft = () => drafts[drafts.length - 1];
 
 // The draft lives in the parent, as it does in MonsoonApp.
 function Harness({ start }: { start: UserDraft }) {
   const [draft, setDraft] = React.useState(start);
+  const [importJob, setImportJob] = React.useState<ImportJob | null>(null);
   return (
     <UserPanel
+      importJob={importJob}
+      onImportJob={(next) => {
+        const job = typeof next === "function" ? (importJob ? next(importJob) : importJob) : next;
+        importJobs.push(job);
+        setImportJob(job);
+      }}
       estate={ESTATE}
       draft={draft}
       onDraft={(d) => {
@@ -77,6 +86,7 @@ beforeEach(() => {
   onUnauthorized = vi.fn();
   onName = vi.fn();
   drafts = [];
+  importJobs = [];
   m.loadUserPage.mockResolvedValue(reply(PAGE));
   m.loadGranolaKey.mockResolvedValue(granola(GRANOLA_OFF));
 });
@@ -579,6 +589,39 @@ describe("UserPanel", () => {
       m.actOnRequest.mockResolvedValue({ status: 401, body: { error: "unauthorized" } });
       await user.click(await screen.findByRole("button", { name: "Approve Gil Hale" }));
       await waitFor(() => expect(onUnauthorized).toHaveBeenCalledTimes(1));
+    });
+  });
+  describe("Import contacts", () => {
+    it("has an Import contacts row that opens the import screen for this CRM, and Back returns with the edits kept", async () => {
+      const user = userEvent.setup();
+      await view();
+      await user.type(screen.getByLabelText("Phone"), "9");
+      const draftsBefore = drafts.length;
+      await user.click(screen.getByRole("button", { name: "Import contacts" }));
+      expect(importJobs).toEqual([NEW_IMPORT_JOB]);
+      expect(await screen.findByRole("heading", { name: "Import contacts" })).toBeInTheDocument();
+      expect(screen.getByText(/The contacts go into Traxo\./)).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "Your page" })).toBeNull();
+
+      await user.click(screen.getByRole("button", { name: "Back" }));
+      expect(importJobs[importJobs.length - 1]).toBeNull();
+      expect(await screen.findByRole("heading", { name: "Your page" })).toBeInTheDocument();
+      expect(screen.getByLabelText("Phone")).toHaveValue("+31 6 1234 56789");
+      expect(drafts.length).toBe(draftsBefore);
+      expect(m.loadUserPage).toHaveBeenCalledTimes(1);
+    });
+
+    it("the row is off while a save is away", async () => {
+      const user = userEvent.setup();
+      await view();
+      const rowButton = screen.getByRole("button", { name: "Import contacts" });
+      let finishSave: (v: never) => void = () => {};
+      m.saveUserPage.mockReturnValue(new Promise((resolve) => (finishSave = resolve)));
+      await user.type(screen.getByLabelText("Phone"), "9");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(rowButton).toBeDisabled();
+      finishSave(reply(PAGE));
+      await waitFor(() => expect(rowButton).toBeEnabled());
     });
   });
 });

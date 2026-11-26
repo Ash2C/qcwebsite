@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { actOnCrm, addUserNote, askCrm, disconnectGranolaKey, loadGranolaKey, saveGranolaKey, testGranolaKey, loadUserPage, saveUserPage, researchContact, loadEstates, loadProfile, proposeChange, searchContacts, readCards, refineCard, saveCard, signIn, actOnRequest, loadRequests, loadSignInOptions } from "./api";
+import { actOnCrm, addUserNote, askCrm, disconnectGranolaKey, loadGranolaKey, saveGranolaKey, testGranolaKey, loadUserPage, saveUserPage, researchContact, loadEstates, loadProfile, proposeChange, searchContacts, readCards, refineCard, saveCard, signIn, actOnRequest, loadRequests, loadSignInOptions, mapImportColumns, checkImportRows, saveImportRows, loadImports, loadImportContacts } from "./api";
 
 // `fetch` is stubbed: nothing here touches the network.
 const fetchMock = vi.fn();
@@ -18,6 +18,16 @@ afterEach(() => {
 const refine = { fields: { name: "A", title: "", org: "", email: "", phone: "", linkedin: "" }, notes: "", spoken: "x" };
 const save = { estate: "traxo", captureId: "c", role: "r", fields: { name: "A" } };
 const act = { estate: "traxo", proposal: { kind: "add_note" } as never, signature: "s" };
+
+const IMPORT_SAVE = {
+  pipeline: "traxo",
+  importId: "3f0c2a52-8a4e-4c56-9d0a-1b2c3d4e5f60",
+  label: "LinkedIn import, Nov 2026",
+  role: "lp_prospect",
+  includePossible: false,
+  first: true as const,
+  rows: [{ rowNumber: 0, contact: { name: "Jane Tan" } }],
+};
 
 const PAGE_INPUT = { name: "Dana", phone: null, email: null, company: "Acme", website: null, roleObjectives: null };
 
@@ -54,6 +64,22 @@ const CALLS: [string, string, number, () => Promise<unknown>][] = [
   ["actOnRequest (approve)", "/api/monsoon/requests", 70_000, () => actOnRequest("id-1", "approve")],
   ["actOnRequest (decline)", "/api/monsoon/requests", 35_000, () => actOnRequest("id-1", "decline")],
   ["actOnRequest (reopen)", "/api/monsoon/requests", 35_000, () => actOnRequest("id-1", "reopen")],
+  ["mapImportColumns", "/api/monsoon/import/map", 35_000, () => mapImportColumns(["Name"], [["Jane"]])],
+  ["checkImportRows", "/api/monsoon/import/check", 35_000, () => checkImportRows("traxo", [{ name: "Jane" }, null])],
+  ["saveImportRows", "/api/monsoon/import/save", 70_000, () => saveImportRows(IMPORT_SAVE)],
+  ["loadImports", "/api/monsoon/contacts?estate=zero+one&imports=1", 15_000, () => loadImports("zero one")],
+  [
+    "loadImportContacts",
+    `/api/monsoon/contacts?estate=traxo&import=LinkedIn+import%2C+Nov+2026&today=${LOCAL_DAY}`,
+    15_000,
+    () => loadImportContacts("traxo", "LinkedIn import, Nov 2026"),
+  ],
+  [
+    "loadImportContacts (sifted)",
+    `/api/monsoon/contacts?estate=traxo&import=A&today=${LOCAL_DAY}&high=1&sort=stage`,
+    15_000,
+    () => loadImportContacts("traxo", "A", { high: true, sort: "stage" }),
+  ],
 ];
 
 describe("client timeouts", () => {
@@ -153,6 +179,26 @@ describe("client timeouts", () => {
       return JSON.parse(init.body);
     });
     expect(bodies).toEqual([{ test: true }, { granolaKey: "grn_fake_key_for_tests" }, { disconnect: true }]);
+  });
+
+  it("the import calls post JSON: the headings and samples, the rows to check, and one batch to save", async () => {
+    await mapImportColumns(["Name"], [["Jane"]]);
+    await checkImportRows("traxo", [{ name: "Jane" }, null]);
+    await saveImportRows(IMPORT_SAVE);
+    const bodies = fetchMock.mock.calls.map(([, init]) => {
+      expect(init.method).toBe("POST");
+      expect(init.headers).toEqual({ "Content-Type": "application/json" });
+      return JSON.parse(init.body as string);
+    });
+    expect(bodies[0]).toEqual({ headers: ["Name"], samples: [["Jane"]] });
+    expect(bodies[1]).toEqual({ pipeline: "traxo", rows: [{ name: "Jane" }, null] });
+    expect(bodies[2]).toEqual(IMPORT_SAVE);
+  });
+
+  it("the imports and the contacts of one import are read fresh", async () => {
+    await loadImports("traxo");
+    await loadImportContacts("traxo", "A");
+    for (const [, init] of fetchMock.mock.calls) expect(init.cache).toBe("no-store");
   });
 
   it("keeps each call's own method, headers and body beside the signal", async () => {

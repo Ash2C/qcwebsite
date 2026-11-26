@@ -34,6 +34,11 @@ vi.mock("./api", () => ({
   loadSignInOptions: vi.fn(),
   loadRequests: vi.fn(),
   actOnRequest: vi.fn(),
+  mapImportColumns: vi.fn(),
+  checkImportRows: vi.fn(),
+  saveImportRows: vi.fn(),
+  loadImports: vi.fn(),
+  loadImportContacts: vi.fn(),
 }));
 vi.mock("./image", () => ({
   downsizeImage: vi.fn(),
@@ -2652,5 +2657,90 @@ describe("Monsoon branding", () => {
       "srcset",
       "/monsoon/brand/monsoon-logo-on-dark.svg",
     );
+  });
+});
+
+describe("Importing contacts", () => {
+  const DANA = { id: "p-dana", name: "Dana Lee" };
+  const BO = { id: "p-bo", name: "Bo Chen" };
+  const PAGE = {
+    person: { name: "Dana Lee", phone: null, email: null },
+    work: { company: null, website: null, roleObjectives: null },
+    notes: [],
+    notesTotal: 0,
+  };
+  const as = (person: { id: string; name: string }) => m.loadEstates.mockResolvedValue({ status: 200, body: { ...ESTATES, person } });
+  const FILE = () =>
+    new File(["First Name,Last Name,Company,Connected On\nJane,Tan,Acme,12 Mar 2021\nRaj,Rao,Beta,13 Mar 2021\n"], "Connections.csv", { type: "text/csv" });
+  const added = (body: { rows: { rowNumber: number }[] }) =>
+    ({ status: 200, body: { results: body.rows.map((r) => ({ rowNumber: r.rowNumber, outcome: "added" })) } }) as never;
+
+  /** From the app to an import stopped by a 401 on its first save, with the passcode screen showing. */
+  async function importUntilSignedOut(user: User) {
+    await user.click(await screen.findByRole("button", { name: "Dana Lee, your page" }));
+    await user.click(await screen.findByRole("button", { name: "Import contacts" }));
+    await user.upload(screen.getByLabelText("Choose a file"), FILE());
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    m.saveImportRows.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never);
+    await user.click(await screen.findByRole("button", { name: "Import 2 contacts" }));
+    await screen.findByLabelText("Passcode");
+  }
+  async function unlock(user: User) {
+    await user.type(screen.getByLabelText("Passcode"), "a-long-passcode-here");
+    m.signIn.mockResolvedValue({ status: 200, body: { ok: true } });
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+  }
+
+  beforeEach(() => {
+    as(DANA);
+    m.loadUserPage.mockResolvedValue({ status: 200, body: { page: PAGE } });
+    m.checkImportRows.mockImplementation(async (_pipeline, rows) => ({ status: 200, body: { classes: rows.map(() => "new") } }) as never);
+    m.saveImportRows.mockImplementation(async (body) => added(body));
+  });
+
+  it("opens from Your page for the pipeline in use, and Back returns to it", async () => {
+    const user = userEvent.setup();
+    render(<MonsoonApp />);
+    await ready();
+    await user.click(await screen.findByRole("button", { name: "Dana Lee, your page" }));
+    await user.click(await screen.findByRole("button", { name: "Import contacts" }));
+    expect(await screen.findByRole("heading", { name: "Import contacts" })).toBeInTheDocument();
+    expect(screen.getByText(/The contacts go into Traxo\./)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByRole("heading", { name: "Your page" })).toBeInTheDocument();
+  });
+
+  it("an import stopped by the passcode screen is still there after signing in, and carries on with the same rows", async () => {
+    const user = userEvent.setup();
+    render(<MonsoonApp />);
+    await ready();
+    await importUntilSignedOut(user);
+    await unlock(user);
+    await user.click(await screen.findByRole("button", { name: "Continue the import" }));
+    expect(await screen.findByText("2 imported, 0 already here, 0 skipped, 0 could not be saved")).toBeInTheDocument();
+    expect(m.saveImportRows).toHaveBeenCalledTimes(2);
+    const [refused, sent] = m.saveImportRows.mock.calls.map(([b]) => b);
+    expect(sent.importId).toBe(refused.importId);
+    expect(sent.rows).toEqual(refused.rows);
+    expect(sent).toMatchObject({ pipeline: "traxo", first: true, includePossible: false });
+    expect(sent.label).toMatch(/^LinkedIn import, [A-Z][a-z]{2} \d{4}$/);
+    expect(sent.rows[0]).toEqual({ rowNumber: 0, contact: { name: "Jane Tan", org: "Acme", connectedOn: "2021-03-12" } });
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(await screen.findByRole("heading", { name: "Your page" })).toBeInTheDocument();
+  });
+
+  it("a different person signing in finds nothing of the last person's import", async () => {
+    const user = userEvent.setup();
+    render(<MonsoonApp />);
+    await ready();
+    await importUntilSignedOut(user);
+    as(BO);
+    await unlock(user);
+    await screen.findByText("Snap or choose a photo");
+    await user.click(await screen.findByRole("button", { name: "Bo Chen, your page" }));
+    await screen.findByRole("heading", { name: "You" });
+    expect(screen.queryByRole("heading", { name: "Import contacts" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Import contacts" }));
+    expect(await screen.findByLabelText("Choose a file")).toBeInTheDocument();
   });
 });

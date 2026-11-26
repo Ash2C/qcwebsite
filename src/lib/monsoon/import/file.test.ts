@@ -86,7 +86,7 @@ const csvFile = (text: string, name = "people.csv") => new File([text], name, { 
 
 describe("readImportFile", () => {
   it("reads a CSV file into its header and rows", async () => {
-    const table = await readImportFile(csvFile("﻿Name,Email\nJane Tan,j@x.com\nRaj Rao,\n"));
+    const table = await readImportFile(csvFile("\uFEFFName,Email\nJane Tan,j@x.com\nRaj Rao,\n"));
     expect(table.headers).toEqual(["Name", "Email"]);
     expect(table.rows).toEqual([
       ["Jane Tan", "j@x.com"],

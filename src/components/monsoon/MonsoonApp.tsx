@@ -6,6 +6,7 @@ import ClaudeKeyPanel from "./ClaudeKeyPanel";
 import { nextChipStatus, onClaudeStatus, type ClaudeChipStatus } from "./claudeStatus";
 import UpdateBanner from "./UpdateBanner";
 import UserPanel, { EMPTY_USER_DRAFT, type UserDraft } from "./UserPanel";
+import type { ImportJob, ImportJobChange } from "./ImportPanel";
 import MonsoonLoader from "./MonsoonLoader";
 import MonsoonLogo from "./MonsoonLogo";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -119,6 +120,14 @@ export default function MonsoonApp() {
   // on this phone, the page is closed and the draft dropped.
   const [userOpen, setUserOpen] = useState(false);
   const [userDraft, setUserDraft] = useState<UserDraft>(EMPTY_USER_DRAFT);
+  // A contact import opened from that page: the file's rows and how far the import has got. It lives
+  // here so an import interrupted by the passcode screen carries on after signing in. It belongs to
+  // one person and one CRM, like the page.
+  const [importJob, setImportJob] = useState<ImportJob | null>(null);
+  const changeImportJob = useCallback<ImportJobChange>(
+    (next) => setImportJob((prev) => (typeof next === "function" ? (prev ? next(prev) : prev) : next)),
+    [],
+  );
   const personIdRef = useRef<string | null>(null);
   const [passcode, setPasscode] = useState("");
   const [passError, setPassError] = useState<string | null>(null);
@@ -190,6 +199,7 @@ export default function MonsoonApp() {
       // The user's page is about one CRM too: its work fields and notes do not carry over.
       setUserOpen(false);
       setUserDraft(EMPTY_USER_DRAFT);
+      setImportJob(null);
     }
   }, [estateKey]);
   const formRef = useRef(form);
@@ -217,6 +227,7 @@ export default function MonsoonApp() {
         if (personIdRef.current !== null && personIdRef.current !== personId) {
           setUserOpen(false);
           setUserDraft(EMPTY_USER_DRAFT);
+          setImportJob(null);
           // Nor their Ask conversation (its answers can restate their page), draft or open contact.
           setAsk(EMPTY_ASK);
           setAskOpen(false);
@@ -793,6 +804,8 @@ export default function MonsoonApp() {
             estate={estate}
             draft={userDraft}
             onDraft={setUserDraft}
+            importJob={importJob}
+            onImportJob={changeImportJob}
             onBack={() => setUserOpen(false)}
             onUnauthorized={() => setPhase("locked")}
             onName={setPersonName}
