@@ -8,6 +8,7 @@
 import { createHash } from "node:crypto";
 import type { ClientBase } from "pg";
 import { canHold, contactKeys, judge, type Candidate } from "./classify";
+import { alsoInEntry, companyImportEntry, importedFromEntry } from "./entries";
 import { cleanContact, type ImportContact } from "./mapping";
 
 export type SaveOutcome = "added" | "existing" | "possible_skipped" | "skipped" | "unreadable" | "repeat" | "failed";
@@ -171,7 +172,7 @@ export async function saveImportRows(db: ClientBase, input: SaveImportInput, opt
       const person = verdict.match;
       if (person.inImport) return { rowNumber, outcome: "repeat" };
       if (person.ownMember !== null) {
-        await db.query(ALSO_SQL, [person.ownMember, input.owner, `Also in ${label}.`, captureId, record("existing"), person.id, person.orgId]);
+        await db.query(ALSO_SQL, [person.ownMember, input.owner, alsoInEntry(label), captureId, record("existing"), person.id, person.orgId]);
       }
       return { rowNumber, outcome: "existing" };
     }
@@ -180,7 +181,7 @@ export async function saveImportRows(db: ClientBase, input: SaveImportInput, opt
       if (!canHold(keys, people)) return { rowNumber, outcome: "possible_skipped" };
     }
 
-    let summary = `Imported from ${label}.`;
+    let summary = importedFromEntry(label);
     if (contact.connectedOn) summary += ` Connected on LinkedIn ${shortDate(contact.connectedOn)}.`;
     const added = (
       await db.query(ADD_SQL, [
@@ -251,10 +252,7 @@ export async function noteCompanyImports(db: ClientBase, o: { label: string; own
   }
   if (filed.size === 0 || label === "") return;
   const members = [...filed.keys()];
-  const summaries = members.map((m) => {
-    const n = filed.get(m) as number;
-    return `${n} ${n === 1 ? "person" : "people"} imported from ${label}.`;
-  });
+  const summaries = members.map((m) => companyImportEntry(filed.get(m) as number, label));
   await db.query(
     `INSERT INTO touches (member_id, kind, by_whom, summary)
      SELECT x.member_id, 'system', $3::text, x.summary FROM unnest($1::uuid[], $2::text[]) AS x(member_id, summary)`,

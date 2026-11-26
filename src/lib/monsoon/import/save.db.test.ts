@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { recentContacts } from "../contacts";
 import { listMembers } from "../sift";
 import { makeTestDb } from "../testing/db";
 import type { ImportContact } from "./mapping";
@@ -205,6 +206,44 @@ describe.skipIf(!testDb.available)("saveImportRows (real Postgres)", () => {
     expect(await outcomes(input([{ name: "Jane Tan", org: "Acme Capital" }]))).toEqual(["existing"]);
     expect(await count("touches", "kind = 'system'")).toBe(1);
     expect(await last()).toEqual(before);
+  });
+
+  it("importing a file that matches an existing contact leaves the Recent order as it was", async () => {
+    const { member } = await janeOnFile();
+    // Touched after Jane, so ahead of her in Recent; and a company that is itself a pipeline entry, behind her.
+    const zed = (await db.query("INSERT INTO people (name, name_key, source) VALUES ('Zed Ng', 'zed ng', 'seed') RETURNING id")).rows[0].id;
+    await db.query(
+      `INSERT INTO members (person_id, role, stage, owner, source, created_at, updated_at)
+       VALUES ($1, 'investor', 'contacted', 'VF', 'seed', now() - interval '2 days', now() - interval '2 days')`,
+      [zed],
+    );
+    const org = (await db.query("INSERT INTO orgs (name, name_key, source) VALUES ('Northwind', 'northwind', 'seed') RETURNING id")).rows[0].id;
+    const company = (
+      await db.query(
+        `INSERT INTO members (org_id, role, stage, owner, source, created_at, updated_at)
+         VALUES ($1, 'introducer', 'engaged', 'VF', 'seed', now() - interval '5 days', now() - interval '5 days') RETURNING id`,
+        [org],
+      )
+    ).rows[0].id;
+    const order = async () => ({
+      list: (await listMembers(db, { high: false, sort: "recent", today: "2026-11-25" })).contacts.map((c) => [c.name, c.work!.recentAt]),
+      recent: (await recentContacts(db)).map((c) => c.name),
+    });
+    const before = await order();
+    expect(before.recent).toEqual(["Zed Ng", "Jane Tan", "Northwind"]);
+
+    const results = await saveImportRows(db, input([{ name: "Jane Tan", org: "Acme Capital" }, { name: "Bea Park", org: "Northwind" }]));
+    expect(results.map((r) => r.outcome)).toEqual(["existing", "added"]);
+    await noteCompanyImports(db, { label: LABEL, owner: "VF", results });
+    expect((await db.query("SELECT member_id, summary FROM touches WHERE kind = 'system' ORDER BY at")).rows).toEqual([
+      { member_id: member, summary: `Also in ${LABEL}.` },
+      { member_id: company, summary: `1 person imported from ${LABEL}.` },
+    ]);
+    expect(await order()).toEqual(before);
+
+    // Any other system entry still counts, as it did.
+    await db.query("INSERT INTO touches (member_id, kind, by_whom, summary) VALUES ($1, 'system', 'VF', 'Priority: (none) \u2192 high')", [company]);
+    expect((await order()).recent).toEqual(["Northwind", "Zed Ng", "Jane Tan"]);
   });
 
   it("a new contact has no last action", async () => {

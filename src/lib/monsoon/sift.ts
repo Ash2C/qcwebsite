@@ -3,6 +3,7 @@
 import type { ClientBase } from "pg";
 import { readOnly, type QueryOptions } from "./ask/queries";
 import type { ContactHit } from "./contacts";
+import { RECENT_AT_SQL } from "./import/entries";
 import { actionLabel, dueBucket, type DueBucket } from "./rules";
 
 export const SORTS = ["recent", "next", "last", "stage"] as const;
@@ -19,7 +20,7 @@ export type Work = {
   lastAt: string | null; // ISO time
   /** The stage's place in the pipeline order. */
   stageOrd: number;
-  /** The newer of the member's last update and newest timeline entry (the "recent" order). */
+  /** The newer of the member's last update and newest timeline entry, an import's own entries aside (the "recent" order). */
   recentAt: string | null;
 };
 
@@ -31,7 +32,7 @@ const MEMBERS_MAX = 2000;
 
 const WORK_COLUMNS = `m.priority, m.next_action, m.next_action_date::text AS next_action_date, s.ord AS stage_ord,
        la.kind AS last_kind, la.summary AS last_summary, la.at AS last_at,
-       GREATEST(m.updated_at, (SELECT max(t.at) FROM touches t WHERE t.member_id = m.id)) AS recent_at`;
+       ${RECENT_AT_SQL} AS recent_at`;
 const WORK_JOINS = `JOIN stages s ON s.key = m.stage
   LEFT JOIN LATERAL (
     SELECT t.kind, t.summary, t.at FROM touches t

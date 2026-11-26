@@ -3,6 +3,7 @@
 // unnamed statements, connection left outside a transaction on return or throw). Nothing here writes.
 import type { ClientBase } from "pg";
 import { clip, readOnly, type MemberKind, type MemberRef, type QueryOptions, type TimelineEntry } from "./ask/queries";
+import { RECENT_AT_SQL } from "./import/entries";
 import { dueBucket, type DueBucket } from "./rules";
 
 export type ContactHit = {
@@ -173,7 +174,7 @@ export function recentContacts(db: ClientBase, opts?: QueryOptions): Promise<Con
            LEFT JOIN people p ON p.id = m.person_id
            LEFT JOIN orgs po ON po.id = p.org_id
            LEFT JOIN orgs o ON o.id = m.org_id
-          ORDER BY GREATEST(m.updated_at, (SELECT max(t.at) FROM touches t WHERE t.member_id = m.id)) DESC NULLS LAST,
+          ORDER BY ${RECENT_AT_SQL} DESC NULLS LAST,
                    lower(COALESCE(p.name, o.name)), m.id
           LIMIT ${RECENT_MAX}`,
       );
