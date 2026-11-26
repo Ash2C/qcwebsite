@@ -463,6 +463,15 @@ describe.skipIf(!testDb.available)("saveImportRows (real Postgres)", () => {
     expect(await counts()).toEqual([0, 0, 0, 0, 0]);
   });
 
+  it("never saves a row numbered past the 5,000 a file may have", async () => {
+    const i = input([], { rows: [4999, 5000].map((rowNumber) => ({ rowNumber, contact: { name: `Row ${rowNumber}` } })) });
+    expect(await saveImportRows(db, i)).toEqual([
+      { rowNumber: 4999, outcome: "added" },
+      { rowNumber: 5000, outcome: "failed" },
+    ]);
+    expect(await count("people")).toBe(1);
+  });
+
   it("stops starting rows after the deadline and reports the rest as failed", async () => {
     const i = input([{ name: "A One" }, { name: "B Two" }]);
     expect((await saveImportRows(db, i, { deadline: Date.now() - 1 })).map((r) => r.outcome)).toEqual(["failed", "failed"]);

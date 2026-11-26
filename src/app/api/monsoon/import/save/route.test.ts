@@ -227,6 +227,9 @@ describe("POST /api/monsoon/import/save", () => {
     ["a negative row number", validBody({ rows: [{ rowNumber: -1, contact: { name: "A" } }] })],
     ["a row number that is text", validBody({ rows: [{ rowNumber: "1", contact: { name: "A" } }] })],
     ["a huge row number", validBody({ rows: [{ rowNumber: 10_000_001, contact: { name: "A" } }] })],
+    ["a row number past the 5,000 rows a file may have", validBody({ rows: [{ rowNumber: 5000, contact: { name: "A" } }] })],
+    ["a label longer than 80 characters once cleaned", validBody({ label: `  ${"x".repeat(81)} ` })],
+    ["a closing request with a label longer than 80", { pipeline: "zeroone", importId: IMPORT_ID, label: "x".repeat(81), finish: true }],
     ["the same row number twice", validBody({ rows: [{ rowNumber: 1, contact: { name: "A" } }, { rowNumber: 1, contact: { name: "B" } }] })],
     ["a contact that is text", validBody({ rows: [{ rowNumber: 1, contact: "Jane" }] })],
     ["a contact that is a list", validBody({ rows: [{ rowNumber: 1, contact: ["Jane"] }] })],
@@ -235,6 +238,13 @@ describe("POST /api/monsoon/import/save", () => {
     expect(res.status).toBe(400);
     expect((await res.json()).outcome).toBe("invalid");
     expect(withDb).not.toHaveBeenCalled();
+  });
+
+  it("accepts the last row a file can have and a label of exactly 80 characters, however it is padded", async () => {
+    const label = "x".repeat(80);
+    const res = await POST(post(validBody({ label: `  ${label}\n `, rows: [{ rowNumber: 4999, contact: { name: "A" } }] })));
+    expect(res.status).toBe(200);
+    expect(saveImportRows.mock.calls[0][1]).toMatchObject({ label, rows: [{ rowNumber: 4999 }] });
   });
 
   it("accepts 100 rows", async () => {

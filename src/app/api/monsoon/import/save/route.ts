@@ -4,7 +4,7 @@ import { withImportLock } from "@/lib/monsoon/import/guard";
 import { invalid, logFailure, readObject } from "@/lib/monsoon/import/http";
 import { SAVE_MAX_BODY, SAVE_MAX_ROWS } from "@/lib/monsoon/import/limits";
 import { cleanContact, type ImportContact } from "@/lib/monsoon/import/mapping";
-import { ImportInputError, cleanLabel, noteCompanyImports, saveImportRows } from "@/lib/monsoon/import/save";
+import { ImportInputError, MAX_ROW_NUMBER, cleanLabel, labelTooLong, noteCompanyImports, saveImportRows } from "@/lib/monsoon/import/save";
 import { ensureOwner } from "@/lib/monsoon/owners";
 
 export const runtime = "nodejs";
@@ -14,7 +14,6 @@ export const maxDuration = 60;
 // The browser builds each request by size as well as by count, well inside this (limits.ts).
 const MAX_BODY = SAVE_MAX_BODY;
 const MAX_ROWS = SAVE_MAX_ROWS;
-const MAX_ROW_NUMBER = 10_000_000;
 // No row is started after this long, so the answer is sent well inside maxDuration. Rows not
 // started come back as `failed` and can be sent again.
 const BUDGET_MS = 45_000;
@@ -44,6 +43,8 @@ export async function POST(request: Request) {
   if (typeof b.importId !== "string" || !UUID_RE.test(b.importId)) return invalid("importId must be a UUID");
   const label = cleanLabel(b.label);
   if (label === "") return invalid("label is required");
+  // The limits the browser keeps to (5,000 rows a file, 80 characters a label) hold here too.
+  if (labelTooLong(b.label)) return invalid("label must be at most 80 characters");
   const owner = account.person.ownerKey;
 
   if (b.finish === true) {
@@ -76,7 +77,7 @@ export async function POST(request: Request) {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return invalid("each row must be an object");
     const { rowNumber, contact } = raw as { rowNumber?: unknown; contact?: unknown };
     if (typeof rowNumber !== "number" || !Number.isInteger(rowNumber) || rowNumber < 0 || rowNumber > MAX_ROW_NUMBER) {
-      return invalid("rowNumber must be a whole number");
+      return invalid("rowNumber must be a whole number from 0 to 4999");
     }
     if (seen.has(rowNumber)) return invalid("rowNumber must not repeat");
     seen.add(rowNumber);

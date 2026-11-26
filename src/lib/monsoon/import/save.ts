@@ -40,11 +40,22 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const CONTROL = new RegExp(`[${String.fromCharCode(0)}-${String.fromCharCode(31)}${String.fromCharCode(127)}]`, "g");
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+function oneLine(label: unknown): string {
+  return typeof label === "string" ? label.replace(CONTROL, " ").replace(/\s+/g, " ").trim() : "";
+}
+
 /** A label as stored and shown: one line, no control characters, trimmed, at most 80 characters. */
 export function cleanLabel(label: unknown): string {
-  if (typeof label !== "string") return "";
-  return label.replace(CONTROL, " ").replace(/\s+/g, " ").trim().slice(0, MAX_LABEL).trim();
+  return oneLine(label).slice(0, MAX_LABEL).trim();
 }
+
+/** True when a label, cleaned, is longer than the 80 characters one may have: the routes refuse it. */
+export function labelTooLong(label: unknown): boolean {
+  return oneLine(label).length > MAX_LABEL;
+}
+
+/** A row's number is its place among the file's data rows, so it is below the most rows a file may have. */
+export const MAX_ROW_NUMBER = MAX_FILE_ROWS - 1;
 
 /** The capture id of one row of one import: a UUID worked out from both, the same every time. */
 export function importCaptureId(importId: string, rowNumber: number): string {
@@ -238,7 +249,7 @@ export async function saveImportRows(db: ClientBase, input: SaveImportInput, opt
   for (const row of input.rows) {
     const rowNumber = row?.rowNumber;
     const contact = cleanContact(row?.contact);
-    if (!Number.isInteger(rowNumber) || rowNumber < 0) results.push({ rowNumber, outcome: "failed" });
+    if (!Number.isInteger(rowNumber) || rowNumber < 0 || rowNumber > MAX_ROW_NUMBER) results.push({ rowNumber, outcome: "failed" });
     else if (contact === null) results.push({ rowNumber, outcome: "unreadable" });
     else if (opts.deadline !== undefined && Date.now() > opts.deadline) results.push({ rowNumber, outcome: "failed" });
     else results.push(await saveRow(rowNumber, contact));
@@ -300,7 +311,7 @@ export async function noteCompanyImports(db: ClientBase, o: { importId: string; 
   if (importId === null) throw new ImportInputError("importId must be a UUID");
   const label = cleanLabel(o.label);
   if (label === "") throw new ImportInputError("label is required");
-  const captureIds = Array.from({ length: MAX_FILE_ROWS }, (_, rowNumber) => importCaptureId(importId, rowNumber));
+  const captureIds = Array.from({ length: MAX_ROW_NUMBER + 1 }, (_, rowNumber) => importCaptureId(importId, rowNumber));
   await db.query("BEGIN ISOLATION LEVEL READ COMMITTED");
   try {
     await db.query(CLOSE_LOCK_SQL, [`monsoon-import-close:${importId}`]);
