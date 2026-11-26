@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ContactsPanel, { EMPTY_CONTACTS, type ContactsState } from "./ContactsPanel";
 import * as api from "./api";
 
-vi.mock("./api", () => ({ searchContacts: vi.fn(), loadProfile: vi.fn() }));
+vi.mock("./api", () => ({ searchContacts: vi.fn(), loadProfile: vi.fn(), loadImports: vi.fn(), loadImportContacts: vi.fn() }));
 const m = vi.mocked(api);
 
 const ESTATE = {
@@ -413,5 +413,161 @@ describe("ContactsPanel tells Ask what is open", () => {
     await advance(0);
     expect(m.loadProfile).toHaveBeenCalledTimes(2);
     expect(screen.getByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
+  });
+});
+
+describe("ContactsPanel: imports", () => {
+  const LINKEDIN = "LinkedIn import, Nov 2026";
+  const IMPORTS = [
+    { label: LINKEDIN, count: 120, at: "2026-11-25T10:00:00Z" },
+    { label: "old crm import, Oct 2026", count: 2, at: "2026-10-02T10:00:00Z" },
+  ];
+  const imports = (list: unknown[] = IMPORTS) => ({ status: 200, body: { imports: list } }) as never;
+  const imported = (contacts: unknown[], total?: number) => ({ status: 200, body: { contacts, total: total ?? contacts.length } }) as never;
+  const picker = () => screen.queryByRole("combobox", { name: "Imports" });
+
+  it("asks for the imports when the tab opens and offers nothing when there are none", async () => {
+    m.searchContacts.mockResolvedValue(hits(SELF));
+    m.loadImports.mockResolvedValue(imports([]));
+    render(<Harness />);
+    await advance(0);
+    expect(m.loadImports).toHaveBeenCalledTimes(1);
+    expect(m.loadImports).toHaveBeenCalledWith("traxo");
+    expect(picker()).toBeNull();
+    expect(screen.getByText("Jane Tan")).toBeInTheDocument();
+    expect(m.loadImportContacts).not.toHaveBeenCalled();
+  });
+
+  it("an imports list that will not load leaves the tab exactly as it was", async () => {
+    m.searchContacts.mockResolvedValue(hits(SELF));
+    m.loadImports.mockRejectedValue(new Error("net"));
+    const onUnauthorized = vi.fn();
+    const first = render(<Harness onUnauthorized={onUnauthorized} />);
+    await advance(0);
+    expect(picker()).toBeNull();
+    expect(screen.getByText("Jane Tan")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Recent" })).toBeInTheDocument();
+    expect(m.searchContacts).toHaveBeenCalledWith("traxo", "");
+    first.unmount();
+
+    m.loadImports.mockResolvedValue({ status: 502, body: { error: "Could not reach the Traxo CRM" } } as never);
+    render(<Harness onUnauthorized={onUnauthorized} />);
+    await advance(0);
+    expect(picker()).toBeNull();
+    expect(screen.getByText("Jane Tan")).toBeInTheDocument();
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it("lists each import with its count; choosing one shows its contacts and says which, and Show all goes back", async () => {
+    m.searchContacts.mockResolvedValue(hits(SELF));
+    m.loadImports.mockResolvedValue(imports());
+    m.loadImportContacts.mockResolvedValue(imported([FILED, LOOSE]));
+    render(<Harness />);
+    await advance(0);
+    const select = picker() as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["All contacts", `${LINKEDIN} (120)`, "old crm import, Oct 2026 (2)"]);
+    expect(select).toHaveValue("");
+    expect(screen.queryByText(/^Showing:/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show all" })).toBeNull();
+
+    fireEvent.change(select, { target: { value: LINKEDIN } });
+    await advance(0);
+    expect(m.loadImportContacts).toHaveBeenCalledTimes(1);
+    expect(m.loadImportContacts).toHaveBeenCalledWith("traxo", LINKEDIN, { high: false, sort: "recent" });
+    expect(screen.getByRole("status")).toHaveTextContent(`Showing: ${LINKEDIN}`);
+    const rows = screen.getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent("Raj Rao");
+    expect(rows[1]).toHaveTextContent("Sam Lee");
+    expect(screen.queryByText("Jane Tan")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Recent" })).toBeNull();
+    // The search box searches every contact, so it is away while one import is shown.
+    expect(screen.queryByRole("textbox", { name: "Search contacts" })).toBeNull();
+    expect(screen.queryByText(/Showing the first/)).toBeNull();
+
+    const before = m.searchContacts.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Show all" }));
+    await advance(0);
+    expect(m.searchContacts.mock.calls.length).toBe(before + 1);
+    expect(m.searchContacts).toHaveBeenLastCalledWith("traxo", "");
+    expect(screen.getByText("Jane Tan")).toBeInTheDocument();
+    expect(screen.queryByText(/^Showing:/)).toBeNull();
+    expect(picker()).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Search contacts" })).toBeInTheDocument();
+  });
+
+  it("says so when an import has more contacts than are shown", async () => {
+    m.searchContacts.mockResolvedValue(hits(SELF));
+    m.loadImports.mockResolvedValue(imports());
+    m.loadImportContacts.mockResolvedValue(imported([FILED, LOOSE], 120));
+    render(<Harness initial={{ ...EMPTY_CONTACTS, importLabel: LINKEDIN }} />);
+    await advance(0);
+    expect(screen.getByText("Showing the first 2 of 120.")).toBeInTheDocument();
+    expect(screen.queryByText(/Search to find the rest/)).toBeNull();
+    // The list of everyone was never asked for.
+    expect(m.searchContacts).not.toHaveBeenCalled();
+    expect(picker()).toHaveValue(LINKEDIN);
+  });
+
+  it("High priority and the sorts work on the import that is shown", async () => {
+    m.loadImports.mockResolvedValue(imports());
+    m.loadImportContacts.mockResolvedValue(imported([FILED]));
+    render(<Harness initial={{ ...EMPTY_CONTACTS, importLabel: LINKEDIN }} />);
+    await advance(0);
+    fireEvent.click(screen.getByRole("button", { name: "High priority" }));
+    await advance(0);
+    expect(m.loadImportContacts).toHaveBeenLastCalledWith("traxo", LINKEDIN, { high: true, sort: "recent" });
+    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    await advance(0);
+    expect(m.loadImportContacts).toHaveBeenLastCalledWith("traxo", LINKEDIN, { high: true, sort: "stage" });
+    m.loadImportContacts.mockResolvedValue(imported([]));
+    fireEvent.click(screen.getByRole("button", { name: "Recent" }));
+    await advance(0);
+    expect(screen.getByText("No high-priority contacts in this import.")).toBeInTheDocument();
+    expect(m.searchContacts).not.toHaveBeenCalled();
+  });
+
+  it("a contact of an import opens like any other, and the import is still chosen on the way back", async () => {
+    m.loadImports.mockResolvedValue(imports());
+    m.loadImportContacts.mockResolvedValue(imported([LOOSE]));
+    m.loadProfile.mockResolvedValue({ status: 502, body: { error: "x" } } as never);
+    render(<Harness initial={{ ...EMPTY_CONTACTS, importLabel: LINKEDIN }} />);
+    await advance(0);
+    fireEvent.click(screen.getByRole("button", { name: /Sam Lee/ }));
+    await advance(0);
+    expect(m.loadProfile).toHaveBeenCalledWith("traxo", { personId: "p3" }, expect.any(String));
+    fireEvent.click(screen.getByRole("button", { name: /Contacts/ }));
+    await advance(0);
+    expect(screen.getByRole("status")).toHaveTextContent(`Showing: ${LINKEDIN}`);
+    expect(m.loadImportContacts).toHaveBeenCalledTimes(2);
+  });
+
+  it("a 401 or a failure on an import's contacts is handled as on the list", async () => {
+    m.loadImports.mockResolvedValue(imports());
+    m.loadImportContacts.mockResolvedValueOnce({ status: 502, body: { error: "x" } } as never);
+    const onUnauthorized = vi.fn();
+    render(<Harness onUnauthorized={onUnauthorized} initial={{ ...EMPTY_CONTACTS, importLabel: LINKEDIN }} />);
+    await advance(0);
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not load contacts. Check signal.");
+    m.loadImportContacts.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await advance(0);
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it("another estate has its own imports, and the import chosen in the last one is dropped", async () => {
+    m.searchContacts.mockResolvedValue(hits(SELF));
+    m.loadImports.mockResolvedValue(imports());
+    m.loadImportContacts.mockResolvedValue(imported([LOOSE]));
+    const { rerender } = render(<Harness initial={{ ...EMPTY_CONTACTS, importLabel: LINKEDIN }} />);
+    await advance(0);
+    m.loadImports.mockResolvedValue(imports([]));
+    rerender(<Harness estate={OTHER} initial={{ ...EMPTY_CONTACTS, importLabel: LINKEDIN }} />);
+    await advance(0);
+    expect(m.loadImports).toHaveBeenLastCalledWith("zeroone");
+    expect(picker()).toBeNull();
+    expect(screen.queryByText(/^Showing:/)).toBeNull();
+    expect(m.searchContacts).toHaveBeenLastCalledWith("zeroone", "");
+    expect(m.loadImportContacts).toHaveBeenCalledTimes(1);
   });
 });

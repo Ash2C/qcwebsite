@@ -2,19 +2,20 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ContactHit } from "@/lib/monsoon/contacts";
-import type { SiftHit, Sort } from "@/lib/monsoon/sift";
+import type { ImportInfo, SiftHit, Sort } from "@/lib/monsoon/sift";
 import MonsoonLoader from "./MonsoonLoader";
-import { searchContacts, type EstateInfo } from "./api";
+import { loadImportContacts, loadImports, searchContacts, type EstateInfo } from "./api";
 import type { AskViewing } from "./AskPanel";
 import ProfileActions, { type ProfileDraft } from "./ProfileActions";
 import ProfileView, { roleLabel } from "./ProfileView";
 import { stageLabel } from "./labels";
-import { card, secondaryButton } from "./styles";
+import { card, fieldInput, fieldLabel, secondaryButton } from "./styles";
 
 export type ContactTarget = { memberId?: string; personId?: string; orgId?: string };
 /** `draft` is what was typed in the open profile (an edit form or a note); it belongs to that contact only. */
 /** `autoResearch` asks the open profile to start research once it has loaded; the profile reports it consumed. */
 /** `high` and `sort` are how the list is sifted; they stay as set while the app is open. */
+/** `importLabel` is the bulk import whose contacts are listed instead of everyone; absent or null for none. */
 export type ContactsState = {
   query: string;
   open: ContactTarget | null;
@@ -22,6 +23,7 @@ export type ContactsState = {
   autoResearch?: boolean;
   high?: boolean;
   sort?: Sort;
+  importLabel?: string | null;
 };
 export const EMPTY_CONTACTS: ContactsState = { query: "", open: null, draft: null };
 
@@ -115,6 +117,9 @@ export default function ContactsPanel({
   const sifted = high || sort !== "recent";
   const [phase, setPhase] = useState<Phase>("loading");
   const [tick, setTick] = useState(0);
+  // The pipeline's bulk imports, for the Imports control; empty until known, and then there is no control.
+  const [imports, setImports] = useState<ImportInfo[]>([]);
+  const importLabel = state.importLabel ?? null;
   // A fresh callback each render must not restart the search.
   const unauthorizedRef = useRef(onUnauthorized);
   unauthorizedRef.current = onUnauthorized;
@@ -127,19 +132,44 @@ export default function ContactsPanel({
     shownEstate.current = estate.key;
     setHits([]);
     setPhase("loading");
-    onChange((s) => withOpen(s, null));
+    onChange((s) => ({ ...withOpen(s, null), importLabel: null }));
   });
+
+  // The imports are asked for when the tab opens (and for another estate). A failure of any kind
+  // leaves the tab without the control; the list itself says when the CRM cannot be reached.
+  useEffect(() => {
+    let live = true;
+    setImports([]);
+    void (async () => {
+      try {
+        const res = await loadImports(estate.key);
+        if (live && res?.status === 200 && res.body && "imports" in res.body && Array.isArray(res.body.imports)) setImports(res.body.imports);
+      } catch {
+        // no control
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [estate.key]);
   const q = state.query.trim();
   const searching = q.length >= 2;
   const listing = state.open === null && !estateChanged;
-  const term = searching ? q : "";
+  // One import's contacts stand in for the list of everyone; the search does not apply to them.
+  const importing = importLabel !== null && !estateChanged;
+  const term = searching && !importing ? q : "";
 
   useEffect(() => {
     if (!listing) return;
     let live = true; // a response for an older query (or after leaving the list) is dropped
     setPhase("loading");
     const run = () =>
-      (sifted ? searchContacts(estate.key, term, { high, sort }) : searchContacts(estate.key, term)).then(
+      (importLabel !== null
+        ? loadImportContacts(estate.key, importLabel, { high, sort })
+        : sifted
+          ? searchContacts(estate.key, term, { high, sort })
+          : searchContacts(estate.key, term)
+      ).then(
         (res) => {
           if (!live) return;
           if (res.status === 401) return unauthorizedRef.current();
@@ -160,7 +190,7 @@ export default function ContactsPanel({
       clearTimeout(timer);
     };
     // reloadSignal: a change confirmed in Ask makes the rows (stage, next and last action) stale.
-  }, [estate.key, term, tick, listing, high, sort, sifted, reloadSignal]);
+  }, [estate.key, term, tick, listing, high, sort, sifted, reloadSignal, importLabel]);
 
   const rows = estateChanged ? [] : hits;
   if (state.open && !estateChanged) {
@@ -199,6 +229,14 @@ export default function ContactsPanel({
 
   return (
     <div className="flex flex-col gap-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+      {importing ? (
+        <div className="flex flex-col gap-2">
+          <p role="status" className="break-words px-1 text-[16px] font-medium text-neutral-900 dark:text-white">{`Showing: ${importLabel}`}</p>
+          <button type="button" className={secondaryButton} onClick={() => onChange((s) => ({ ...s, importLabel: null }))}>
+            Show all
+          </button>
+        </div>
+      ) : (
       <div className={`${card} flex items-center`}>
         <input
           type="text"
@@ -225,6 +263,7 @@ export default function ContactsPanel({
           </button>
         ) : null}
       </div>
+      )}
 
       <div className="flex flex-col gap-2">
         <button
@@ -259,9 +298,29 @@ export default function ContactsPanel({
             </button>
           ))}
         </div>
+        {imports.length > 0 || importing ? (
+          <div className={card}>
+            <label htmlFor="contacts-import" className={fieldLabel}>
+              Imports
+            </label>
+            <select
+              id="contacts-import"
+              value={importing ? importLabel : ""}
+              onChange={(e) => onChange((s) => ({ ...s, importLabel: e.target.value === "" ? null : e.target.value, query: "" }))}
+              className={`${fieldInput} appearance-none`}
+            >
+              <option value="">All contacts</option>
+              {/* The import being shown is always a choice, even before the list of imports has loaded. */}
+              {importing && !imports.some((i) => i.label === importLabel) ? <option value={importLabel}>{importLabel}</option> : null}
+              {imports.map((i) => (
+                <option key={i.label} value={i.label}>{`${i.label} (${i.count})`}</option>
+              ))}
+            </select>
+          </div>
+        ) : null}
       </div>
 
-      {!searching && !sifted ? (
+      {!searching && !sifted && !importing ? (
         <h2 className="px-1 text-sm font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
           Recent
         </h2>
@@ -283,7 +342,11 @@ export default function ContactsPanel({
         </p>
       ) : phase === "ready" && rows.length === 0 ? (
         <p className="px-1 text-neutral-500 dark:text-neutral-400">
-          {high
+          {importing
+            ? high
+              ? "No high-priority contacts in this import."
+              : "No contacts in this import."
+            : high
             ? searching
               ? `No high-priority contacts match "${q}".`
               : "No high-priority contacts."
@@ -339,7 +402,9 @@ export default function ContactsPanel({
         </ul>
       )}
       {phase === "ready" && total !== null && total > rows.length && rows.length > 0 ? (
-        <p className="px-1 text-[14px] text-neutral-600 dark:text-neutral-400">{`Showing ${rows.length} of ${total}. Search to find the rest.`}</p>
+        <p className="px-1 text-[14px] text-neutral-600 dark:text-neutral-400">
+          {importing ? `Showing the first ${rows.length} of ${total}.` : `Showing ${rows.length} of ${total}. Search to find the rest.`}
+        </p>
       ) : null}
     </div>
   );
