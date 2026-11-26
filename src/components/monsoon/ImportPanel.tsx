@@ -6,7 +6,7 @@ import { UNREADABLE, readImportFile } from "@/lib/monsoon/import/file";
 import { knownMapping, rowToContact, validateMapping, type Field, type ImportContact, type Mapping } from "@/lib/monsoon/import/mapping";
 import { ImportFileError, MAX_COLUMNS, sourceName } from "@/lib/monsoon/import/parse";
 import type { SaveOutcome } from "@/lib/monsoon/import/save";
-import { checkImportRows, mapImportColumns, saveImportRows, type EstateInfo } from "./api";
+import { checkImportRows, finishImport, mapImportColumns, saveImportRows, type EstateInfo } from "./api";
 import MonsoonLoader from "./MonsoonLoader";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
 
@@ -64,6 +64,7 @@ export type ImportJobChange = (next: ImportJob | null | ((prev: ImportJob) => Im
 const CHECK_CHUNK = 200;
 const SAVE_CHUNK = 50;
 const SAVE_TRIES = 3;
+const CLOSE_TRIES = 2;
 const RETRY_WAIT_MS = 2000;
 const LIST_MAX = 200;
 const MAX_LABEL = 80;
@@ -358,10 +359,31 @@ export default function ImportPanel({
   // --- saving ------------------------------------------------------------------------------------
 
   /**
+   * The closing request, once the rows of a run are done: the server then writes the one summary
+   * entry per company for the whole import. Sending it again is safe. A failure does not hold the
+   * result back. Answers true when the session has ended.
+   */
+  async function close(from: ImportJob): Promise<boolean> {
+    for (let tries = 0; tries < CLOSE_TRIES; tries++) {
+      if (tries > 0) await wait(retryWaitMs);
+      if (!alive.current) return false;
+      let res: Awaited<ReturnType<typeof finishImport>> | null = null;
+      try {
+        res = await finishImport({ pipeline: estateKey, importId: from.importId, label: from.label });
+      } catch {
+        // no signal: once more
+      }
+      if (res?.status === 401) return true;
+      if (res?.status === 200 || res?.status === 400) return false;
+    }
+    return false;
+  }
+
+  /**
    * Sends the given rows 50 at a time, one request after the other. A row answered `failed`, and
    * every row of a request that got no answer, is sent again up to twice more. A 401 stops the run
-   * with the job as it stands. Stopped or finished, what was not saved is marked failed and the
-   * result is shown.
+   * with the job as it stands. Stopped or finished, the import is closed, what was not saved is
+   * marked failed and the result is shown.
    */
   async function run(queue: number[], from: ImportJob) {
     if (runRef.current) return;
@@ -415,6 +437,7 @@ export default function ImportPanel({
           calls.current.onChange((prev) => ({ ...prev, outcomes: { ...prev.outcomes, ...failed } }));
         }
       }
+      if (!signedOut && alive.current) signedOut = await close(from);
     } finally {
       runRef.current = false;
       if (alive.current) {
@@ -451,9 +474,11 @@ export default function ImportPanel({
   }
 
   function continueImport() {
-    const rest = job.queue.filter((n) => job.outcomes[n] === undefined);
-    if (rest.length === 0) return finish();
-    void run(rest, job);
+    // With nothing left to send this still closes the import.
+    void run(
+      job.queue.filter((n) => job.outcomes[n] === undefined),
+      job,
+    );
   }
 
   const failedRows = useMemo(() => {

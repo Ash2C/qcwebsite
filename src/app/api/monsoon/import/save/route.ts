@@ -23,6 +23,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * again (same importId and row number) is answered with what happened the first time. One import
  * runs per person at a time: a second request while one is running answers 409. The request that
  * carries `first: true` records the import as one activity.
+ *
+ * The closing request, `{ pipeline, importId, label, finish: true }` with no rows, is sent when all
+ * rows are done: it writes the one summary entry per company for the whole import, and is safe to
+ * send again.
  */
 export async function POST(request: Request) {
   const started = Date.now();
@@ -38,6 +42,28 @@ export async function POST(request: Request) {
   if (typeof b.importId !== "string" || !UUID_RE.test(b.importId)) return invalid("importId must be a UUID");
   const label = cleanLabel(b.label);
   if (label === "") return invalid("label is required");
+  const owner = account.person.ownerKey;
+
+  if (b.finish === true) {
+    if (b.rows !== undefined) return invalid("the closing request carries no rows");
+    try {
+      const guarded = await account.withDb(estate.key, (guardDb) =>
+        withImportLock(guardDb, account.person.id, () =>
+          account.withDb(estate.key, async (db) => {
+            await ensureOwner(db, owner, account.person.name);
+            await noteCompanyImports(db, { importId: b.importId as string, label, owner });
+          }),
+        ),
+      );
+      if (!guarded.locked) return NextResponse.json({ error: "import_running" }, { status: 409 });
+      return NextResponse.json({ finished: true });
+    } catch (err) {
+      if (err instanceof ImportInputError) return invalid(err.message);
+      logFailure(`import company note failed for ${estate.key}`, err);
+      return NextResponse.json({ error: `Could not reach the ${estate.label} CRM` }, { status: 502 });
+    }
+  }
+
   if (typeof b.role !== "string") return invalid("role must be a string");
   if (typeof b.includePossible !== "boolean") return invalid("includePossible must be true or false");
   if (!Array.isArray(b.rows) || b.rows.length === 0 || b.rows.length > MAX_ROWS) return invalid("rows must be a list of 1 to 100");
@@ -58,7 +84,6 @@ export async function POST(request: Request) {
     rows.push({ rowNumber, contact: cleanContact(contact) });
   }
 
-  const owner = account.person.ownerKey;
   try {
     // The guard holds a connection of its own for as long as the batch runs.
     const guarded = await account.withDb(estate.key, (guardDb) =>
@@ -66,18 +91,11 @@ export async function POST(request: Request) {
         account.withDb(estate.key, async (db) => {
           // The owner key may never have reached this CRM, as in the save route.
           await ensureOwner(db, owner, account.person.name);
-          const results = await saveImportRows(
+          return saveImportRows(
             db,
             { importId: b.importId as string, label, role: b.role as string, owner, includePossible: b.includePossible as boolean, rows },
             { deadline: started + BUDGET_MS },
           );
-          try {
-            await noteCompanyImports(db, { label, owner, results });
-          } catch (err) {
-            // The rows are saved; a missing summary entry must not turn them into a failure.
-            logFailure(`import company note failed for ${estate.key}`, err);
-          }
-          return results;
         }),
       ),
     );

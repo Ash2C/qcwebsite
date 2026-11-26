@@ -10,13 +10,15 @@ import type { ClientBase } from "pg";
 import { canHold, contactKeys, judge, type Candidate } from "./classify";
 import { alsoInEntry, companyImportEntry, importedFromEntry } from "./entries";
 import { cleanContact, type ImportContact } from "./mapping";
+import { MAX_ROWS as MAX_FILE_ROWS } from "./parse";
 
 export type SaveOutcome = "added" | "existing" | "possible_skipped" | "skipped" | "unreadable" | "repeat" | "failed";
 
 /**
  * `filedUnder` is set only for a person just added under a company that is itself the pipeline
- * entry: that entry's member id. Such a person gets no timeline entry of their own; pass the
- * results to noteCompanyImports for the one summary entry per company.
+ * entry: that entry's member id. Such a person gets no timeline entry of their own; the row's
+ * capture record keeps the member id, and noteCompanyImports writes the one summary entry per
+ * company from those records when the import closes.
  */
 export type SaveRowResult = { rowNumber: number; outcome: SaveOutcome; filedUnder?: string };
 
@@ -108,7 +110,8 @@ const ADD_SQL = `WITH o AS (
   RETURNING id
 ), cap AS (
   INSERT INTO captures (capture_id, channel, status, extracted, person_id, org_id)
-  SELECT $15::uuid, '${IMPORT_CHANNEL}', 'written', $16::jsonb, p.id, p.org_id FROM p
+  SELECT $15::uuid, '${IMPORT_CHANNEL}', 'written',
+         $16::jsonb || COALESCE((SELECT jsonb_build_object('filedUnder', cm.id) FROM cm), '{}'::jsonb), p.id, p.org_id FROM p
   RETURNING id
 ), t AS (
   INSERT INTO touches (member_id, kind, by_whom, summary)
@@ -240,22 +243,89 @@ export async function saveImportRows(db: ClientBase, input: SaveImportInput, opt
   return results;
 }
 
+// The import's lock for the closing step, and the transaction's time limit in the same round trip.
+const CLOSE_LOCK_SQL = "SELECT set_config('statement_timeout', '20s', true), pg_advisory_xact_lock(hashtextextended($1, 0))";
+
+// Per company that is itself a pipeline entry: how many people this import filed under it (from
+// the rows' capture records, found by their ids), and the record of the summary entry this import
+// already wrote for it, if any. That record's capture id comes from the import id and the member id.
+const FILED_SQL = `WITH filed AS (
+  SELECT (c.extracted->>'filedUnder')::uuid AS member_id, count(*)::int AS n
+    FROM captures c
+   WHERE c.capture_id = ANY($1::uuid[]) AND c.channel = '${IMPORT_CHANNEL}'
+     AND c.extracted->>'outcome' = 'added' AND c.extracted->>'filedUnder' IS NOT NULL
+   GROUP BY 1
+)
+SELECT f.member_id, f.n, md5('monsoon-import-summary:' || $2::text || ':' || f.member_id::text)::uuid AS capture_id,
+       m.org_id, s.extracted->>'touchId' AS touch_id, st.summary AS written
+  FROM filed f
+  JOIN members m ON m.id = f.member_id
+  LEFT JOIN captures s ON s.capture_id = md5('monsoon-import-summary:' || $2::text || ':' || f.member_id::text)::uuid
+                      AND s.channel = '${IMPORT_CHANNEL}'
+  LEFT JOIN touches st ON st.id = (s.extracted->>'touchId')::uuid
+ ORDER BY f.member_id`;
+
+// The summary entries not yet written, each with the record that stops a second one; and the ones
+// already written whose number has grown since (rows that failed and were sent again), put right.
+const SUMMARISE_SQL = `WITH fresh AS (
+  SELECT x.member_id, x.capture_id, x.org_id, x.summary, gen_random_uuid() AS touch_id
+    FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[]) AS x(member_id, capture_id, org_id, summary)
+), t AS (
+  INSERT INTO touches (id, member_id, kind, by_whom, summary)
+  SELECT f.touch_id, f.member_id, 'system', $5::text, f.summary FROM fresh f
+  RETURNING id
+), cap AS (
+  INSERT INTO captures (capture_id, channel, status, extracted, org_id)
+  SELECT f.capture_id, '${IMPORT_CHANNEL}', 'written',
+         jsonb_build_object('importId', $6::text, 'summaryFor', f.member_id, 'touchId', f.touch_id), f.org_id
+    FROM fresh f
+  RETURNING id
+)
+UPDATE touches u SET summary = y.summary
+  FROM unnest($7::uuid[], $8::text[]) AS y(touch_id, summary)
+ WHERE u.id = y.touch_id`;
+
 /**
- * One timeline entry per company for the people just filed under it: "<n> people imported from
- * <label>." Call once per request with that request's results. One statement.
+ * The closing step of an import: one timeline entry per company that is itself the pipeline entry,
+ * for the people this import filed under it: "<n> people imported from <label>." It counts from
+ * what the import saved, not from any one request, so it is right however the rows were batched
+ * or sent again. Called again it writes nothing new; when more people were filed since, the entry
+ * it wrote is put right. One short transaction. Throws ImportInputError for a bad import id or label.
  */
-export async function noteCompanyImports(db: ClientBase, o: { label: string; owner: string; results: SaveRowResult[] }): Promise<void> {
+export async function noteCompanyImports(db: ClientBase, o: { importId: string; label: string; owner: string }): Promise<void> {
+  const importId = typeof o.importId === "string" && UUID_RE.test(o.importId) ? o.importId.toLowerCase() : null;
+  if (importId === null) throw new ImportInputError("importId must be a UUID");
   const label = cleanLabel(o.label);
-  const filed = new Map<string, number>();
-  for (const r of o.results) {
-    if (r.outcome === "added" && r.filedUnder) filed.set(r.filedUnder, (filed.get(r.filedUnder) ?? 0) + 1);
+  if (label === "") throw new ImportInputError("label is required");
+  const captureIds = Array.from({ length: MAX_FILE_ROWS }, (_, rowNumber) => importCaptureId(importId, rowNumber));
+  await db.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+  try {
+    await db.query(CLOSE_LOCK_SQL, [`monsoon-import-close:${importId}`]);
+    const filed = (await db.query(FILED_SQL, [captureIds, importId])).rows.map((r) => ({
+      memberId: r.member_id as string,
+      captureId: r.capture_id as string,
+      orgId: r.org_id as string | null,
+      touchId: r.touch_id as string | null,
+      written: r.written as string | null,
+      summary: companyImportEntry(r.n as number, label),
+    }));
+    const fresh = filed.filter((f) => f.touchId === null);
+    const grown = filed.filter((f) => f.touchId !== null && f.written !== null && f.written !== f.summary);
+    if (fresh.length > 0 || grown.length > 0) {
+      await db.query(SUMMARISE_SQL, [
+        fresh.map((f) => f.memberId),
+        fresh.map((f) => f.captureId),
+        fresh.map((f) => f.orgId),
+        fresh.map((f) => f.summary),
+        o.owner,
+        importId,
+        grown.map((f) => f.touchId),
+        grown.map((f) => f.summary),
+      ]);
+    }
+    await db.query("COMMIT");
+  } catch (err) {
+    await db.query("ROLLBACK").catch(() => undefined);
+    throw err;
   }
-  if (filed.size === 0 || label === "") return;
-  const members = [...filed.keys()];
-  const summaries = members.map((m) => companyImportEntry(filed.get(m) as number, label));
-  await db.query(
-    `INSERT INTO touches (member_id, kind, by_whom, summary)
-     SELECT x.member_id, 'system', $3::text, x.summary FROM unnest($1::uuid[], $2::text[]) AS x(member_id, summary)`,
-    [members, summaries, o.owner],
-  );
 }

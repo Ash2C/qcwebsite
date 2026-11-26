@@ -436,6 +436,14 @@ export function saveImportRows(
   return importPost("save", body, TIMEOUT_MS.importSave);
 }
 
+/**
+ * Closes an import once its rows are done: the one summary entry per company for the people filed
+ * under it. Safe to send again.
+ */
+export function finishImport(body: { pipeline: string; importId: string; label: string }): Promise<ApiResult<{ finished: true } | { error: string } | null>> {
+  return importPost("save", { ...body, finish: true }, TIMEOUT_MS.standard);
+}
+
 /** The pipeline's bulk imports, newest first, each with its label and how many people came in with it. */
 export async function loadImports(estate: string): Promise<ApiResult<{ imports: ImportInfo[] } | { error: string } | null>> {
   const params = new URLSearchParams({ estate, imports: "1" });

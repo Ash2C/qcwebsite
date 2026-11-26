@@ -14,8 +14,9 @@ describe.skipIf(!testDb.available)("the Imports filter (real Postgres)", () => {
   let northwind: string;
 
   async function bring(label: string, rows: ImportContact[]): Promise<void> {
+    const importId = randomUUID();
     const results = await saveImportRows(db, {
-      importId: randomUUID(),
+      importId,
       label,
       role: "investor",
       owner: "VF",
@@ -23,7 +24,7 @@ describe.skipIf(!testDb.available)("the Imports filter (real Postgres)", () => {
       rows: rows.map((contact, i) => ({ rowNumber: i + 1, contact })),
     });
     expect(results.map((r) => r.outcome)).toEqual(rows.map(() => "added"));
-    await noteCompanyImports(db, { label, owner: "VF", results });
+    await noteCompanyImports(db, { importId, label, owner: "VF" });
   }
 
   beforeAll(async () => {

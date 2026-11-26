@@ -232,9 +232,9 @@ describe.skipIf(!testDb.available)("saveImportRows (real Postgres)", () => {
     const before = await order();
     expect(before.recent).toEqual(["Zed Ng", "Jane Tan", "Northwind"]);
 
-    const results = await saveImportRows(db, input([{ name: "Jane Tan", org: "Acme Capital" }, { name: "Bea Park", org: "Northwind" }]));
-    expect(results.map((r) => r.outcome)).toEqual(["existing", "added"]);
-    await noteCompanyImports(db, { label: LABEL, owner: "VF", results });
+    const i = input([{ name: "Jane Tan", org: "Acme Capital" }, { name: "Bea Park", org: "Northwind" }]);
+    expect(await outcomes(i)).toEqual(["existing", "added"]);
+    await noteCompanyImports(db, { importId: i.importId, label: LABEL, owner: "VF" });
     expect((await db.query("SELECT member_id, summary FROM touches WHERE kind = 'system' ORDER BY at")).rows).toEqual([
       { member_id: member, summary: `Also in ${LABEL}.` },
       { member_id: company, summary: `1 person imported from ${LABEL}.` },
@@ -354,42 +354,66 @@ describe.skipIf(!testDb.available)("saveImportRows (real Postgres)", () => {
     ]);
   });
 
-  it("files people under a company that is itself the pipeline entry, with one summary entry for the request", async () => {
+  it("files people under a company that is itself the pipeline entry, with one summary entry per import however the rows are sent", async () => {
     const org = (await db.query("INSERT INTO orgs (name, name_key, source) VALUES ('Northwind', 'northwind', 'core') RETURNING id")).rows[0].id;
     const member = (
       await db.query("INSERT INTO members (org_id, role, stage, owner, source) VALUES ($1, 'introducer', 'engaged', 'VF', 'core') RETURNING id", [org])
     ).rows[0].id;
     const membersBefore = await all("members");
-    const i = input([{ name: "A One", org: "Northwind" }, { name: "B Two", org: "northwind" }, { name: "C Three", org: "Elsewhere" }]);
-    const results = await saveImportRows(db, i);
-    expect(results).toEqual([
+    const importId = randomUUID();
+    const batch = (rows: [number, string, string][]) =>
+      saveImportRows(db, input([], { importId, rows: rows.map(([rowNumber, name, company]) => ({ rowNumber, contact: { name, org: company } })) }));
+    const summaries = async () => (await db.query("SELECT kind, by_whom, summary FROM touches WHERE member_id = $1 ORDER BY at", [member])).rows;
+    const finish = (id: string = importId, label: string = LABEL) => noteCompanyImports(db, { importId: id, label, owner: "VF" });
+
+    const firstRows: [number, string, string][] = [
+      [0, "A One", "Northwind"],
+      [1, "B Two", "northwind"],
+      [2, "C Three", "Elsewhere"],
+    ];
+    expect(await batch(firstRows)).toEqual([
+      { rowNumber: 0, outcome: "added", filedUnder: member },
       { rowNumber: 1, outcome: "added", filedUnder: member },
-      { rowNumber: 2, outcome: "added", filedUnder: member },
-      { rowNumber: 3, outcome: "added" },
+      { rowNumber: 2, outcome: "added" },
     ]);
     expect(await count("people", `org_id = '${org}' AND source = 'import:${LABEL}'`)).toBe(2);
-    // No entry of their own for the two, and none on the timeline yet.
+    // A colleague in a later batch, and the first batch sent again because its answer was lost.
+    await batch([[3, "D Four", "Northwind"]]);
+    expect((await batch(firstRows)).map((r) => r.outcome)).toEqual(["added", "added", "added"]);
+    // No entry of their own for the three, and nothing on the timeline while the rows are being sent.
     expect(await count("members")).toBe(2);
-    expect(await count("touches", `member_id = '${member}'`)).toBe(0);
+    expect(await summaries()).toEqual([]);
 
-    await noteCompanyImports(db, { label: LABEL, owner: "VF", results });
-    expect((await db.query("SELECT kind, by_whom, summary FROM touches WHERE member_id = $1", [member])).rows).toEqual([
-      { kind: "system", by_whom: "VF", summary: `2 people imported from ${LABEL}.` },
-    ]);
+    // The closing step: one entry, with everyone in it.
+    await finish();
+    expect(await summaries()).toEqual([{ kind: "system", by_whom: "VF", summary: `3 people imported from ${LABEL}.` }]);
     // The company's entry itself is untouched.
     expect(JSON.parse(await all("members")).find((m: { id: string }) => m.id === member)).toEqual(JSON.parse(membersBefore)[0]);
+    // Asked again, nothing more is written.
+    const touchesBefore = await all("touches");
+    await finish();
+    expect(await all("touches")).toBe(touchesBefore);
 
-    // A re-sent batch reports no filing, so no second summary.
-    const again = await saveImportRows(db, i);
-    expect(again.map((r) => r.filedUnder)).toEqual([undefined, undefined, undefined]);
-    await noteCompanyImports(db, { label: LABEL, owner: "VF", results: again });
-    expect(await count("touches", `member_id = '${member}'`)).toBe(1);
-    // One person reads "1 person".
-    const one = await saveImportRows(db, input([{ name: "D Four", org: "Northwind" }]));
-    await noteCompanyImports(db, { label: "Other", owner: "VF", results: one });
-    expect((await db.query("SELECT summary FROM touches WHERE member_id = $1 ORDER BY at DESC LIMIT 1", [member])).rows[0].summary).toBe(
-      "1 person imported from Other.",
-    );
+    // A row that failed and is sent again afterwards (the last row a file can have) joins the same entry.
+    await batch([[4999, "E Five", "Northwind"]]);
+    await finish();
+    expect(await summaries()).toEqual([{ kind: "system", by_whom: "VF", summary: `4 people imported from ${LABEL}.` }]);
+
+    // Another import has an entry of its own. One person reads "1 person".
+    const other = input([{ name: "F Six", org: "Northwind" }], { label: "Other" });
+    await saveImportRows(db, other);
+    await finish(other.importId, "Other");
+    await finish(other.importId, "Other");
+    expect((await summaries()).map((t) => t.summary)).toEqual([`4 people imported from ${LABEL}.`, "1 person imported from Other."]);
+
+    // An import that filed nobody under a company writes nothing.
+    const none = input([{ name: "G Seven", org: "Elsewhere" }]);
+    await saveImportRows(db, none);
+    const before = await count("touches");
+    await finish(none.importId);
+    expect(await count("touches")).toBe(before);
+    await expect(noteCompanyImports(db, { importId: "nope", label: LABEL, owner: "VF" })).rejects.toBeInstanceOf(ImportInputError);
+    expect((await db.query("SELECT 1 AS one")).rows[0].one).toBe(1);
   });
 
   it("cleans each contact again, whatever the caller sent", async () => {

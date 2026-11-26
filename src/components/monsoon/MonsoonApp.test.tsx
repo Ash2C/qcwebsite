@@ -37,6 +37,7 @@ vi.mock("./api", () => ({
   mapImportColumns: vi.fn(),
   checkImportRows: vi.fn(),
   saveImportRows: vi.fn(),
+  finishImport: vi.fn(),
   loadImports: vi.fn(),
   loadImportContacts: vi.fn(),
 }));
@@ -2696,6 +2697,7 @@ describe("Importing contacts", () => {
     m.loadUserPage.mockResolvedValue({ status: 200, body: { page: PAGE } });
     m.checkImportRows.mockImplementation(async (_pipeline, rows) => ({ status: 200, body: { classes: rows.map(() => "new") } }) as never);
     m.saveImportRows.mockImplementation(async (body) => added(body));
+    m.finishImport.mockResolvedValue({ status: 200, body: { finished: true } });
   });
 
   it("opens from Your page for the pipeline in use, and Back returns to it", async () => {

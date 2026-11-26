@@ -121,18 +121,47 @@ describe("POST /api/monsoon/import/save", () => {
     expect(withDb.mock.calls.map((c) => c[0])).toEqual(["zeroone", "zeroone"]);
   });
 
-  it("writes the company summaries from this request's results", async () => {
+  it("a request with rows writes no company summary", async () => {
     await POST(post(validBody()));
-    expect(noteCompanyImports).toHaveBeenCalledTimes(1);
-    expect(noteCompanyImports).toHaveBeenCalledWith(fakeDb, { label: "LinkedIn import, November 2026", owner: "AB", results: RESULTS });
+    expect(noteCompanyImports).not.toHaveBeenCalled();
   });
 
-  it("still answers the results when the company summary fails", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    noteCompanyImports.mockRejectedValue(new Error("boom"));
-    const res = await POST(post(validBody()));
+  const finishBody = (over: Record<string, unknown> = {}) => ({
+    pipeline: "zeroone",
+    importId: IMPORT_ID,
+    label: "  LinkedIn import,\nNovember 2026 ",
+    finish: true,
+    ...over,
+  });
+
+  it("the closing request writes the company summaries for the whole import, under the guard, and saves no rows", async () => {
+    const res = await POST(post(finishBody()));
     expect(res.status).toBe(200);
-    expect((await res.json()).results).toHaveLength(2);
+    expect(await res.json()).toEqual({ finished: true });
+    expect(saveImportRows).not.toHaveBeenCalled();
+    expect(withImportLock).toHaveBeenCalledTimes(1);
+    expect(withImportLock.mock.calls[0][1]).toBe(account.person.id);
+    expect(ensureOwner).toHaveBeenCalledWith(fakeDb, "AB", "Abe");
+    expect(noteCompanyImports).toHaveBeenCalledTimes(1);
+    expect(noteCompanyImports).toHaveBeenCalledWith(fakeDb, { importId: IMPORT_ID, label: "LinkedIn import, November 2026", owner: "AB" });
+    expect(account.record).not.toHaveBeenCalled();
+  });
+
+  it("the closing request: 409 while an import is running, 400 for a bad one, 502 when it fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect((await POST(post(finishBody({ importId: "nope" })))).status).toBe(400);
+    expect((await POST(post(finishBody({ label: " " })))).status).toBe(400);
+    expect((await POST(post(finishBody({ pipeline: "other" })))).status).toBe(400);
+    expect((await POST(post(finishBody({ rows: [{ rowNumber: 1, contact: { name: "A" } }] })))).status).toBe(400);
+    expect(noteCompanyImports).not.toHaveBeenCalled();
+    noteCompanyImports.mockRejectedValueOnce(new Error("boom at db.internal"));
+    const failed = await POST(post(finishBody()));
+    expect(failed.status).toBe(502);
+    expect(JSON.stringify(await failed.json())).not.toContain("internal");
+    withImportLock.mockResolvedValue({ locked: false });
+    const busy = await POST(post(finishBody()));
+    expect(busy.status).toBe(409);
+    expect(await busy.json()).toEqual({ error: "import_running" });
   });
 
   it("holds the one-import-at-a-time guard for this person around the save", async () => {
