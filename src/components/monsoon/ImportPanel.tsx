@@ -6,6 +6,7 @@ import { UNREADABLE, readImportFile } from "@/lib/monsoon/import/file";
 import { CHECK_MAX_BODY, SAVE_MAX_BODY, bySize, jsonBytes, requestBudget } from "@/lib/monsoon/import/limits";
 import { knownMapping, recognisedColumns, rowToContact, validateMapping, type Field, type ImportContact, type Mapping } from "@/lib/monsoon/import/mapping";
 import { ImportFileError, MAX_COLUMNS, sourceName } from "@/lib/monsoon/import/parse";
+import { fileRepeats } from "@/lib/monsoon/import/repeats";
 import type { SaveOutcome } from "@/lib/monsoon/import/save";
 import { checkImportRows, finishImport, mapImportColumns, saveImportRows, type EstateInfo } from "./api";
 import MonsoonLoader from "./MonsoonLoader";
@@ -372,6 +373,11 @@ export default function ImportPanel({
         answered += chunk.length;
         setChecked(answered);
       }
+      // The check sees the file a request at a time, so a row repeated further apart than that is
+      // found here, over the whole file, by the same rule.
+      fileRepeats(contacts).forEach((repeat, rowNumber) => {
+        if (repeat && classes[rowNumber] !== "unreadable") classes[rowNumber] = "repeat";
+      });
       patch({ classes });
     })();
     return () => {
@@ -552,8 +558,35 @@ export default function ImportPanel({
     void run(retryRows, next);
   }
 
-  const done = job.queue.reduce((n, rowNumber) => (job.outcomes[rowNumber] !== undefined && job.outcomes[rowNumber] !== "failed" ? n + 1 : n), 0);
-  const total = job.queue.length;
+  // Progress counts the rows the button counted (new, and the possible matches when asked for),
+  // so it can never pass that number. Rows already in Monsoon, which only get an "Also in" entry,
+  // are counted apart. Repeats and possible matches left out are sent too, and count for neither.
+  const progress = useMemo(() => {
+    const p = { done: 0, total: 0, alsoDone: 0, alsoTotal: 0 };
+    for (const rowNumber of job.queue) {
+      const c = job.classes?.[rowNumber];
+      const settled = job.outcomes[rowNumber] !== undefined && job.outcomes[rowNumber] !== "failed";
+      if (c === "new" || (c === "possible" && job.includePossible)) {
+        p.total++;
+        if (settled) p.done++;
+      } else if (c === "existing") {
+        p.alsoTotal++;
+        if (settled) p.alsoDone++;
+      }
+    }
+    return p;
+  }, [job.queue, job.classes, job.outcomes, job.includePossible]);
+  const { done, total } = progress;
+
+  /** The possible matches that were not imported: left out by choice, or impossible to store beside their match. */
+  const leftOut = useMemo(() => {
+    const out: number[] = [];
+    for (const key of Object.keys(job.outcomes)) {
+      const outcome = job.outcomes[Number(key)];
+      if (outcome === "skipped" || outcome === "possible_skipped") out.push(Number(key));
+    }
+    return out.sort((a, b) => a - b);
+  }, [job.outcomes]);
 
   const tally = useMemo(() => {
     const t = { added: 0, existing: 0, skipped: 0, failed: 0 };
@@ -816,6 +849,7 @@ export default function ImportPanel({
             <div className="h-full rounded-full bg-[#0E7FA6] transition-[width] dark:bg-[#6AE6FF]" style={{ width: `${total === 0 ? 0 : Math.round((done / total) * 100)}%` }} />
           </div>
           <p role="status" className={`${plain} font-medium`}>{`${count(done)} of ${count(total)} saved`}</p>
+          {progress.alsoTotal > 0 && <p className={quiet}>{`${count(progress.alsoDone)} of ${count(progress.alsoTotal)} already in Monsoon noted`}</p>}
           {running ? (
             <p className={quiet}>{stopping ? "Stopping…" : "Keep this page open until it finishes."}</p>
           ) : (
@@ -837,6 +871,12 @@ export default function ImportPanel({
           <p role="status" className={`${plain} font-medium`}>
             {`${count(tally.added)} imported, ${count(tally.existing)} already here, ${count(tally.skipped)} skipped, ${count(tally.failed)} could not be saved`}
           </p>
+          {leftOut.length > 0 && (
+            <div className={`${card} overflow-hidden`}>
+              <h4 className="px-4 py-3 text-[16px] font-medium">Possible matches, not imported</h4>
+              <RowList job={job} label="Possible matches, not imported" rowNumbers={leftOut} />
+            </div>
+          )}
           {failedRows.length > 0 && (
             <>
               <div className={`${card} overflow-hidden`}>

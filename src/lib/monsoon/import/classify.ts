@@ -4,23 +4,15 @@
 // used again by the save step, which decides for itself at save time.
 import type { ClientBase } from "pg";
 import { readOnly, type QueryOptions } from "../ask/queries";
-import { nameKey } from "../rules";
 import type { ImportContact } from "./mapping";
+import { contactKeys, type Keys } from "./repeats";
+
+export { contactKeys, type Keys };
 
 export type RowClass = "new" | "existing" | "possible" | "unreadable" | "repeat";
 export type RowVerdict = { class: RowClass; personId?: string };
 
-/** What a row or a person on file is compared by. A missing company or email is null. */
-export type Keys = { nameKey: string; orgKey: string | null; email: string | null };
 export type Candidate = Keys & { id: string };
-
-export function contactKeys(contact: ImportContact): Keys {
-  return {
-    nameKey: nameKey(contact.name),
-    orgKey: contact.org ? nameKey(contact.org) : null,
-    email: contact.email ? contact.email.trim().toLowerCase() : null,
-  };
-}
 
 /**
  * The rules, against the people given (oldest first):
@@ -63,7 +55,8 @@ export const CANDIDATES_SQL = `SELECT p.id, p.name_key, po.name_key AS org_key, 
 /**
  * One verdict per row, same order (null = a row with no name). A row is first compared with the
  * rows before it in the same batch: one that would be "existing" against an earlier row is a
- * `repeat`. Then with the people on file. A row that is new on file but a possible match of an
+ * `repeat`. (A batch is one request, so the browser finds the repeats across the whole file
+ * itself: repeats.ts.) Then with the people on file. A row that is new on file but a possible match of an
  * earlier row (a shared email under another name, the same name at another company) is `possible`.
  */
 export function classifyRows(db: ClientBase, contacts: (ImportContact | null)[], opts?: QueryOptions): Promise<RowVerdict[]> {

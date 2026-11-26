@@ -258,6 +258,20 @@ describe("ImportPanel: the summary", () => {
     expect(m.saveImportRows).not.toHaveBeenCalled();
   });
 
+  it("finds a row repeated anywhere in the file, whichever request it was checked in", async () => {
+    const user = userEvent.setup();
+    view();
+    // The last row is Person 5 again, 445 rows later: the server, asked 200 rows at a time, calls it new.
+    await toSummary(user, linkedin(450, "Person,5,https://www.linkedin.com/in/p5,p5@example.com,Firm 5,Partner,12 Mar 2021\n"));
+    expect(m.checkImportRows).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "451 rows: 450 new, 0 already in Monsoon, 0 possible matches, 1 repeated in the file, 0 cannot be read (no name)",
+    );
+    expect(screen.getByRole("button", { name: "Import 450 contacts" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Repeated in the file (1)" }));
+    expect(within(screen.getByRole("list", { name: "Repeated in the file" })).getByText("Person 5 \u00b7 Firm 5")).toBeInTheDocument();
+  });
+
   it("each group opens to a list of names and companies, 200 at most", async () => {
     const user = userEvent.setup();
     checkAs({ "Person 1": "existing" });
@@ -503,6 +517,51 @@ describe("ImportPanel: saving", () => {
     await waitFor(() => expect(release).toHaveLength(1));
     release.shift()!();
     expect(await screen.findByText("120 imported, 0 already here, 0 skipped, 0 could not be saved")).toBeInTheDocument();
+  });
+
+  it("counts progress against the number on the button, and the contacts already in Monsoon apart", async () => {
+    const user = userEvent.setup();
+    checkAs({ "Person 1": "existing", "Person 2": "existing", "Person 3": "possible" });
+    saveAs({ 1: "existing", 2: "existing", 3: "skipped" });
+    view();
+    await toSummary(user, linkedin(120));
+    const release: (() => void)[] = [];
+    const inner = m.saveImportRows.getMockImplementation()!;
+    m.saveImportRows.mockImplementation(async (body) => {
+      await new Promise<void>((r) => release.push(r));
+      return inner(body);
+    });
+    await user.click(screen.getByRole("button", { name: "Import 117 contacts" }));
+    const bar = await screen.findByRole("progressbar", { name: "Import progress" });
+    expect(bar).toHaveAttribute("aria-valuemax", "117");
+    expect(screen.getByRole("status")).toHaveTextContent("0 of 117 saved");
+    expect(screen.getByText("0 of 2 already in Monsoon noted")).toBeInTheDocument();
+    release.shift()!();
+    // 50 rows answered: 47 of them were to be imported, 2 were already here, 1 was a possible match left out.
+    await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "47"));
+    expect(screen.getByRole("status")).toHaveTextContent("47 of 117 saved");
+    expect(screen.getByText("2 of 2 already in Monsoon noted")).toBeInTheDocument();
+    await waitFor(() => expect(release).toHaveLength(1));
+    release.shift()!();
+    await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "97"));
+    expect(Number(bar.getAttribute("aria-valuenow"))).toBeLessThanOrEqual(117);
+    await waitFor(() => expect(release).toHaveLength(1));
+    release.shift()!();
+    expect(await screen.findByText("117 imported, 2 already here, 1 skipped, 0 could not be saved")).toBeInTheDocument();
+  });
+
+  it("the result lists the possible matches that were left out, by name, under their own heading", async () => {
+    const user = userEvent.setup();
+    checkAs({ "Person 2": "possible", "Person 4": "possible" });
+    saveAs({ 2: "skipped", 4: "possible_skipped", 5: "failed" });
+    view();
+    await toSummary(user, linkedin(6));
+    await user.click(screen.getByRole("button", { name: "Import 4 contacts" }));
+    expect(await screen.findByText("3 imported, 0 already here, 2 skipped, 1 could not be saved")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Possible matches, not imported" })).toBeInTheDocument();
+    const left = screen.getByRole("list", { name: "Possible matches, not imported" });
+    expect(within(left).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Person 2 \u00b7 Firm 2", "Person 4 \u00b7 Firm 4"]);
+    expect(within(screen.getByRole("list", { name: "Could not be saved" })).getAllByRole("listitem")).toHaveLength(1);
   });
 
   it("a row that fails is sent twice more and then left; Try those again sends only it", async () => {
