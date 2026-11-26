@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RowClass } from "@/lib/monsoon/import/classify";
 import { UNREADABLE, readImportFile } from "@/lib/monsoon/import/file";
+import { CHECK_MAX_BODY, SAVE_MAX_BODY, bySize, jsonBytes, requestBudget } from "@/lib/monsoon/import/limits";
 import { knownMapping, rowToContact, validateMapping, type Field, type ImportContact, type Mapping } from "@/lib/monsoon/import/mapping";
 import { ImportFileError, MAX_COLUMNS, sourceName } from "@/lib/monsoon/import/parse";
 import type { SaveOutcome } from "@/lib/monsoon/import/save";
@@ -39,6 +40,8 @@ export type ImportJob = {
   outcomes: Record<number, SaveOutcome>;
   /** True once a save request has been answered: the next ones no longer carry `first`. */
   firstDone: boolean;
+  /** Rows too large to send even alone: marked failed, said so, and never sent again. */
+  tooLarge: number[];
 };
 
 export const NEW_IMPORT_JOB: ImportJob = {
@@ -57,6 +60,7 @@ export const NEW_IMPORT_JOB: ImportJob = {
   queue: [],
   outcomes: {},
   firstDone: false,
+  tooLarge: [],
 };
 
 export type ImportJobChange = (next: ImportJob | null | ((prev: ImportJob) => ImportJob)) => void;
@@ -72,6 +76,8 @@ const SAMPLE_ROWS = 5;
 const SAMPLE_CHARS = 80;
 
 const CHECK_FAILURE = "Could not check the file. Check signal and try again.";
+const CHECK_TOO_LARGE = "Could not check the file. A row in it is too large.";
+const ROW_TOO_LARGE = "This row is too large.";
 const STOP = "Stop the import? Contacts already saved stay.";
 const NO_UNDO = "This cannot be undone: Monsoon never deletes contacts.";
 
@@ -159,13 +165,19 @@ function rowLine(job: ImportJob, rowNumber: number): string {
   return text === "" ? `Row ${count(rowNumber + 1)}` : `Row ${count(rowNumber + 1)}: ${text}`;
 }
 
+/** What the check compares a row by, and so all that is sent to it. */
+function checkRow(contact: ImportContact | null): Pick<ImportContact, "name" | "org" | "email"> | null {
+  if (contact === null) return null;
+  return { name: contact.name, ...(contact.org ? { org: contact.org } : {}), ...(contact.email ? { email: contact.email } : {}) };
+}
+
 function RowList({ job, label, rowNumbers }: { job: ImportJob; label: string; rowNumbers: number[] }) {
   const shown = rowNumbers.slice(0, LIST_MAX);
   return (
     <ul aria-label={label} className={scrollList}>
       {shown.map((n) => (
         <li key={n} className="break-words">
-          {rowLine(job, n)}
+          {job.tooLarge.includes(n) ? `${rowLine(job, n)}: ${ROW_TOO_LARGE}` : rowLine(job, n)}
         </li>
       ))}
       {rowNumbers.length > shown.length && (
@@ -194,7 +206,7 @@ export default function ImportPanel({
   const [reading, setReading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const [checked, setChecked] = useState(0);
-  const [checkFailed, setCheckFailed] = useState(false);
+  const [checkFailed, setCheckFailed] = useState<"signal" | "large" | null>(null);
   const [openGroup, setOpenGroup] = useState<RowClass | null>(null);
   const [running, setRunning] = useState(false);
   const [stopping, setStopping] = useState(false);
@@ -244,7 +256,7 @@ export default function ImportPanel({
       const table = await readImportFile(file);
       if (!alive.current) return;
       const known = knownMapping(table.headers);
-      setCheckFailed(false);
+      setCheckFailed(null);
       setOpenGroup(null);
       calls.current.onChange({
         ...NEW_IMPORT_JOB,
@@ -307,7 +319,7 @@ export default function ImportPanel({
     const dayFirst = readsDayFirst(job.rows, mapping.connectedOn);
     // Once, here: the contacts are kept with the job and never worked out again.
     const contacts = job.rows.map((row) => rowToContact(row, mapping, { dayFirst }));
-    setCheckFailed(false);
+    setCheckFailed(null);
     setChecked(0);
     setOpenGroup(null);
     patch({ step: "summary", mapping, contacts, classes: null });
@@ -315,8 +327,8 @@ export default function ImportPanel({
 
   // --- summary -----------------------------------------------------------------------------------
 
-  // The check: read-only, 200 rows a request. It runs whenever the summary has no answer yet, which
-  // is also what happens after signing in again.
+  // The check: read-only, at most 200 rows a request and well inside the route's size limit. It
+  // runs whenever the summary has no answer yet, which is also what happens after signing in again.
   const estateKey = estate.key;
   const checking = job.step === "summary" && job.classes === null && !checkFailed;
   const contacts = job.contacts;
@@ -324,23 +336,36 @@ export default function ImportPanel({
     if (!checking) return;
     let live = true;
     void (async () => {
-      const classes: RowClass[] = [];
+      const slim = contacts.map(checkRow);
+      const { chunks, tooLarge } = bySize(
+        slim.map((_, rowNumber) => rowNumber),
+        (rowNumber) => jsonBytes(slim[rowNumber]),
+        { maxCount: CHECK_CHUNK, maxBytes: requestBudget(CHECK_MAX_BODY), baseBytes: jsonBytes({ pipeline: estateKey, rows: [] }) },
+      );
+      const classes: RowClass[] = new Array(slim.length);
+      // Never so with a contact's capped fields; were it so, the save step says the row is too large.
+      for (const rowNumber of tooLarge) classes[rowNumber] = "new";
+      let answered = tooLarge.length;
       setChecked(0);
-      for (let i = 0; i < contacts.length; i += CHECK_CHUNK) {
-        const slice = contacts.slice(i, i + CHECK_CHUNK);
+      for (const chunk of chunks) {
         let res: Awaited<ReturnType<typeof checkImportRows>> | null = null;
         try {
-          res = await checkImportRows(estateKey, slice);
+          res = await checkImportRows(
+            estateKey,
+            chunk.map((rowNumber) => slim[rowNumber]),
+          );
         } catch {
           // no signal: the retry line
         }
         if (!live) return;
         if (res?.status === 401) return calls.current.onUnauthorized();
+        if (res?.status === 413) return setCheckFailed("large");
         const got = res?.status === 200 && res.body && "classes" in res.body && Array.isArray(res.body.classes) ? res.body.classes : null;
-        if (!got || got.length !== slice.length || !got.every((c) => CLASSES.includes(c))) return setCheckFailed(true);
+        if (!got || got.length !== chunk.length || !got.every((c) => CLASSES.includes(c))) return setCheckFailed("signal");
         // A row with no name is unreadable whatever else is said about it.
-        got.forEach((c, at) => classes.push(slice[at] === null ? "unreadable" : c));
-        setChecked(classes.length);
+        got.forEach((c, at) => (classes[chunk[at]] = slim[chunk[at]] === null ? "unreadable" : c));
+        answered += chunk.length;
+        setChecked(answered);
       }
       patch({ classes });
     })();
@@ -380,10 +405,12 @@ export default function ImportPanel({
   }
 
   /**
-   * Sends the given rows 50 at a time, one request after the other. A row answered `failed`, and
-   * every row of a request that got no answer, is sent again up to twice more. A 401 stops the run
-   * with the job as it stands. Stopped or finished, the import is closed, what was not saved is
-   * marked failed and the result is shown.
+   * Sends the given rows one request after the other: at most 50 rows each, and by size well
+   * inside the route's limit. A row answered `failed`, and every row of a request that got no
+   * answer, is sent again up to twice more. A request refused as too large is split in two, and a
+   * row too large to send alone is marked so and left. A 401 stops the run with the job as it
+   * stands. Stopped or finished, the import is closed, what was not saved is marked failed and the
+   * result is shown.
    */
   async function run(queue: number[], from: ImportJob) {
     if (runRef.current) return;
@@ -393,9 +420,26 @@ export default function ImportPanel({
     setStopping(false);
     let first = !from.firstDone;
     let signedOut = false;
+    const envelope = { pipeline: estateKey, importId: from.importId, label: from.label, role: from.role, includePossible: from.includePossible };
+    const sized = bySize(queue, (rowNumber) => jsonBytes({ rowNumber, contact: from.contacts[rowNumber] }), {
+      maxCount: SAVE_CHUNK,
+      maxBytes: requestBudget(SAVE_MAX_BODY),
+      baseBytes: jsonBytes({ ...envelope, first: true, rows: [] }),
+    });
+    const tooLarge = (rows: number[]) => {
+      const failed: Record<number, SaveOutcome> = {};
+      for (const n of rows) failed[n] = "failed";
+      calls.current.onChange((prev) => ({
+        ...prev,
+        outcomes: { ...prev.outcomes, ...failed },
+        tooLarge: [...new Set([...prev.tooLarge, ...rows])].sort((a, b) => a - b),
+      }));
+    };
+    if (sized.tooLarge.length > 0) tooLarge(sized.tooLarge);
+    const work = [...sized.chunks];
     try {
-      for (let at = 0; at < queue.length && !stopRef.current && !signedOut; at += SAVE_CHUNK) {
-        let pending = queue.slice(at, at + SAVE_CHUNK);
+      while (work.length > 0 && !stopRef.current && !signedOut) {
+        let pending = work.shift() as number[];
         for (let tries = 0; tries < SAVE_TRIES && pending.length > 0; tries++) {
           if (tries > 0) {
             await wait(retryWaitMs);
@@ -404,11 +448,7 @@ export default function ImportPanel({
           let res: Awaited<ReturnType<typeof saveImportRows>> | null = null;
           try {
             res = await saveImportRows({
-              pipeline: estateKey,
-              importId: from.importId,
-              label: from.label,
-              role: from.role,
-              includePossible: from.includePossible,
+              ...envelope,
               ...(first ? { first: true as const } : {}),
               rows: pending.map((rowNumber) => ({ rowNumber, contact: from.contacts[rowNumber] })),
             });
@@ -417,6 +457,14 @@ export default function ImportPanel({
           }
           if (res?.status === 401) {
             signedOut = true;
+            break;
+          }
+          if (res?.status === 413) {
+            // Never a signal problem, and sending the same request again cannot help.
+            const half = Math.ceil(pending.length / 2);
+            if (pending.length > 1) work.unshift(pending.slice(0, half), pending.slice(half));
+            else tooLarge(pending);
+            pending = [];
             break;
           }
           const results = res?.status === 200 && res.body && "results" in res.body && Array.isArray(res.body.results) ? res.body.results : null;
@@ -468,7 +516,7 @@ export default function ImportPanel({
     job.contacts.forEach((c, rowNumber) => {
       if (c !== null) queue.push(rowNumber);
     });
-    const next: ImportJob = { ...job, step: "progress", label, queue, outcomes: {} };
+    const next: ImportJob = { ...job, step: "progress", label, queue, outcomes: {}, tooLarge: [] };
     calls.current.onChange(next);
     void run(queue, next);
   }
@@ -487,13 +535,16 @@ export default function ImportPanel({
     return out.sort((a, b) => a - b);
   }, [job.outcomes]);
 
+  // A row too large to send is not sent again.
+  const retryRows = useMemo(() => failedRows.filter((n) => !job.tooLarge.includes(n)), [failedRows, job.tooLarge]);
+
   function retryFailed() {
-    if (runRef.current || failedRows.length === 0) return;
+    if (runRef.current || retryRows.length === 0) return;
     const outcomes = { ...job.outcomes };
-    for (const n of failedRows) delete outcomes[n];
-    const next: ImportJob = { ...job, step: "progress", queue: failedRows, outcomes };
+    for (const n of retryRows) delete outcomes[n];
+    const next: ImportJob = { ...job, step: "progress", queue: retryRows, outcomes };
     calls.current.onChange(next);
-    void run(failedRows, next);
+    void run(retryRows, next);
   }
 
   const done = job.queue.reduce((n, rowNumber) => (job.outcomes[rowNumber] !== undefined && job.outcomes[rowNumber] !== "failed" ? n + 1 : n), 0);
@@ -527,7 +578,7 @@ export default function ImportPanel({
       return;
     }
     if (job.step === "summary") {
-      setCheckFailed(false);
+      setCheckFailed(null);
       return patch({ step: "columns", contacts: [], classes: null });
     }
     if (job.step === "columns") {
@@ -640,9 +691,9 @@ export default function ImportPanel({
           {checkFailed ? (
             <div className="flex flex-col gap-3">
               <p role="alert" className={bad}>
-                {CHECK_FAILURE}
+                {checkFailed === "large" ? CHECK_TOO_LARGE : CHECK_FAILURE}
               </p>
-              <button type="button" className={secondaryButton} onClick={() => setCheckFailed(false)}>
+              <button type="button" className={secondaryButton} onClick={() => setCheckFailed(null)}>
                 Try again
               </button>
             </div>
@@ -787,9 +838,11 @@ export default function ImportPanel({
                 <h4 className="px-4 py-3 text-[16px] font-medium">Could not be saved</h4>
                 <RowList job={job} label="Could not be saved" rowNumbers={failedRows} />
               </div>
-              <button type="button" className={secondaryButton} onClick={retryFailed}>
-                Try those again
-              </button>
+              {retryRows.length > 0 && (
+                <button type="button" className={secondaryButton} onClick={retryFailed}>
+                  Try those again
+                </button>
+              )}
             </>
           )}
           <button type="button" className={primaryButton} onClick={() => calls.current.onChange(null)}>

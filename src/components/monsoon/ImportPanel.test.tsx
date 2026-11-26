@@ -227,14 +227,8 @@ describe("ImportPanel: the summary", () => {
       ["traxo", 200],
       ["traxo", 51],
     ]);
-    expect(m.checkImportRows.mock.calls[0][1][0]).toEqual({
-      name: "Person 0",
-      org: "Firm 0",
-      title: "Partner",
-      email: "p0@example.com",
-      linkedin: "https://www.linkedin.com/in/p0",
-      connectedOn: "2021-03-12",
-    });
+    // Only what the check compares by is sent.
+    expect(m.checkImportRows.mock.calls[0][1][0]).toEqual({ name: "Person 0", org: "Firm 0", email: "p0@example.com" });
     expect(m.checkImportRows.mock.calls[2][1][50]).toBeNull();
     expect(screen.getByRole("status")).toHaveTextContent(
       "451 rows: 446 new, 2 already in Monsoon, 1 possible match, 1 repeated in the file, 1 cannot be read (no name)",
@@ -356,6 +350,74 @@ describe("ImportPanel: the summary", () => {
     expect(screen.getByLabelText("Choose a file")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Back" }));
     expect(screen.getByText("closed")).toBeInTheDocument();
+  });
+});
+
+describe("ImportPanel: request sizes", () => {
+  const wide = (n: number) => "\u6ce8".repeat(n);
+  /** `n` people whose every field is as long as a contact can hold, in CJK text. */
+  function wideFile(n: number): File {
+    let text = "Name,Company,Email,Title,Phone,Country,Notes\n";
+    for (let i = 0; i < n; i++) {
+      text += `Person ${i},${wide(300)},p${i}@example.com,${wide(300)},${wide(300)},${wide(300)},${wide(2000)}\n`;
+    }
+    return csv(text, "wide.csv");
+  }
+  const sent = (body: unknown) => new TextEncoder().encode(JSON.stringify(body)).length;
+
+  it("builds every request by size as well as by count: rows of the longest CJK notes stay under 60% of each route's limit", async () => {
+    const user = userEvent.setup();
+    view();
+    await choose(user, wideFile(120));
+    await user.selectOptions(await screen.findByLabelText("Notes"), "Notes");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByText(/120 rows: 120 new/);
+    for (const [pipeline, rows] of m.checkImportRows.mock.calls) {
+      expect(sent({ pipeline, rows })).toBeLessThanOrEqual(0.6 * 524_288);
+      for (const row of rows) expect(Object.keys(row as object).sort()).toEqual(["email", "name", "org"]);
+    }
+    expect(m.checkImportRows.mock.calls.flatMap(([, rows]) => rows)).toHaveLength(120);
+
+    await user.click(screen.getByRole("button", { name: "Import 120 contacts" }));
+    expect(await screen.findByText("120 imported, 0 already here, 0 skipped, 0 could not be saved")).toBeInTheDocument();
+    const bodies = m.saveImportRows.mock.calls.map(([b]) => b);
+    expect(bodies.length).toBeGreaterThan(3);
+    for (const body of bodies) {
+      expect(sent(body)).toBeLessThanOrEqual(0.6 * 262_144);
+      expect(body.rows.length).toBeLessThanOrEqual(50);
+    }
+    expect(bodies.flatMap((b) => b.rows.map((r) => r.rowNumber))).toEqual(Array.from({ length: 120 }, (_, i) => i));
+    expect(bodies[0].rows[0].contact).toMatchObject({ name: "Person 0", notes: wide(2000) });
+  });
+
+  it("a request refused as too large is split, and a row too large to send alone is marked so and not sent again", async () => {
+    const user = userEvent.setup();
+    m.saveImportRows.mockImplementation(async (body) => {
+      const rows = body.rows.map((r) => r.rowNumber);
+      if (rows.length > 1 || rows[0] === 3) return { status: 413, body: { outcome: "invalid", error: "Request too large" } } as never;
+      return { status: 200, body: { results: rows.map((rowNumber) => ({ rowNumber, outcome: "added" })) } } as never;
+    });
+    view();
+    await toSummary(user, linkedin(5));
+    await user.click(screen.getByRole("button", { name: "Import 5 contacts" }));
+    expect(await screen.findByText("4 imported, 0 already here, 0 skipped, 1 could not be saved")).toBeInTheDocument();
+    // Row 3 went alone once and was never sent again.
+    expect(m.saveImportRows.mock.calls.filter(([b]) => b.rows.length === 1 && b.rows[0].rowNumber === 3)).toHaveLength(1);
+    const failed = screen.getByRole("list", { name: "Could not be saved" });
+    expect(within(failed).getByText("Person 3 \u00b7 Firm 3: This row is too large.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try those again" })).toBeNull();
+    expect(screen.queryByText(/signal/i)).toBeNull();
+    expect((latest as ImportJob).tooLarge).toEqual([3]);
+  });
+
+  it("a check refused as too large is not called a signal problem", async () => {
+    const user = userEvent.setup();
+    m.checkImportRows.mockResolvedValue({ status: 413, body: { outcome: "invalid", error: "Request too large" } } as never);
+    view();
+    await choose(user, linkedin(2));
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not check the file. A row in it is too large.");
+    expect(screen.queryByText(/signal/i)).toBeNull();
   });
 });
 

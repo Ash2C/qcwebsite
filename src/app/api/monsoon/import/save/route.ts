@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
 import { withImportLock } from "@/lib/monsoon/import/guard";
 import { invalid, logFailure, readObject } from "@/lib/monsoon/import/http";
+import { SAVE_MAX_BODY, SAVE_MAX_ROWS } from "@/lib/monsoon/import/limits";
 import { cleanContact, type ImportContact } from "@/lib/monsoon/import/mapping";
 import { ImportInputError, cleanLabel, noteCompanyImports, saveImportRows } from "@/lib/monsoon/import/save";
 import { ensureOwner } from "@/lib/monsoon/owners";
@@ -10,8 +11,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const MAX_BODY = 262_144;
-const MAX_ROWS = 100;
+// The browser builds each request by size as well as by count, well inside this (limits.ts).
+const MAX_BODY = SAVE_MAX_BODY;
+const MAX_ROWS = SAVE_MAX_ROWS;
 const MAX_ROW_NUMBER = 10_000_000;
 // No row is started after this long, so the answer is sent well inside maxDuration. Rows not
 // started come back as `failed` and can be sent again.

@@ -2,14 +2,16 @@ import { NextResponse } from "next/server";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
 import { classifyRows } from "@/lib/monsoon/import/classify";
 import { invalid, logFailure, readObject } from "@/lib/monsoon/import/http";
+import { CHECK_MAX_BODY, CHECK_MAX_ROWS } from "@/lib/monsoon/import/limits";
 import { cleanContact } from "@/lib/monsoon/import/mapping";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
-const MAX_BODY = 524_288;
-const MAX_ROWS = 200;
+// A row is compared by its name, company and email, and the browser sends only those.
+const MAX_BODY = CHECK_MAX_BODY;
+const MAX_ROWS = CHECK_MAX_ROWS;
 
 /**
  * The summary before an import: for each row, is it new, already in Monsoon, a possible match, a
