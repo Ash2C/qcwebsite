@@ -70,14 +70,14 @@ const LOCK_SQL = "SELECT set_config('statement_timeout', '10s', true), pg_adviso
 // An earlier capture of this row, and everyone the row could match (same name key or same email),
 // oldest first. `in_import` is true for a person this import has already added or noted.
 const LOOK_SQL = `SELECT 'capture' AS what, NULL::uuid AS id, c.extracted->>'outcome' AS name_key, NULL::text AS org_key,
-       NULL::text AS email_lc, NULL::uuid AS org_id, NULL::uuid AS own_id, false AS in_import, c.created_at
+       NULL::text AS email_lc, NULL::uuid AS org_id, NULL::uuid AS own_id, false AS in_import, NULL::text AS source, c.created_at
   FROM captures c
  WHERE c.capture_id = $1::uuid
 UNION ALL
 SELECT 'person', p.id, p.name_key, po.name_key, NULLIF(lower(btrim(p.email)), ''), p.org_id, own.id,
        EXISTS (SELECT 1 FROM captures ic
                 WHERE ic.person_id = p.id AND ic.channel = '${IMPORT_CHANNEL}' AND ic.extracted->>'importId' = $4::text),
-       p.created_at
+       p.source, p.created_at
   FROM people p
   LEFT JOIN orgs po ON po.id = p.org_id
   LEFT JOIN members own ON own.person_id = p.id
@@ -129,7 +129,7 @@ const ALSO_SQL = `WITH t AS (
 INSERT INTO captures (capture_id, channel, status, extracted, person_id, org_id)
 VALUES ($4::uuid, '${IMPORT_CHANNEL}', 'written', $5::jsonb, $6::uuid, $7::uuid)`;
 
-type Found = Candidate & { orgId: string | null; ownMember: string | null; inImport: boolean };
+type Found = Candidate & { orgId: string | null; ownMember: string | null; inImport: boolean; source: string | null };
 
 class TryAgain extends Error {}
 
@@ -167,6 +167,7 @@ export async function saveImportRows(db: ClientBase, input: SaveImportInput, opt
       orgId: r.org_id,
       ownMember: r.own_id,
       inImport: r.in_import === true,
+      source: r.source,
     }));
     const verdict = judge(keys, people);
     const record = (outcome: "added" | "existing") => JSON.stringify({ importId, rowNumber, outcome });
@@ -174,7 +175,9 @@ export async function saveImportRows(db: ClientBase, input: SaveImportInput, opt
     if (verdict.class === "existing") {
       const person = verdict.match;
       if (person.inImport) return { rowNumber, outcome: "repeat" };
-      if (person.ownMember !== null) {
+      // Someone this very label brought in (the same file imported again after a reload, under a
+      // new import id) is not "also in" it.
+      if (person.ownMember !== null && person.source !== source) {
         await db.query(ALSO_SQL, [person.ownMember, input.owner, alsoInEntry(label), captureId, record("existing"), person.id, person.orgId]);
       }
       return { rowNumber, outcome: "existing" };

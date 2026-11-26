@@ -195,6 +195,36 @@ describe.skipIf(!testDb.available)("saveImportRows (real Postgres)", () => {
     expect((await db.query("SELECT summary FROM touches ORDER BY at DESC LIMIT 1")).rows[0].summary).toBe("Also in Second list.");
   });
 
+  it("the same file imported again under the same label writes no 'Also in' for the people that label brought in", async () => {
+    await janeOnFile();
+    const rows: ImportContact[] = [{ name: "Omar Haddad", org: "Northwind" }, { name: "Jane Tan", org: "Acme Capital" }];
+    expect(await outcomes(input(rows))).toEqual(["added", "existing"]);
+    const entries = async (name: string) =>
+      (
+        await db.query(
+          `SELECT t.summary FROM touches t JOIN members m ON m.id = t.member_id JOIN people p ON p.id = m.person_id
+            WHERE p.name = $1 AND t.kind = 'system' ORDER BY t.at`,
+          [name],
+        )
+      ).rows.map((r) => r.summary);
+    expect(await entries("Omar Haddad")).toEqual([`Imported from ${LABEL}.`]);
+    expect(await entries("Jane Tan")).toEqual([`Also in ${LABEL}.`]);
+    const before = await counts();
+
+    // The page was reloaded mid-import: the same file and label, a new import id.
+    expect(await outcomes(input(rows))).toEqual(["existing", "existing"]);
+    expect(await entries("Omar Haddad")).toEqual([`Imported from ${LABEL}.`]);
+    // Jane was on file before any import, so a second import still says so, as it did.
+    expect(await entries("Jane Tan")).toEqual([`Also in ${LABEL}.`, `Also in ${LABEL}.`]);
+    // Nothing else was written for Omar: no capture record either.
+    const after = await counts();
+    expect(after).toEqual([before[0], before[1], before[2], before[3] + 1, before[4] + 1]);
+
+    // An import under another label does note him.
+    expect(await outcomes(input([rows[0]], { label: "Second list" }))).toEqual(["existing"]);
+    expect(await entries("Omar Haddad")).toEqual([`Imported from ${LABEL}.`, "Also in Second list."]);
+  });
+
   it("a system entry does not change the last action of an existing contact", async () => {
     await janeOnFile();
     const last = async () => {
