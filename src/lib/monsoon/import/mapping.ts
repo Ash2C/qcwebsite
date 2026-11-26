@@ -59,8 +59,11 @@ export function headingKey(heading: unknown): string {
   return typeof heading === "string" ? heading.toLowerCase().replace(/[^a-z0-9]+/g, "") : "";
 }
 
-/** The mapping for a standard export, or null when no name column is recognised. Never uses AI. */
-export function knownMapping(headers: string[]): Mapping | null {
+/**
+ * The columns recognised by their headings, or null when no name column is. Never uses AI. This
+ * alone does not make a file a known format (see knownMapping); it is what finds a header row.
+ */
+export function recognisedColumns(headers: string[]): Mapping | null {
   const at = new Map<string, number>();
   (Array.isArray(headers) ? headers : []).forEach((h, i) => {
     const key = headingKey(h);
@@ -71,7 +74,19 @@ export function knownMapping(headers: string[]): Mapping | null {
     const found = (KNOWN[field] ?? []).find((alias) => at.has(alias));
     if (found !== undefined) mapping[field] = at.get(found) as number;
   }
+  // Outlook has both: "Title" is the honorific (Dr., Ms.) and "Job Title" the title.
+  if (at.has("title") && at.has("jobtitle")) mapping.title = at.get("jobtitle") as number;
   return NAME_FIELDS.some((f) => mapping[f] !== undefined) ? mapping : null;
+}
+
+/**
+ * The mapping for a standard export, or null when the file is not one: a known format has a name
+ * column and at least a company or an email column. With a name alone too little is recognised to
+ * skip asking, so the map route (and the browser before it) goes on to Claude. Never uses AI.
+ */
+export function knownMapping(headers: string[]): Mapping | null {
+  const mapping = recognisedColumns(headers);
+  return mapping !== null && (mapping.company !== undefined || mapping.email !== undefined) ? mapping : null;
 }
 
 /**

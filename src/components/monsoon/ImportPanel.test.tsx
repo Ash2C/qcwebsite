@@ -158,6 +158,26 @@ describe("ImportPanel: choosing a file", () => {
     expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
   });
 
+  it("a file where only the name column is recognised is not a known format: the server is asked", async () => {
+    const user = userEvent.setup();
+    m.mapImportColumns.mockResolvedValue({ status: 200, body: { mapping: { fullName: 0, company: 1 }, source: "claude" } } as never);
+    const first = view();
+    await choose(user, csv("Name,Works at,Remarks\nJane Tan,Acme,met at SFF\n"));
+    await screen.findByText("Monsoon worked these out. Check them.");
+    expect(m.mapImportColumns).toHaveBeenCalledTimes(1);
+    expect(m.mapImportColumns.mock.calls[0][0]).toEqual(["Name", "Works at", "Remarks"]);
+    expect(screen.getByLabelText("Company")).toHaveValue("1");
+    first.unmount();
+
+    // With no answer, the column that was recognised is still filled in.
+    m.mapImportColumns.mockResolvedValue({ status: 200, body: { mapping: null, source: "none" } } as never);
+    view();
+    await choose(user, csv("Name,Works at,Remarks\nJane Tan,Acme,met at SFF\n"));
+    await screen.findByText("Choose which column is which.");
+    expect(screen.getByLabelText("Full name")).toHaveValue("0");
+    expect(screen.getByLabelText("Company")).toHaveValue("");
+  });
+
   it("with no answer from the server the person chooses the columns, each for one field only", async () => {
     const user = userEvent.setup();
     m.mapImportColumns.mockResolvedValue({ status: 200, body: { mapping: null, source: "none" } } as never);

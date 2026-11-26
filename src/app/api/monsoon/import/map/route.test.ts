@@ -54,6 +54,14 @@ describe("POST /api/monsoon/import/map", () => {
     expect(claudeMapping).not.toHaveBeenCalled();
   });
 
+  it("a file where only a name column is recognised is not a known format: Claude is asked", async () => {
+    claudeMapping.mockResolvedValue({ fullName: 0, company: 1 });
+    const res = await POST(post({ headers: ["Name", "Works at", "Remarks"], samples: [["Jane Tan", "Acme", "met at SFF"]] }));
+    expect(await res.json()).toEqual({ mapping: { fullName: 0, company: 1 }, source: "claude" });
+    expect(account.beginAi).toHaveBeenCalledTimes(1);
+    expect(claudeMapping).toHaveBeenCalledTimes(1);
+  });
+
   it("asks Claude once for an unfamiliar file, as one AI use of kind import", async () => {
     claudeMapping.mockResolvedValue({ fullName: 0, company: 1, email: 2 });
     const res = await POST(post({ headers: ODD, samples: SAMPLES }));

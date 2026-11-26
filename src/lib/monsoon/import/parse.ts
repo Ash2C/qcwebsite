@@ -1,6 +1,6 @@
 // Bulk import: reading the text of a CSV file into rows, in the browser. Pure functions, no
 // database and no Node-only imports. Everything in a file is text: nothing is ever evaluated.
-import { headingKey, knownMapping } from "./mapping";
+import { headingKey, recognisedColumns } from "./mapping";
 
 export const MAX_ROWS = 5000;
 export const MAX_BYTES = 10 * 1024 * 1024;
@@ -63,7 +63,7 @@ const filled = (row: string[]): number => row.reduce((count, cell) => (cell.trim
  */
 export function findHeaderRow(rows: string[][]): number {
   const top = Math.min(rows.length, HEADER_SEARCH_ROWS);
-  for (let i = 0; i < top; i++) if (knownMapping(rows[i]) !== null) return i;
+  for (let i = 0; i < top; i++) if (recognisedColumns(rows[i]) !== null) return i;
   const two = rows.findIndex((row) => filled(row) >= 2);
   return two !== -1 ? two : rows.findIndex((row) => filled(row) >= 1);
 }
@@ -77,7 +77,7 @@ function chooseSeparator(text: string): string {
     const rows = split(head, separator).slice(0, HEAD_ROWS);
     const at = findHeaderRow(rows);
     if (at === -1) continue;
-    const score = (knownMapping(rows[at]) !== null ? 1000 : 0) + filled(rows[at]);
+    const score = (recognisedColumns(rows[at]) !== null ? 1000 : 0) + filled(rows[at]);
     if (score > bestScore) {
       best = separator;
       bestScore = score;

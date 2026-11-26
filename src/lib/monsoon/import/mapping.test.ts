@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FIELDS, cleanContact, knownMapping, rowToContact, validateMapping } from "./mapping";
+import { FIELDS, cleanContact, knownMapping, recognisedColumns, rowToContact, validateMapping } from "./mapping";
 
 describe("knownMapping", () => {
   it("recognises a LinkedIn connections export", () => {
@@ -73,8 +73,30 @@ describe("knownMapping", () => {
     expect(knownMapping(["Name of pet", "Company car"])).toBeNull();
   });
 
+  it("is a known format only with a name and a company or an email: a name alone is left for Claude", () => {
+    expect(knownMapping(["Name", "Remarks", "Where we met"])).toBeNull();
+    expect(knownMapping(["First Name", "Last Name", "Phone", "Country", "Title"])).toBeNull();
+    expect(knownMapping(["Name", "Email"])).toEqual({ fullName: 0, email: 1 });
+    expect(knownMapping(["Last Name", "Company"])).toEqual({ lastName: 0, company: 1 });
+    // The columns that were recognised are still there for whoever wants them (finding the header row).
+    expect(recognisedColumns(["Name", "Remarks", "Where we met"])).toEqual({ fullName: 0 });
+    expect(recognisedColumns(["Email", "Company"])).toBeNull();
+  });
+
+  it("an Outlook export's Title is the honorific: Job Title is the title, wherever the two stand", () => {
+    const outlook = ["Title", "First Name", "Middle Name", "Last Name", "Suffix", "Company", "Department", "Job Title", "E-mail Address"];
+    expect(knownMapping(outlook)).toEqual({ firstName: 1, lastName: 3, company: 5, title: 7, email: 8 });
+    expect(knownMapping(["First Name", "Job Title", "Title", "Company"])).toEqual({ firstName: 0, title: 1, company: 3 });
+    expect(rowToContact(["Dr.", "Jane", "", "Tan", "", "Acme", "", "CIO", "jane@acme.com"], knownMapping(outlook)!)).toMatchObject({
+      name: "Jane Tan",
+      title: "CIO",
+    });
+    // A Title column alone is still the title, as Salesforce writes it.
+    expect(knownMapping(["First Name", "Title", "Company"])).toEqual({ firstName: 0, title: 1, company: 2 });
+  });
+
   it("never maps a notes column by itself", () => {
-    expect(knownMapping(["Name", "Notes"])).toEqual({ fullName: 0 });
+    expect(knownMapping(["Name", "Company", "Notes"])).toEqual({ fullName: 0, company: 1 });
   });
 });
 

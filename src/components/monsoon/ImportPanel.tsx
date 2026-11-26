@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RowClass } from "@/lib/monsoon/import/classify";
 import { UNREADABLE, readImportFile } from "@/lib/monsoon/import/file";
 import { CHECK_MAX_BODY, SAVE_MAX_BODY, bySize, jsonBytes, requestBudget } from "@/lib/monsoon/import/limits";
-import { knownMapping, rowToContact, validateMapping, type Field, type ImportContact, type Mapping } from "@/lib/monsoon/import/mapping";
+import { knownMapping, recognisedColumns, rowToContact, validateMapping, type Field, type ImportContact, type Mapping } from "@/lib/monsoon/import/mapping";
 import { ImportFileError, MAX_COLUMNS, sourceName } from "@/lib/monsoon/import/parse";
 import type { SaveOutcome } from "@/lib/monsoon/import/save";
 import { checkImportRows, finishImport, mapImportColumns, saveImportRows, type EstateInfo } from "./api";
@@ -300,7 +300,12 @@ export default function ImportPanel({
       if (res?.status === 401) return calls.current.onUnauthorized();
       const body = res?.status === 200 ? res.body : null;
       const mapping = body && "mapping" in body ? validateMapping(body.mapping, width) : null;
-      patch(mapping ? { mapping: oneFieldPerColumn(mapping), mapSource: "claude" } : { mapping: {}, mapSource: "none" });
+      // With no answer, whatever columns were recognised by their headings are still filled in.
+      patch(
+        mapping
+          ? { mapping: oneFieldPerColumn(mapping), mapSource: "claude" }
+          : { mapping: oneFieldPerColumn(recognisedColumns(jobRef.current.headers) ?? {}), mapSource: "none" },
+      );
     })();
   }, [job.step, job.mapSource, job.importId, job.headers, job.rows, patch]);
 
