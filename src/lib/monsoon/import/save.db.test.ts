@@ -407,27 +407,30 @@ describe.skipIf(!testDb.available)("saveImportRows (real Postgres)", () => {
       { rowNumber: 2, outcome: "added" },
     ]);
     expect(await count("people", `org_id = '${org}' AND source = 'import:${LABEL}'`)).toBe(2);
-    // A colleague in a later batch, and the first batch sent again because its answer was lost.
+    // Colleagues in later batches (one in the last row a file can have), and the first batch sent
+    // again because its answer was lost.
     await batch([[3, "D Four", "Northwind"]]);
+    await batch([[4999, "E Five", "Northwind"]]);
     expect((await batch(firstRows)).map((r) => r.outcome)).toEqual(["added", "added", "added"]);
-    // No entry of their own for the three, and nothing on the timeline while the rows are being sent.
+    // No entry of their own for the four, and nothing on the timeline while the rows are being sent.
     expect(await count("members")).toBe(2);
     expect(await summaries()).toEqual([]);
 
     // The closing step: one entry, with everyone in it.
     await finish();
-    expect(await summaries()).toEqual([{ kind: "system", by_whom: "VF", summary: `3 people imported from ${LABEL}.` }]);
+    expect(await summaries()).toEqual([{ kind: "system", by_whom: "VF", summary: `4 people imported from ${LABEL}.` }]);
     // The company's entry itself is untouched.
     expect(JSON.parse(await all("members")).find((m: { id: string }) => m.id === member)).toEqual(JSON.parse(membersBefore)[0]);
-    // Asked again, nothing more is written.
+    // Asked again, nothing more is written, also when a batch is sent again in between.
     const touchesBefore = await all("touches");
     await finish();
-    expect(await all("touches")).toBe(touchesBefore);
-
-    // A row that failed and is sent again afterwards (the last row a file can have) joins the same entry.
-    await batch([[4999, "E Five", "Northwind"]]);
+    await batch(firstRows);
     await finish();
-    expect(await summaries()).toEqual([{ kind: "system", by_whom: "VF", summary: `4 people imported from ${LABEL}.` }]);
+    expect(await all("touches")).toBe(touchesBefore);
+    // A timeline entry is never rewritten: a row saved after the close leaves the one entry as it is.
+    await batch([[7, "Late Comer", "Northwind"]]);
+    await finish();
+    expect(await all("touches")).toBe(touchesBefore);
 
     // Another import has an entry of its own. One person reads "1 person".
     const other = input([{ name: "F Six", org: "Northwind" }], { label: "Other" });

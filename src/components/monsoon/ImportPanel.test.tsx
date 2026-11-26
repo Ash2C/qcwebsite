@@ -595,16 +595,16 @@ describe("ImportPanel: saving", () => {
     expect(screen.queryByRole("list", { name: "Could not be saved" })).toBeNull();
   });
 
-  it("closes the import once when the rows are done, again after Try those again, and not when signed out", async () => {
+  it("closes the import once, when no row is left to try again: at the end of a clean run, after Try those again, or on Done", async () => {
     const user = userEvent.setup();
-    saveAs({ 3: "failed" });
-    view();
+    const closed = { status: 200, body: { finished: true } } as never;
+    const first = view();
     await toSummary(user, linkedin(120));
     expect(m.finishImport).not.toHaveBeenCalled();
-    // The closing request failing, or never answering properly, does not hold the result back.
-    m.finishImport.mockRejectedValueOnce(new Error("net")).mockResolvedValue({ status: 200, body: { finished: true } } as never);
+    // The closing request failing once does not hold the result back.
+    m.finishImport.mockRejectedValueOnce(new Error("net")).mockResolvedValue(closed);
     await user.click(screen.getByRole("button", { name: "Import 120 contacts" }));
-    expect(await screen.findByText("119 imported, 0 already here, 0 skipped, 1 could not be saved")).toBeInTheDocument();
+    expect(await screen.findByText("120 imported, 0 already here, 0 skipped, 0 could not be saved")).toBeInTheDocument();
     const importId = m.saveImportRows.mock.calls[0][0].importId;
     expect(m.finishImport.mock.calls).toEqual([
       [{ pipeline: "traxo", importId, label: "LinkedIn import, Nov 2026" }],
@@ -612,22 +612,49 @@ describe("ImportPanel: saving", () => {
     ]);
     // Every row had been sent before it.
     expect(m.finishImport.mock.invocationCallOrder[0]).toBeGreaterThan(Math.max(...m.saveImportRows.mock.invocationCallOrder));
+    // Closed already: Done does not close it again.
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(m.finishImport).toHaveBeenCalledTimes(2);
+    first.unmount();
 
+    // A row is left to try again: not closed yet, so the entry can still count it. Trying again closes it.
+    m.finishImport.mockClear();
+    saveAs({ 3: "failed" });
+    const second = view();
+    await toSummary(user, linkedin(120));
+    await user.click(screen.getByRole("button", { name: "Import 120 contacts" }));
+    expect(await screen.findByText("119 imported, 0 already here, 0 skipped, 1 could not be saved")).toBeInTheDocument();
+    expect(m.finishImport).not.toHaveBeenCalled();
     saveAs();
     await user.click(screen.getByRole("button", { name: "Try those again" }));
     expect(await screen.findByText("120 imported, 0 already here, 0 skipped, 0 could not be saved")).toBeInTheDocument();
-    expect(m.finishImport).toHaveBeenCalledTimes(3);
+    expect(m.finishImport).toHaveBeenCalledTimes(1);
+    second.unmount();
+
+    // Leaving with a row still failed closes it with what was saved.
+    m.finishImport.mockClear();
+    saveAs({ 3: "failed" });
+    view();
+    await toSummary(user, linkedin(6));
+    await user.click(screen.getByRole("button", { name: "Import 6 contacts" }));
+    expect(await screen.findByText("5 imported, 0 already here, 0 skipped, 1 could not be saved")).toBeInTheDocument();
+    expect(m.finishImport).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.getByText("closed")).toBeInTheDocument();
+    await waitFor(() => expect(m.finishImport).toHaveBeenCalledTimes(1));
+    expect(m.finishImport.mock.calls[0][0]).toMatchObject({ pipeline: "traxo", label: "LinkedIn import, Nov 2026" });
     cleanup();
+    saveAs();
 
     // Signed out while saving: not closed; signed out at the close itself: handed to sign-in.
     m.finishImport.mockClear();
     m.saveImportRows.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never);
-    const second = view();
+    const third = view();
     await toSummary(user, linkedin(2));
     await user.click(screen.getByRole("button", { name: "Import 2 contacts" }));
     await waitFor(() => expect(onUnauthorized).toHaveBeenCalledTimes(1));
     expect(m.finishImport).not.toHaveBeenCalled();
-    second.unmount();
+    third.unmount();
     saveAs();
     m.finishImport.mockResolvedValueOnce({ status: 401, body: { error: "unauthorized" } } as never);
     view();

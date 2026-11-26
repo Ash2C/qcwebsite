@@ -260,9 +260,9 @@ export async function saveImportRows(db: ClientBase, input: SaveImportInput, opt
 // The import's lock for the closing step, and the transaction's time limit in the same round trip.
 const CLOSE_LOCK_SQL = "SELECT set_config('statement_timeout', '20s', true), pg_advisory_xact_lock(hashtextextended($1, 0))";
 
-// Per company that is itself a pipeline entry: how many people this import filed under it (from
-// the rows' capture records, found by their ids), and the record of the summary entry this import
-// already wrote for it, if any. That record's capture id comes from the import id and the member id.
+// Per company that is itself a pipeline entry and has no summary entry from this import yet: how
+// many people this import filed under it, from the rows' capture records, found by their ids. The
+// record of a summary entry has a capture id made from the import id and the member id.
 const FILED_SQL = `WITH filed AS (
   SELECT (c.extracted->>'filedUnder')::uuid AS member_id, count(*)::int AS n
     FROM captures c
@@ -270,41 +270,34 @@ const FILED_SQL = `WITH filed AS (
      AND c.extracted->>'outcome' = 'added' AND c.extracted->>'filedUnder' IS NOT NULL
    GROUP BY 1
 )
-SELECT f.member_id, f.n, md5('monsoon-import-summary:' || $2::text || ':' || f.member_id::text)::uuid AS capture_id,
-       m.org_id, s.extracted->>'touchId' AS touch_id, st.summary AS written
+SELECT f.member_id, f.n, md5('monsoon-import-summary:' || $2::text || ':' || f.member_id::text)::uuid AS capture_id, m.org_id
   FROM filed f
   JOIN members m ON m.id = f.member_id
-  LEFT JOIN captures s ON s.capture_id = md5('monsoon-import-summary:' || $2::text || ':' || f.member_id::text)::uuid
-                      AND s.channel = '${IMPORT_CHANNEL}'
-  LEFT JOIN touches st ON st.id = (s.extracted->>'touchId')::uuid
+ WHERE NOT EXISTS (SELECT 1 FROM captures s
+                    WHERE s.capture_id = md5('monsoon-import-summary:' || $2::text || ':' || f.member_id::text)::uuid
+                      AND s.channel = '${IMPORT_CHANNEL}')
  ORDER BY f.member_id`;
 
-// The summary entries not yet written, each with the record that stops a second one; and the ones
-// already written whose number has grown since (rows that failed and were sent again), put right.
+// The summary entries, each with the record that stops a second one for this import and company.
 const SUMMARISE_SQL = `WITH fresh AS (
-  SELECT x.member_id, x.capture_id, x.org_id, x.summary, gen_random_uuid() AS touch_id
+  SELECT x.member_id, x.capture_id, x.org_id, x.summary
     FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[]) AS x(member_id, capture_id, org_id, summary)
 ), t AS (
-  INSERT INTO touches (id, member_id, kind, by_whom, summary)
-  SELECT f.touch_id, f.member_id, 'system', $5::text, f.summary FROM fresh f
-  RETURNING id
-), cap AS (
-  INSERT INTO captures (capture_id, channel, status, extracted, org_id)
-  SELECT f.capture_id, '${IMPORT_CHANNEL}', 'written',
-         jsonb_build_object('importId', $6::text, 'summaryFor', f.member_id, 'touchId', f.touch_id), f.org_id
-    FROM fresh f
+  INSERT INTO touches (member_id, kind, by_whom, summary)
+  SELECT f.member_id, 'system', $5::text, f.summary FROM fresh f
   RETURNING id
 )
-UPDATE touches u SET summary = y.summary
-  FROM unnest($7::uuid[], $8::text[]) AS y(touch_id, summary)
- WHERE u.id = y.touch_id`;
+INSERT INTO captures (capture_id, channel, status, extracted, org_id)
+SELECT f.capture_id, '${IMPORT_CHANNEL}', 'written', jsonb_build_object('importId', $6::text, 'summaryFor', f.member_id), f.org_id
+  FROM fresh f`;
 
 /**
  * The closing step of an import: one timeline entry per company that is itself the pipeline entry,
  * for the people this import filed under it: "<n> people imported from <label>." It counts from
  * what the import saved, not from any one request, so it is right however the rows were batched
- * or sent again. Called again it writes nothing new; when more people were filed since, the entry
- * it wrote is put right. One short transaction. Throws ImportInputError for a bad import id or label.
+ * or sent again. Called again it writes nothing: a timeline entry is never rewritten, so the
+ * caller closes an import once its rows are done (the browser waits until no row is left to try
+ * again). One short transaction. Throws ImportInputError for a bad import id or label.
  */
 export async function noteCompanyImports(db: ClientBase, o: { importId: string; label: string; owner: string }): Promise<void> {
   const importId = typeof o.importId === "string" && UUID_RE.test(o.importId) ? o.importId.toLowerCase() : null;
@@ -315,26 +308,15 @@ export async function noteCompanyImports(db: ClientBase, o: { importId: string; 
   await db.query("BEGIN ISOLATION LEVEL READ COMMITTED");
   try {
     await db.query(CLOSE_LOCK_SQL, [`monsoon-import-close:${importId}`]);
-    const filed = (await db.query(FILED_SQL, [captureIds, importId])).rows.map((r) => ({
-      memberId: r.member_id as string,
-      captureId: r.capture_id as string,
-      orgId: r.org_id as string | null,
-      touchId: r.touch_id as string | null,
-      written: r.written as string | null,
-      summary: companyImportEntry(r.n as number, label),
-    }));
-    const fresh = filed.filter((f) => f.touchId === null);
-    const grown = filed.filter((f) => f.touchId !== null && f.written !== null && f.written !== f.summary);
-    if (fresh.length > 0 || grown.length > 0) {
+    const fresh = (await db.query(FILED_SQL, [captureIds, importId])).rows;
+    if (fresh.length > 0) {
       await db.query(SUMMARISE_SQL, [
-        fresh.map((f) => f.memberId),
-        fresh.map((f) => f.captureId),
-        fresh.map((f) => f.orgId),
-        fresh.map((f) => f.summary),
+        fresh.map((f) => f.member_id),
+        fresh.map((f) => f.capture_id),
+        fresh.map((f) => f.org_id),
+        fresh.map((f) => companyImportEntry(f.n as number, label)),
         o.owner,
         importId,
-        grown.map((f) => f.touchId),
-        grown.map((f) => f.summary),
       ]);
     }
     await db.query("COMMIT");

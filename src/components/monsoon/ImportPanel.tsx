@@ -239,6 +239,8 @@ export default function ImportPanel({
   const stopRef = useRef(false);
   // The import whose columns the server has been asked about, so it is asked once.
   const mapAsked = useRef("");
+  // The import the server has been told is done, so it is told once.
+  const closedFor = useRef("");
 
   const patch = useCallback((changes: Partial<ImportJob>) => calls.current.onChange((prev) => ({ ...prev, ...changes })), []);
 
@@ -404,14 +406,17 @@ export default function ImportPanel({
   // --- saving ------------------------------------------------------------------------------------
 
   /**
-   * The closing request, once the rows of a run are done: the server then writes the one summary
-   * entry per company for the whole import. Sending it again is safe. A failure does not hold the
-   * result back. Answers true when the session has ended.
+   * The closing request: the server then writes the one summary entry per company for the whole
+   * import, counting what was saved. It writes that entry once and never changes it, so this is
+   * sent when no row is left to try again: at the end of a run that saved everything it could, or
+   * when the person leaves the result. Sending it again is safe. A failure does not hold the
+   * result back. Answers true when the session has ended. `leaving` is the request sent on the
+   * way out, which carries on after this screen has gone.
    */
-  async function close(from: ImportJob): Promise<boolean> {
+  async function close(from: ImportJob, leaving = false): Promise<boolean> {
     for (let tries = 0; tries < CLOSE_TRIES; tries++) {
       if (tries > 0) await wait(retryWaitMs);
-      if (!alive.current) return false;
+      if (!leaving && !alive.current) return false;
       let res: Awaited<ReturnType<typeof finishImport>> | null = null;
       try {
         res = await finishImport({ pipeline: estateKey, importId: from.importId, label: from.label });
@@ -419,9 +424,18 @@ export default function ImportPanel({
         // no signal: once more
       }
       if (res?.status === 401) return true;
-      if (res?.status === 200 || res?.status === 400) return false;
+      if (res?.status === 200 || res?.status === 400) {
+        closedFor.current = from.importId;
+        return false;
+      }
     }
     return false;
+  }
+
+  /** Leaves the result. An import not closed yet (rows were left to try again) is closed with what was saved. */
+  function leave() {
+    if (job.step === "result" && job.importId !== "" && closedFor.current !== job.importId) void close(job, true);
+    calls.current.onChange(null);
   }
 
   /**
@@ -429,8 +443,8 @@ export default function ImportPanel({
    * inside the route's limit. A row answered `failed`, and every row of a request that got no
    * answer, is sent again up to twice more. A request refused as too large is split in two, and a
    * row too large to send alone is marked so and left. A 401 stops the run with the job as it
-   * stands. Stopped or finished, the import is closed, what was not saved is marked failed and the
-   * result is shown.
+   * stands. Stopped or finished, what was not saved is marked failed and the result is shown; the
+   * import is closed first when no row is left to try again.
    *
    * While the server says another import is running (409) the same rows are sent again after a
    * longer pause each time, and no later rows are sent. When it still says so after the last
@@ -452,9 +466,15 @@ export default function ImportPanel({
       maxBytes: requestBudget(SAVE_MAX_BODY),
       baseBytes: jsonBytes({ ...envelope, first: true, rows: [] }),
     });
+    // What this run settled, to know at its end whether a row is left to try again.
+    const settledNow = new Set<number>();
+    const tooLargeNow = new Set<number>(from.tooLarge);
     const tooLarge = (rows: number[]) => {
       const failed: Record<number, SaveOutcome> = {};
-      for (const n of rows) failed[n] = "failed";
+      for (const n of rows) {
+        failed[n] = "failed";
+        tooLargeNow.add(n);
+      }
       calls.current.onChange((prev) => ({
         ...prev,
         outcomes: { ...prev.outcomes, ...failed },
@@ -510,7 +530,12 @@ export default function ImportPanel({
           if (results) {
             first = false;
             const settled: Record<number, SaveOutcome> = {};
-            for (const r of results) if (pending.includes(r.rowNumber) && r.outcome !== "failed") settled[r.rowNumber] = r.outcome;
+            for (const r of results) {
+              if (pending.includes(r.rowNumber) && r.outcome !== "failed") {
+                settled[r.rowNumber] = r.outcome;
+                settledNow.add(r.rowNumber);
+              }
+            }
             pending = pending.filter((n) => settled[n] === undefined);
             // Recorded even when this screen has gone: the job lives in the parent.
             calls.current.onChange((prev) => ({ ...prev, firstDone: true, outcomes: { ...prev.outcomes, ...settled } }));
@@ -524,8 +549,10 @@ export default function ImportPanel({
           calls.current.onChange((prev) => ({ ...prev, outcomes: { ...prev.outcomes, ...failed } }));
         }
       }
-      // Not closed while another import runs: the run that carries on from here closes it.
-      if (!signedOut && !stillRunning && alive.current) signedOut = await close(from);
+      // Closed only when no row is left to try again, so the company summaries count everyone.
+      // Otherwise the run that tries those rows again closes it, or leaving the result does.
+      const left = from.queue.some((n) => !settledNow.has(n) && !tooLargeNow.has(n) && (from.outcomes[n] === undefined || from.outcomes[n] === "failed"));
+      if (!signedOut && !stillRunning && !left && alive.current) signedOut = await close(from);
     } finally {
       runRef.current = false;
       if (alive.current) {
@@ -655,7 +682,7 @@ export default function ImportPanel({
       setFileError(null);
       return calls.current.onChange({ ...NEW_IMPORT_JOB });
     }
-    calls.current.onChange(null);
+    leave();
   }
 
   const firstRow = job.rows[0] ?? [];
@@ -927,7 +954,7 @@ export default function ImportPanel({
               )}
             </>
           )}
-          <button type="button" className={primaryButton} onClick={() => calls.current.onChange(null)}>
+          <button type="button" className={primaryButton} onClick={leave}>
             Done
           </button>
         </section>

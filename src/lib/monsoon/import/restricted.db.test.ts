@@ -94,9 +94,9 @@ describe.skipIf(!testDb.available)("the import through the restricted app login 
     const saved = await withImportLock(guard, "person-1", () => saveImportRows(app, { ...input, rows: rows.slice(0, 3) }));
     expect(saved).toMatchObject({ locked: true });
     expect(saved.locked && saved.value.map((r) => r.outcome)).toEqual(["existing", "added", "added"]);
-    await noteCompanyImports(app, { importId, label: LABEL, owner: "VF" });
-    // The rest, the first batch sent again, and the close again: the summary entry is put right in place.
+    // The rest with the first batch sent again, then the close, twice.
     expect((await saveImportRows(app, { ...input, rows })).map((r) => r.outcome)).toEqual(["existing", "added", "added", "added", "added", "unreadable"]);
+    await noteCompanyImports(app, { importId, label: LABEL, owner: "VF" });
     await noteCompanyImports(app, { importId, label: LABEL, owner: "VF" });
     // The same file again after a reload.
     expect((await saveImportRows(app, { ...input, importId: randomUUID(), rows })).map((r) => r.outcome)).toEqual([
