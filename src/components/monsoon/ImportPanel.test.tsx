@@ -39,6 +39,8 @@ const csv = (text: string, name = "old crm.csv") => new File([text], name, { typ
 
 let onUnauthorized: ReturnType<typeof vi.fn>;
 let latest: ImportJob | null;
+/** The first pause after "another import is running"; the next ones double. */
+let busyWaitMs = 0;
 
 // The job lives in the parent, as it does in MonsoonApp, so it survives this screen going away.
 function Harness({ start }: { start: ImportJob }) {
@@ -52,6 +54,7 @@ function Harness({ start }: { start: ImportJob }) {
       onChange={(next) => setJob((prev) => (typeof next === "function" ? (prev ? next(prev) : prev) : next))}
       onUnauthorized={onUnauthorized}
       retryWaitMs={0}
+      busyWaitMs={busyWaitMs}
     />
   );
 }
@@ -89,6 +92,7 @@ beforeEach(() => {
   vi.setSystemTime(new Date("2026-11-25T10:00:00"));
   onUnauthorized = vi.fn();
   latest = null;
+  busyWaitMs = 0;
   checkAs();
   saveAs();
 });
@@ -661,6 +665,41 @@ describe("ImportPanel: saving", () => {
     expect(await screen.findByText("0 imported, 0 already here, 0 skipped, 2 could not be saved")).toBeInTheDocument();
     expect(m.saveImportRows).toHaveBeenCalledTimes(3);
     expect(screen.getByRole("button", { name: "Try those again" })).toBeInTheDocument();
+  });
+
+  it("while another import is running it waits longer each time on the same rows, then stops with everything kept", async () => {
+    const user = userEvent.setup();
+    busyWaitMs = 3;
+    const ok = m.saveImportRows.getMockImplementation()!;
+    m.saveImportRows.mockImplementationOnce(ok).mockResolvedValue({ status: 409, body: { error: "import_running" } } as never);
+    const pauses = vi.spyOn(globalThis, "setTimeout");
+    view();
+    await toSummary(user, linkedin(120));
+    pauses.mockClear();
+    await user.click(screen.getByRole("button", { name: "Import 120 contacts" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Another import is still running. Try again in a minute.");
+    // The second request was tried four times, with a longer pause before each new try, and the third never sent.
+    expect(m.saveImportRows.mock.calls.map(([b]) => b.rows[0].rowNumber)).toEqual([0, 50, 50, 50, 50]);
+    expect(pauses.mock.calls.map(([, ms]) => ms).filter((ms) => ms === 3 || ms === 6 || ms === 12)).toEqual([3, 6, 12]);
+    pauses.mockRestore();
+    expect(screen.getByText("50 imported, 0 already here, 0 skipped, 70 could not be saved")).toBeInTheDocument();
+    expect(m.finishImport).not.toHaveBeenCalled();
+    const kept = latest as ImportJob;
+    expect(kept.rows).toHaveLength(120);
+    expect(Object.values(kept.outcomes).filter((o) => o === "added")).toHaveLength(50);
+
+    // The other import is done: Try those again carries on with the rows that were not saved.
+    saveAs();
+    m.saveImportRows.mockClear();
+    m.finishImport.mockResolvedValue({ status: 200, body: { finished: true } } as never);
+    await user.click(screen.getByRole("button", { name: "Try those again" }));
+    expect(await screen.findByText("120 imported, 0 already here, 0 skipped, 0 could not be saved")).toBeInTheDocument();
+    expect(m.saveImportRows.mock.calls.map(([b]) => [b.rows[0].rowNumber, b.rows.length, b.importId])).toEqual([
+      [50, 50, kept.importId],
+      [100, 20, kept.importId],
+    ]);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(m.finishImport).toHaveBeenCalledTimes(1);
   });
 
   it("a request the server calls invalid is not sent again", async () => {

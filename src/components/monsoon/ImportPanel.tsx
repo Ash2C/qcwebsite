@@ -71,6 +71,9 @@ const SAVE_CHUNK = 50;
 const SAVE_TRIES = 3;
 const CLOSE_TRIES = 2;
 const RETRY_WAIT_MS = 2000;
+// "Another import is running" (409): the same rows are sent again after 3, 6 and 12 seconds.
+const BUSY_WAIT_MS = 3000;
+const BUSY_WAITS = 3;
 const LIST_MAX = 200;
 const MAX_LABEL = 80;
 const SAMPLE_ROWS = 5;
@@ -79,6 +82,7 @@ const SAMPLE_CHARS = 80;
 const CHECK_FAILURE = "Could not check the file. Check signal and try again.";
 const CHECK_TOO_LARGE = "Could not check the file. A row in it is too large.";
 const ROW_TOO_LARGE = "This row is too large.";
+const STILL_RUNNING = "Another import is still running. Try again in a minute.";
 const STOP = "Stop the import? Contacts already saved stay.";
 const NO_UNDO = "This cannot be undone: Monsoon never deletes contacts.";
 
@@ -194,6 +198,7 @@ export default function ImportPanel({
   onChange,
   onUnauthorized,
   retryWaitMs = RETRY_WAIT_MS,
+  busyWaitMs = BUSY_WAIT_MS,
 }: {
   /** The pipeline the contacts go into: the one that is open. */
   estate: EstateInfo;
@@ -203,6 +208,8 @@ export default function ImportPanel({
   onUnauthorized: () => void;
   /** How long to wait before a failed save is sent again. */
   retryWaitMs?: number;
+  /** The first wait when another import is running; each later one is twice the one before. */
+  busyWaitMs?: number;
 }) {
   const [reading, setReading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
@@ -211,6 +218,8 @@ export default function ImportPanel({
   const [openGroup, setOpenGroup] = useState<RowClass | null>(null);
   const [running, setRunning] = useState(false);
   const [stopping, setStopping] = useState(false);
+  // True when the last run stopped because another import was still running.
+  const [blocked, setBlocked] = useState(false);
 
   // The latest props, for the moment a request returns.
   const calls = useRef({ onChange, onUnauthorized });
@@ -422,6 +431,10 @@ export default function ImportPanel({
    * row too large to send alone is marked so and left. A 401 stops the run with the job as it
    * stands. Stopped or finished, the import is closed, what was not saved is marked failed and the
    * result is shown.
+   *
+   * While the server says another import is running (409) the same rows are sent again after a
+   * longer pause each time, and no later rows are sent. When it still says so after the last
+   * pause the run stops there and says so: nothing is lost, and "Try those again" carries on.
    */
   async function run(queue: number[], from: ImportJob) {
     if (runRef.current) return;
@@ -429,8 +442,10 @@ export default function ImportPanel({
     stopRef.current = false;
     setRunning(true);
     setStopping(false);
+    setBlocked(false);
     let first = !from.firstDone;
     let signedOut = false;
+    let stillRunning = false;
     const envelope = { pipeline: estateKey, importId: from.importId, label: from.label, role: from.role, includePossible: from.includePossible };
     const sized = bySize(queue, (rowNumber) => jsonBytes({ rowNumber, contact: from.contacts[rowNumber] }), {
       maxCount: SAVE_CHUNK,
@@ -451,9 +466,11 @@ export default function ImportPanel({
     try {
       while (work.length > 0 && !stopRef.current && !signedOut) {
         let pending = work.shift() as number[];
-        for (let tries = 0; tries < SAVE_TRIES && pending.length > 0; tries++) {
-          if (tries > 0) {
-            await wait(retryWaitMs);
+        let busy = 0;
+        let pause: number | null = null;
+        for (let tries = 0; tries < SAVE_TRIES && pending.length > 0; ) {
+          if (pause !== null) {
+            await wait(pause);
             if (stopRef.current || !alive.current) break;
           }
           let res: Awaited<ReturnType<typeof saveImportRows>> | null = null;
@@ -470,6 +487,17 @@ export default function ImportPanel({
             signedOut = true;
             break;
           }
+          if (res?.status === 409) {
+            // Not a failed try: these rows wait their turn, and nothing after them is sent meanwhile.
+            if (busy >= BUSY_WAITS) {
+              stillRunning = true;
+              break;
+            }
+            pause = busyWaitMs * 2 ** busy++;
+            continue;
+          }
+          tries++;
+          pause = retryWaitMs;
           if (res?.status === 413) {
             // Never a signal problem, and sending the same request again cannot help.
             const half = Math.ceil(pending.length / 2);
@@ -489,14 +517,15 @@ export default function ImportPanel({
           } else if (res?.status === 400) break; // the request itself is wrong: sending it again cannot help
           if (!alive.current) break;
         }
-        if (signedOut || !alive.current) break;
+        if (signedOut || stillRunning || !alive.current) break;
         if (pending.length > 0) {
           const failed: Record<number, SaveOutcome> = {};
           for (const n of pending) failed[n] = "failed";
           calls.current.onChange((prev) => ({ ...prev, outcomes: { ...prev.outcomes, ...failed } }));
         }
       }
-      if (!signedOut && alive.current) signedOut = await close(from);
+      // Not closed while another import runs: the run that carries on from here closes it.
+      if (!signedOut && !stillRunning && alive.current) signedOut = await close(from);
     } finally {
       runRef.current = false;
       if (alive.current) {
@@ -506,7 +535,10 @@ export default function ImportPanel({
     }
     // Signed out: everything is kept, and the import carries on from here after signing in.
     if (signedOut) return calls.current.onUnauthorized();
-    if (alive.current) finish();
+    if (alive.current) {
+      setBlocked(stillRunning);
+      finish();
+    }
   }
 
   /** The result: whatever in the run has no answer was not saved. */
@@ -871,6 +903,11 @@ export default function ImportPanel({
           <p role="status" className={`${plain} font-medium`}>
             {`${count(tally.added)} imported, ${count(tally.existing)} already here, ${count(tally.skipped)} skipped, ${count(tally.failed)} could not be saved`}
           </p>
+          {blocked && (
+            <p role="alert" className={bad}>
+              {STILL_RUNNING}
+            </p>
+          )}
           {leftOut.length > 0 && (
             <div className={`${card} overflow-hidden`}>
               <h4 className="px-4 py-3 text-[16px] font-medium">Possible matches, not imported</h4>
