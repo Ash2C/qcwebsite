@@ -17,10 +17,14 @@ type Choice = DateChoice;
 
 type Chip = { name: string; target?: TodoTarget };
 
-/** What a Contacts search result can be tied to: a person by id, a company by its pipeline entry. */
+/**
+ * What a Contacts search result can be tied to: a person by id, a company by its pipeline entry.
+ * A hit with no pipeline entry (its own or its company's) is left out: a to-do is filed under one.
+ */
 function targetOfHit(hit: SiftHit): TodoTarget | null {
+  if (!hit.member) return null;
   if (hit.kind === "person") return hit.personId ? { personId: hit.personId } : null;
-  return hit.member ? { memberId: hit.member.memberId } : null;
+  return { memberId: hit.member.memberId };
 }
 
 function startChoice(initial: Todo | undefined, today: string): { choice: Choice; picked: string } {

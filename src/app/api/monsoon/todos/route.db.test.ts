@@ -135,11 +135,31 @@ describe.skipIf(!testDb.available)("/api/monsoon/todos (real Postgres)", () => {
     expect((await post({ action: "add", title: "x", dueDate: "2026-02-31" })).status).toBe(400);
   });
 
-  it("answers 404 for a to-do or contact that is not there", async () => {
+  it("answers 404 for a to-do that is not there", async () => {
     const res = await post({ action: "complete", id: randomUUID() });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "That to-do is no longer there." });
-    expect((await post({ action: "add", title: "x", dueDate: null, target: { memberId: randomUUID() } })).status).toBe(404);
+    // Gone to-do and a contact off the pipeline: the to-do being gone is what the user needs to hear.
+    const both = await post({ action: "edit", id: randomUUID(), target: { memberId: randomUUID() } });
+    expect(both.status).toBe(404);
+    expect(await both.json()).toEqual({ error: "That to-do is no longer there." });
+  });
+
+  it("answers 400 with its own wording when the contact is not on this pipeline, on add and on edit", async () => {
+    const offPipeline = randomUUID();
+    await db.query("INSERT INTO people (id, org_id, name, name_key, source) VALUES ($1, NULL, 'Ola Berg', 'ola berg', 'test')", [offPipeline]);
+    const notOn = { error: "That contact is not on this pipeline yet." };
+    for (const target of [{ personId: offPipeline }, { memberId: randomUUID() }]) {
+      const add = await post({ action: "add", title: "Call Ola", dueDate: null, target });
+      expect(add.status).toBe(400);
+      expect(await add.json()).toEqual(notOn);
+    }
+    expect((await db.query("SELECT count(*)::int AS n FROM todos")).rows[0].n).toBe(0);
+    const id = (await (await post({ action: "add", title: "Ping", dueDate: null })).json()).todo.id;
+    const edit = await post({ action: "edit", id, target: { personId: offPipeline } });
+    expect(edit.status).toBe(400);
+    expect(await edit.json()).toEqual(notOn);
+    expect((await db.query("SELECT member_id FROM todos WHERE id = $1", [id])).rows).toEqual([{ member_id: null }]);
   });
 
   it("does not trust the browser's today raw", async () => {

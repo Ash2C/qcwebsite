@@ -26,10 +26,14 @@ const MAX_BODY = 16_384;
 const ALL_NUDGES = 200;
 const NOT_READY = "To do is being set up for this CRM.";
 const GONE = "That to-do is no longer there.";
+const NOT_ON_PIPELINE = "That contact is not on this pipeline yet.";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NEEDS_ID = ["complete", "outcome", "edit", "drop", "reopen"];
 
 type Target = { memberId?: string; personId?: string };
-type Run = (db: Client, viewer: Viewer) => Promise<WriteResult | { snooze: "ok" | "missing" }>;
+/** `notOnPipeline`: the contact given for an add or an edit has no pipeline entry to file under. */
+type Run = (db: Client, viewer: Viewer) => Promise<WriteResult | { snooze: "ok" | "missing" } | { notOnPipeline: true }>;
+const notOnPipeline = { notOnPipeline: true } as const;
 
 function bad(error: string) {
   return NextResponse.json({ error }, { status: 400 });
@@ -111,7 +115,11 @@ function plan(b: Record<string, unknown>, today: string): Run | Response {
     const source = b.source === "next" ? "next" : "app";
     const title = b.title;
     const dueDate = (b.dueDate ?? null) as string | null;
-    return (db, viewer) => addTodo(db, { title, dueDate, target, source }, viewer, today);
+    // An add has no to-do id, so `missing` can only mean the contact.
+    return async (db, viewer) => {
+      const r = await addTodo(db, { title, dueDate, target, source }, viewer, today);
+      return r.status === "missing" ? notOnPipeline : r;
+    };
   }
   if (action === "complete") return (db, viewer) => completeTodo(db, id, viewer, today);
   if (action === "drop") return (db, viewer) => dropTodo(db, id, viewer, today);
@@ -139,7 +147,13 @@ function plan(b: Record<string, unknown>, today: string): Run | Response {
         patch.target = target;
       }
     }
-    return (db, viewer) => editTodo(db, id, patch, viewer, today);
+    return async (db, viewer) => {
+      const r = await editTodo(db, id, patch, viewer, today);
+      if (r.status !== "missing" || !patch.target || !UUID_RE.test(id)) return r;
+      // The to-do is still there, so it was the contact that could not be found.
+      const still = await db.query("SELECT 1 FROM todos WHERE id = $1", [id]);
+      return still.rows.length > 0 ? notOnPipeline : r;
+    };
   }
   if (action === "snooze") {
     if (typeof b.memberId !== "string") return bad("Invalid contact");
@@ -173,6 +187,7 @@ export async function POST(request: Request) {
       return run(db, viewer);
     });
     if (result === null) return NextResponse.json({ error: NOT_READY }, { status: 409 });
+    if ("notOnPipeline" in result) return bad(NOT_ON_PIPELINE);
     if ("snooze" in result) {
       if (result.snooze === "missing") return NextResponse.json({ error: GONE }, { status: 404 });
       await account.record("act_details", estate.key);

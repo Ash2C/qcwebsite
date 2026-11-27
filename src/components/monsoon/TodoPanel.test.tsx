@@ -188,7 +188,7 @@ describe("TodoPanel add", () => {
       status: 200,
       body: {
         contacts: [
-          { kind: "person", personId: "p9", orgId: "o9", name: "Sarah Lin", title: null, company: "Beta", email: null, member: null, memberOf: null, work: null },
+          { kind: "person", personId: "p9", orgId: "o9", name: "Sarah Lin", title: null, company: "Beta", email: null, member: { memberId: "m9", memberKind: "person", role: "lp_prospect", stage: "lead" }, memberOf: "self", work: null },
           { kind: "company", personId: null, orgId: "o8", name: "Gamma Capital", title: null, company: null, email: null, member: { memberId: "m8", memberKind: "company", role: "lp_prospect", stage: "lead" }, memberOf: "self", work: null },
         ],
       },
@@ -214,6 +214,46 @@ describe("TodoPanel add", () => {
     await user.click(await screen.findByRole("button", { name: /Gamma Capital/ }));
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(m.todoAction).toHaveBeenLastCalledWith("traxo", expect.objectContaining({ target: { memberId: "m8" } }));
+  });
+
+  it("leaves out search hits that are on file but not on the pipeline", async () => {
+    const user = userEvent.setup();
+    m.loadTodos.mockResolvedValue(list([]));
+    m.searchContacts.mockResolvedValue({
+      status: 200,
+      body: {
+        contacts: [
+          { kind: "person", personId: "p7", orgId: null, name: "Sam Off", title: null, company: null, email: null, member: null, memberOf: null, work: null },
+          { kind: "company", personId: null, orgId: "o7", name: "Samba Partners", title: null, company: null, email: null, member: null, memberOf: null, work: null },
+          { kind: "person", personId: "p6", orgId: "o6", name: "Sami On", title: null, company: "Delta", email: null, member: { memberId: "m6", memberKind: "company", role: "lp_prospect", stage: "lead" }, memberOf: "company", work: null },
+        ],
+      },
+    } as never);
+    render(<Harness />);
+    await user.click(await screen.findByRole("button", { name: "Add" }));
+    await user.type(screen.getByLabelText("Who (optional)"), "sa");
+    expect(await screen.findByRole("button", { name: /Sami On/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Sam Off/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Samba Partners/ })).not.toBeInTheDocument();
+  });
+
+  it("a contact that is not on the pipeline shows the server's words and does not reload the list", async () => {
+    const user = userEvent.setup();
+    m.loadTodos.mockResolvedValue(list([]));
+    m.searchContacts.mockResolvedValue({
+      status: 200,
+      body: { contacts: [{ kind: "person", personId: "p6", orgId: "o6", name: "Sami On", title: null, company: "Delta", email: null, member: { memberId: "m6", memberKind: "company", role: "lp_prospect", stage: "lead" }, memberOf: "company", work: null }] },
+    } as never);
+    m.todoAction.mockResolvedValue({ status: 400, body: { error: "That contact is not on this pipeline yet." } } as never);
+    render(<Harness />);
+    await user.click(await screen.findByRole("button", { name: "Add" }));
+    await user.type(screen.getByLabelText("What"), "Call Sami");
+    await user.type(screen.getByLabelText("Who (optional)"), "sa");
+    await user.click(await screen.findByRole("button", { name: /Sami On/ }));
+    const loads = m.loadTodos.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("That contact is not on this pipeline yet.");
+    expect(m.loadTodos.mock.calls.length).toBe(loads);
   });
 
   it("a failed add shows the reply's words inline and keeps the form", async () => {
