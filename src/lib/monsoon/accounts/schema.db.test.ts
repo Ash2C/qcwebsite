@@ -7,7 +7,7 @@ import { makeAccountsTestDb } from "../testing/db";
 const db = makeAccountsTestDb();
 const TABLES = [
   "accounts_migrations", "customers", "people", "pipelines", "setup_links", "sign_in_attempts", "activity",
-  "person_work", "person_notes", "signups", "trial_uses", "trial_key_health",
+  "person_work", "person_notes", "signups", "trial_uses", "trial_key_health", "ask_feedback",
 ];
 
 describe.skipIf(!db.available)("accounts schema", () => {
@@ -28,11 +28,11 @@ describe.skipIf(!db.available)("accounts schema", () => {
     return r.rows[0].id;
   }
 
-  it("creates all twelve tables and records migrations 1 to 7", async () => {
+  it("creates all thirteen tables and records migrations 1 to 8", async () => {
     const r = await client.query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'");
     expect(r.rows.map((x) => x.tablename).sort()).toEqual([...TABLES].sort());
     const m = await client.query("SELECT version FROM accounts_migrations");
-    expect(m.rows.map((x) => x.version).sort()).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(m.rows.map((x) => x.version).sort()).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 
   it("applies defaults to customers", async () => {
@@ -120,7 +120,7 @@ describe.skipIf(!db.available)("accounts schema", () => {
     const { join } = await import("node:path");
     await client.query(readFileSync(join(__dirname, "schema.sql"), "utf8"));
     const m = await client.query("SELECT count(*)::int AS n FROM accounts_migrations");
-    expect(m.rows[0].n).toBe(7);
+    expect(m.rows[0].n).toBe(8);
   });
 
   it("version 4: people gain phone and email, and the two page tables have their columns", async () => {
@@ -403,6 +403,23 @@ describe.skipIf(!db.available)("accounts schema", () => {
     await expect(ins("delete")).rejects.toMatchObject({ code: "23514" });
   });
 
+  it("version 8: activity accepts speak, and ask_feedback checks kind, mode and detail", async () => {
+    const id = await customer();
+    await client.query("INSERT INTO activity (customer_id, action) VALUES ($1,'speak')", [id]);
+    const ins = (kind: string, mode: string, detail: string | null) =>
+      client.query("INSERT INTO ask_feedback (customer_id, kind, mode, detail) VALUES ($1,$2,$3,$4)", [id, kind, mode, detail]);
+    for (const k of ["up", "down", "no_speech", "mic_blocked", "unsupported", "replay", "stopped", "typed_instead"]) await ins(k, "voice", null);
+    await ins("down", "typed", "x".repeat(200));
+    await expect(ins("down", "voice", "x".repeat(201))).rejects.toMatchObject({ code: "23514" });
+    await expect(ins("sideways", "voice", null)).rejects.toMatchObject({ code: "23514" });
+    await expect(ins("up", "shout", null)).rejects.toMatchObject({ code: "23514" });
+    const r = await client.query("SELECT person_id, pipeline_key, at FROM ask_feedback LIMIT 1");
+    expect(r.rows[0]).toMatchObject({ person_id: null, pipeline_key: null });
+    expect(r.rows[0].at).toBeInstanceOf(Date);
+    const ix = await client.query("SELECT indexdef FROM pg_indexes WHERE tablename = 'ask_feedback'");
+    expect(ix.rows.some((x) => /\(customer_id, at\)/.test(x.indexdef))).toBe(true);
+  });
+
   it("version 2: a project ref can be recorded on only one pipeline", async () => {
     const id = await customer();
     const ins = (k: string, ref: string | null) =>
@@ -427,7 +444,7 @@ describe.skipIf(!db.available)("accounts schema", () => {
       const l = await c2.query("SELECT purpose FROM setup_links WHERE token_hash = 'v1tok'");
       expect(l.rows[0].purpose).toBe("connect");
       const m = await c2.query("SELECT max(version)::int AS v FROM accounts_migrations");
-      expect(m.rows[0].v).toBe(7);
+      expect(m.rows[0].v).toBe(8);
     } finally {
       await c2.end();
       await db.reset();

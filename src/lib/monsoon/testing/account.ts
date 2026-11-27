@@ -66,6 +66,8 @@ export function fakeAccount(over: FakeAccountOptions = {}): Account {
     },
     model: () => model,
     record: vi.fn(async () => undefined),
+    countInLastDay: vi.fn(async () => 0),
+    feedback: vi.fn(async () => true),
     canChangeKey: over.canChangeKey ?? false,
     noteClaude: vi.fn(async () => undefined),
     aiError: vi.fn((err: unknown) => err),

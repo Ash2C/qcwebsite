@@ -21,7 +21,32 @@ export type ActivityAction =
   | "profile"
   | "granola"
   | "google_link"
-  | "approve";
+  | "approve"
+  | "speak";
+
+export type FeedbackKind =
+  | "up"
+  | "down"
+  | "no_speech"
+  | "mic_blocked"
+  | "unsupported"
+  | "replay"
+  | "stopped"
+  | "typed_instead";
+
+export const FEEDBACK_KINDS: readonly FeedbackKind[] = [
+  "up",
+  "down",
+  "no_speech",
+  "mic_blocked",
+  "unsupported",
+  "replay",
+  "stopped",
+  "typed_instead",
+];
+
+/** Feedback rows one person may add in 24 hours. */
+export const FEEDBACK_DAILY_LIMIT = 300;
 
 export type PipelineRow = {
   id: string;
@@ -269,4 +294,37 @@ export async function recordActivity(a: {
   } catch (err) {
     console.error(`monsoon: recordActivity failed (${err instanceof Error ? err.constructor.name : "Error"})`);
   }
+}
+
+/** Rows of this action by this person in the last 24 hours. */
+export async function activityInLastDay(customerId: string, personId: string, action: ActivityAction): Promise<number> {
+  return withAccountsDb(async (db) => {
+    const r = await db.query(
+      "SELECT count(*)::int AS n FROM activity WHERE customer_id = $1 AND person_id = $2 AND action = $3 AND at > now() - interval '24 hours'",
+      [customerId, personId, action],
+    );
+    return r.rows[0].n as number;
+  });
+}
+
+/** Appends one row; false (and nothing written) once the person has FEEDBACK_DAILY_LIMIT rows in 24 hours. */
+export async function recordFeedback(a: {
+  customerId: string;
+  personId: string;
+  pipelineKey: string | null;
+  kind: FeedbackKind;
+  mode: "voice" | "typed";
+  detail: string | null;
+}): Promise<boolean> {
+  return withAccountsDb(async (db) => {
+    // One statement: the limit check and the insert cannot be separated by another request.
+    const r = await db.query(
+      `INSERT INTO ask_feedback (customer_id, person_id, pipeline_key, kind, mode, detail)
+       SELECT $1, $2, $3, $4, $5, $6
+        WHERE (SELECT count(*) FROM ask_feedback
+                WHERE customer_id = $1 AND person_id = $2 AND at > now() - interval '24 hours') < $7`,
+      [a.customerId, a.personId, a.pipelineKey, a.kind, a.mode, a.detail, FEEDBACK_DAILY_LIMIT],
+    );
+    return r.rowCount === 1;
+  });
 }

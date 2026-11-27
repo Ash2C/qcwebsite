@@ -97,7 +97,7 @@ ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
   ADD CONSTRAINT activity_action_check CHECK (action IN (
     'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
     'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola',
-    'google_link', 'approve'
+    'google_link', 'approve', 'speak'
   ));
 ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS project_ref TEXT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS pipelines_project_ref_key ON pipelines (project_ref);
@@ -150,7 +150,7 @@ ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
   ADD CONSTRAINT activity_action_check CHECK (action IN (
     'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
     'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola',
-    'google_link', 'approve'
+    'google_link', 'approve', 'speak'
   ));
 
 ALTER TABLE person_work ENABLE ROW LEVEL SECURITY;
@@ -173,7 +173,7 @@ ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
   ADD CONSTRAINT activity_action_check CHECK (action IN (
     'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
     'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola',
-    'google_link', 'approve'
+    'google_link', 'approve', 'speak'
   ));
 
 INSERT INTO accounts_migrations (version) VALUES (5) ON CONFLICT DO NOTHING;
@@ -214,7 +214,7 @@ ALTER TABLE activity DROP CONSTRAINT IF EXISTS activity_action_check,
   ADD CONSTRAINT activity_action_check CHECK (action IN (
     'sign_in', 'capture', 'batch_save', 'tidy', 'ask', 'act_note', 'act_stage',
     'act_details', 'act_research', 'research', 'setup', 'replace', 'host', 'key', 'profile', 'granola',
-    'google_link', 'approve'
+    'google_link', 'approve', 'speak'
   ));
 
 INSERT INTO accounts_migrations (version) VALUES (6) ON CONFLICT DO NOTHING;
@@ -247,3 +247,23 @@ CREATE TABLE IF NOT EXISTS trial_key_health (
 ALTER TABLE trial_key_health ENABLE ROW LEVEL SECURITY;
 
 INSERT INTO accounts_migrations (version) VALUES (7) ON CONFLICT DO NOTHING;
+
+-- Version 8: Ask's voice. A spoken answer counts as one 'speak' activity row (the daily cap of 150
+-- per person is a count of these), so every action list above also names 'speak', for the same
+-- reason as 'profile'. ask_feedback is append-only: ratings and voice failures, a kind and a mode
+-- only. It never holds a question, an answer, a contact name or a note; detail is a short free
+-- reason of at most 200 characters.
+CREATE TABLE IF NOT EXISTS ask_feedback (
+  id BIGSERIAL PRIMARY KEY,
+  customer_id UUID NOT NULL REFERENCES customers(id),
+  person_id UUID NULL,
+  pipeline_key TEXT NULL,
+  at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  kind TEXT NOT NULL CHECK (kind IN ('up', 'down', 'no_speech', 'mic_blocked', 'unsupported', 'replay', 'stopped', 'typed_instead')),
+  mode TEXT NOT NULL CHECK (mode IN ('voice', 'typed')),
+  detail TEXT NULL CHECK (detail IS NULL OR length(detail) <= 200)
+);
+CREATE INDEX IF NOT EXISTS ask_feedback_customer_at ON ask_feedback (customer_id, at);
+ALTER TABLE ask_feedback ENABLE ROW LEVEL SECURITY;
+
+INSERT INTO accounts_migrations (version) VALUES (8) ON CONFLICT DO NOTHING;

@@ -2,13 +2,16 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Client } from "pg";
 import { makeAccountsTestDb } from "../testing/db";
 import {
+  FEEDBACK_DAILY_LIMIT,
   activeOwnerKeys,
+  activityInLastDay,
   clearAccountCache,
   failuresSince,
   findCustomerByCode,
   loadAccountRows,
   recordActivity,
   recordAttempt,
+  recordFeedback,
 } from "./store";
 
 const db = makeAccountsTestDb();
@@ -25,7 +28,7 @@ describe.skipIf(!db.available)("accounts store", () => {
   beforeEach(async () => {
     vi.stubEnv("MONSOON_ACCOUNTS_DATABASE_URL", db.url());
     clearAccountCache();
-    await client.query("TRUNCATE activity, setup_links, pipelines, people, customers, sign_in_attempts CASCADE");
+    await client.query("TRUNCATE ask_feedback, activity, setup_links, pipelines, people, customers, sign_in_attempts CASCADE");
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -46,6 +49,37 @@ describe.skipIf(!db.available)("accounts store", () => {
     );
     return { cid, pid: p.rows[0].id };
   }
+
+  it("activityInLastDay counts only that person's rows of that action from the last 24 hours", async () => {
+    const { cid, pid } = await seed();
+    const other = (await client.query(
+      "INSERT INTO people (customer_id, display_name, owner_key, passcode_hash) VALUES ($1, 'Bob', 'BO', 'h') RETURNING id", [cid])).rows[0].id;
+    const ins = (person: string, action: string, ago: string) =>
+      client.query("INSERT INTO activity (customer_id, person_id, action, at) VALUES ($1,$2,$3, now() - $4::interval)", [cid, person, action, ago]);
+    await ins(pid, "speak", "1 hour");
+    await ins(pid, "speak", "23 hours");
+    await ins(pid, "speak", "25 hours");
+    await ins(pid, "ask", "1 hour");
+    await ins(other, "speak", "1 hour");
+    expect(await activityInLastDay(cid, pid, "speak")).toBe(2);
+    expect(await activityInLastDay(cid, other, "speak")).toBe(1);
+    expect(await activityInLastDay(cid, pid, "tidy")).toBe(0);
+  });
+
+  it("recordFeedback writes one row and stops at the daily limit", async () => {
+    const { cid, pid } = await seed();
+    expect(FEEDBACK_DAILY_LIMIT).toBe(300);
+    expect(await recordFeedback({ customerId: cid, personId: pid, pipelineKey: "first", kind: "down", mode: "voice", detail: "too long" })).toBe(true);
+    const r = await client.query("SELECT customer_id, person_id, pipeline_key, kind, mode, detail FROM ask_feedback");
+    expect(r.rows).toEqual([{ customer_id: cid, person_id: pid, pipeline_key: "first", kind: "down", mode: "voice", detail: "too long" }]);
+    await client.query(
+      "INSERT INTO ask_feedback (customer_id, person_id, kind, mode) SELECT $1, $2, 'up', 'typed' FROM generate_series(1, $3::int)",
+      [cid, pid, FEEDBACK_DAILY_LIMIT - 1],
+    );
+    expect((await client.query("SELECT count(*)::int AS n FROM ask_feedback")).rows[0].n).toBe(300);
+    expect(await recordFeedback({ customerId: cid, personId: pid, pipelineKey: null, kind: "up", mode: "typed", detail: null })).toBe(false);
+    expect((await client.query("SELECT count(*)::int AS n FROM ask_feedback")).rows[0].n).toBe(300);
+  });
 
   it("activeOwnerKeys lists only the active people of that customer", async () => {
     const { cid } = await seed();

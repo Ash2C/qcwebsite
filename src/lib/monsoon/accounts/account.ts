@@ -13,6 +13,9 @@ import {
   evictAccount,
   loadAccountRows,
   recordActivity,
+  recordFeedback,
+  activityInLastDay,
+  type FeedbackKind,
   recordClaudeStatus,
   type ClaudeStatus,
   withAccountsDb,
@@ -46,6 +49,10 @@ export type Account = {
   /** Who is looking at the to-do list: this person, and the owner keys of the customer's active people. Cached for the request. */
   viewer(): Promise<Viewer>;
   record(action: ActivityAction, pipelineKey?: string | null): Promise<void>;
+  /** This person's activity rows of this action in the last 24 hours. */
+  countInLastDay(action: ActivityAction): Promise<number>;
+  /** Appends one Ask feedback row; false once this person has hit the daily limit. */
+  feedback(a: { pipelineKey: string | null; kind: FeedbackKind; mode: "voice" | "typed"; detail: string | null }): Promise<boolean>;
   /** True for the one person who may change the customer's Claude key. */
   canChangeKey: boolean;
   /**
@@ -152,6 +159,12 @@ export function buildAccount(rows: { customer: CustomerRow; person: PersonRow; p
     },
     record(action, pipelineKey = null) {
       return recordActivity({ customerId: customer.id, personId: person.id, pipelineKey, action });
+    },
+    countInLastDay(action) {
+      return activityInLastDay(customer.id, person.id, action);
+    },
+    feedback(a) {
+      return recordFeedback({ customerId: customer.id, personId: person.id, ...a });
     },
     canChangeKey: customer.keyPersonId !== null && customer.keyPersonId === person.id,
     async noteClaude(...args) {
