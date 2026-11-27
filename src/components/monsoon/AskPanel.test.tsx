@@ -8,7 +8,7 @@ import RealAskPanel, { EMPTY_ASK, lookingLine, prepareMessage, type AskState, ty
 import { useAsk } from "./useAsk";
 import * as api from "./api";
 
-vi.mock("./api", () => ({ askCrm: vi.fn(), actOnCrm: vi.fn() }));
+vi.mock("./api", () => ({ askCrm: vi.fn(), actOnCrm: vi.fn(), sendAskFeedback: vi.fn() }));
 const m = vi.mocked(api);
 
 // The panel as the app mounts it: the request logic (useAsk) built from the same props, passed in.
@@ -98,15 +98,50 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("AskPanel", () => {
-  it("suggestions fill the draft without sending", async () => {
+  it("a suggestion sends at once and leaves the draft alone; the open-ended one fills the box", async () => {
+    const user = userEvent.setup();
+    m.askCrm.mockResolvedValue(answer("Chase Anna."));
+    render(<Harness initial={{ turns: [], draft: "half typed" }} />);
+    await user.click(screen.getByRole("button", { name: "Summarise the pipeline" }));
+    expect(await screen.findByText("Chase Anna.")).toBeInTheDocument();
+    expect(m.askCrm).toHaveBeenCalledTimes(1);
+    expect(m.askCrm).toHaveBeenCalledWith(expect.objectContaining({ messages: expect.arrayContaining([expect.objectContaining({ content: "Summarise the pipeline" })]) }));
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("half typed");
+  });
+
+  it("the Tell me about suggestion fills the box, focuses it and sends nothing", async () => {
     const user = userEvent.setup();
     render(<Harness />);
-    await user.click(screen.getByRole("button", { name: "Summarise the pipeline" }));
-    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Summarise the pipeline");
     await user.click(screen.getByRole("button", { name: "Tell me about" }));
     expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Tell me about ");
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveFocus();
     expect(m.askCrm).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Who should I chase this week?" })).toBeInTheDocument();
+  });
+
+  it("shows thumbs under assistant answers only, and a tap rates, reports and can change", async () => {
+    const user = userEvent.setup();
+    const turns: AskTurn[] = [
+      { id: "u", role: "user", content: "Q?" },
+      { id: "a", role: "assistant", content: "A." },
+      { id: "n", role: "note", content: "Change cancelled: x" },
+      { id: "v", role: "assistant", content: "Spoken.", spoken: true },
+    ];
+    render(<Harness initial={{ turns, draft: "" }} />);
+    const good = screen.getAllByRole("button", { name: "Good answer" });
+    expect(good).toHaveLength(2);
+    expect(good[0]).toHaveAttribute("aria-pressed", "false");
+    await user.click(good[0]);
+    expect(m.sendAskFeedback).toHaveBeenLastCalledWith({ estate: "traxo", kind: "up", mode: "typed" });
+    expect(screen.getAllByRole("button", { name: "Good answer" })[0]).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getAllByRole("button", { name: "Good answer" })[0]);
+    expect(m.sendAskFeedback).toHaveBeenCalledTimes(1);
+    await user.click(screen.getAllByRole("button", { name: "Poor answer" })[0]);
+    expect(m.sendAskFeedback).toHaveBeenLastCalledWith({ estate: "traxo", kind: "down", mode: "typed" });
+    expect(screen.getAllByRole("button", { name: "Poor answer" })[0]).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByRole("button", { name: "Good answer" })[0]).toHaveAttribute("aria-pressed", "false");
+    await user.click(screen.getAllByRole("button", { name: "Good answer" })[1]);
+    expect(m.sendAskFeedback).toHaveBeenLastCalledWith({ estate: "traxo", kind: "up", mode: "voice" });
   });
 
   it("shows the app's guesses first, and the speak button puts the cursor in the box with a hint", async () => {
@@ -125,9 +160,11 @@ describe("AskPanel", () => {
     expect(screen.getByRole("textbox", { name: "Your question" })).toHaveFocus();
     expect(screen.getByText("Tap the microphone on the keyboard and talk, then press Ask.")).toBeInTheDocument();
 
+    m.askCrm.mockResolvedValueOnce(answer("Jane is a partner."));
     await user.click(screen.getByRole("button", { name: "Tell me about Jane Tan" }));
-    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("Tell me about Jane Tan");
-    expect(m.askCrm).not.toHaveBeenCalled();
+    expect(await screen.findByText("Jane is a partner.")).toBeInTheDocument();
+    expect(m.askCrm).toHaveBeenCalledWith(expect.objectContaining({ messages: expect.arrayContaining([expect.objectContaining({ content: "Tell me about Jane Tan" })]) }));
+    expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("");
   });
 
   it("has the estate placeholder and a disabled Ask while blank", async () => {

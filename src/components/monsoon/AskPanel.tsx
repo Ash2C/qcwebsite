@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Ref, ResearchOffer } from "@/lib/monsoon/ask/tools";
 import MonsoonLoader from "./MonsoonLoader";
-import type { EstateInfo } from "./api";
+import { sendAskFeedback, type EstateInfo } from "./api";
 import ChangeCard, { describeChange } from "./ChangeCard";
 import type { ContactTarget } from "./ContactsPanel";
 import { card as cardClass, primaryButton, secondaryButton } from "./styles";
@@ -61,6 +61,42 @@ function refTarget(r: Ref): ContactTarget {
   if (r.personId) return { personId: r.personId };
   if (r.kind === "company" && r.orgId) return { orgId: r.orgId };
   return { memberId: r.memberId };
+}
+
+/** Thumbs up and down under an answer; the pressed one is marked, and tapping it again does nothing. */
+export function RateButtons({
+  rating,
+  onRate,
+  size = "md",
+}: {
+  rating: "up" | "down" | null;
+  onRate: (r: "up" | "down") => void;
+  size?: "sm" | "md";
+}) {
+  // Both sizes keep the 44px tap target; the small one drops the extra gap for the voice pill.
+  const box = size === "sm" ? "min-h-[44px] min-w-[44px] px-1" : "min-h-[44px] min-w-[44px] px-2";
+  const pick = (r: "up" | "down") => {
+    if (rating !== r) onRate(r);
+  };
+  const cls = (on: boolean) =>
+    `${box} flex items-center justify-center rounded-xl active:bg-neutral-200 dark:active:bg-white/20 ${
+      on ? "bg-[#0E7FA6]/15 text-[#0E7FA6] dark:bg-[#6AE6FF]/20 dark:text-[#6AE6FF]" : "bg-neutral-100 text-neutral-600 dark:bg-white/10 dark:text-neutral-300"
+    }`;
+  const icon = { "aria-hidden": true, width: 20, height: 20, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" } as const;
+  return (
+    <div className="flex gap-2">
+      <button type="button" aria-label="Good answer" aria-pressed={rating === "up"} className={cls(rating === "up")} onClick={() => pick("up")}>
+        <svg {...icon}>
+          <path d="M7 11v9H4v-9zM7 11l4-8c1.5 0 2.5 1 2.5 2.5V9H19a2 2 0 0 1 2 2.3l-1.3 7A2 2 0 0 1 17.7 20H7" />
+        </svg>
+      </button>
+      <button type="button" aria-label="Poor answer" aria-pressed={rating === "down"} className={cls(rating === "down")} onClick={() => pick("down")}>
+        <svg {...icon}>
+          <path d="M7 13V4H4v9zM7 13l4 8c1.5 0 2.5-1 2.5-2.5V15H19a2 2 0 0 0 2-2.3l-1.3-7A2 2 0 0 0 17.7 4H7" />
+        </svg>
+      </button>
+    </div>
+  );
 }
 
 // The contacts an answer named, as tappable chips (at most five, each contact once).
@@ -201,6 +237,11 @@ export default function AskPanel({
     }));
   }
 
+  function rate(turn: AskTurn, r: "up" | "down") {
+    onChange((prev) => ({ ...prev, turns: prev.turns.map((t) => (t.id === turn.id ? { ...t, rating: r } : t)) }));
+    sendAskFeedback({ estate: estate.key, kind: r, mode: turn.spoken ? "voice" : "typed" });
+  }
+
   function tapOffer(turnId: string, personId: string) {
     onChange((prev) => ({ ...prev, turns: prev.turns.map((t) => (t.id === turnId ? { ...t, researchUsed: true } : t)) }));
     onResearch?.(personId);
@@ -294,10 +335,15 @@ export default function AskPanel({
                 key={s}
                 type="button"
                 className={secondaryButton}
-                disabled={blocked}
+                disabled={blocked || busy}
                 onClick={() => {
-                  setDraft(s);
-                  inputRef.current?.focus();
+                  // An open-ended starter ("Tell me about ") waits for a name; the rest are questions.
+                  if (s.endsWith(" ")) {
+                    setDraft(s);
+                    inputRef.current?.focus();
+                    return;
+                  }
+                  send(s);
                 }}
               >
                 {s}
@@ -319,6 +365,7 @@ export default function AskPanel({
             {t.role === "assistant" && t.refs && t.refs.length > 0 && onOpenContact ? (
               <RefChips refs={t.refs} disabled={busy || blocked} onOpen={onOpenContact} />
             ) : null}
+            {t.role === "assistant" ? <RateButtons rating={t.rating ?? null} onRate={(r) => rate(t, r)} /> : null}
             {t.research && onResearch ? (
               <div className={`${cardClass} flex min-w-0 flex-col gap-3 p-4`}>
                 <p className="break-words text-[17px] font-semibold">{`Research: ${t.research.name}`}</p>
