@@ -40,6 +40,8 @@ export type VoiceAskArgs = {
   onAnswer(turn: AskTurn): void;
   /** No recognition here, mic blocked, or the send failed: the caller opens the window. */
   onNeedsWindow(reason: WindowReason): void;
+  /** Ask became busy while listening: the question is not sent but handed back, for the box. */
+  onHeld(question: string): void;
 };
 
 // The browser's speech recognition, which TypeScript's DOM types do not name (as in useDictation).
@@ -293,6 +295,14 @@ export function useVoiceAsk(args: VoiceAskArgs) {
       recRef.current = null;
       clearListenTimers();
       const question = heardRef.current.trim();
+      if (question && argsRef.current.disabled) {
+        // The page started a write while the phone was listening: one write at a time, so the
+        // question waits in the box instead of going out now.
+        setHeard("");
+        setPhase("idle");
+        argsRef.current.onHeld(question);
+        return;
+      }
       if (question) {
         void ask(question, run, sound);
         return;
@@ -469,6 +479,15 @@ export function useVoiceAsk(args: VoiceAskArgs) {
     // Thinking: the question is on its way; the pill does nothing.
   }
 
+  /** Stop a spoken answer now, as the pill's Stop does (sound switched off mid-answer). */
+  function stop() {
+    if (phaseRef.current === "speaking") stopSpeaking(true);
+  }
+
+  function clearNotice() {
+    setNotice(null);
+  }
+
   function replay() {
     if (argsRef.current.disabled || phaseRef.current !== "idle" || !canReplayRef.current) return;
     if (captionsRef.current.length === 0) return;
@@ -515,5 +534,5 @@ export function useVoiceAsk(args: VoiceAskArgs) {
     [],
   );
 
-  return { phase, heard, caption, notice, secondsLeft, canReplay, lastTurn, onPill, replay };
+  return { phase, heard, caption, notice, secondsLeft, canReplay, lastTurn, onPill, replay, stop, clearNotice };
 }

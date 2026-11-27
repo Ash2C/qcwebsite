@@ -308,6 +308,7 @@ export default function MonsoonApp() {
     openAsk,
     onOpenContact: openContact,
     onSpeakHint: () => setSpeakHint(true),
+    windowOpen: askOpen,
   });
   const batchStarted = batch?.rows.some((r) => r.status === "saved") ?? false;
 

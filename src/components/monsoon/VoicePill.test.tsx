@@ -20,6 +20,8 @@ function voiceOf(over: Partial<Voice> = {}): Voice {
     lastTurn: null,
     onPill: vi.fn(),
     replay: vi.fn(),
+    stop: vi.fn(),
+    clearNotice: vi.fn(),
     ...over,
   };
 }

@@ -123,12 +123,13 @@ function setup(opts: { sound?: boolean; disabled?: boolean; outcome?: AskOutcome
   const onEvent = vi.fn();
   const onAnswer = vi.fn();
   const onNeedsWindow = vi.fn();
+  const onHeld = vi.fn();
   const hook = renderHook(
     (p: { sound: boolean; disabled: boolean }) =>
-      useVoiceAsk({ send, sound: p.sound, disabled: p.disabled, onEvent, onAnswer, onNeedsWindow }),
+      useVoiceAsk({ send, sound: p.sound, disabled: p.disabled, onEvent, onAnswer, onNeedsWindow, onHeld }),
     { initialProps: { sound: opts.sound ?? true, disabled: opts.disabled ?? false } },
   );
-  return { ...hook, send, onEvent, onAnswer, onNeedsWindow };
+  return { ...hook, send, onEvent, onAnswer, onNeedsWindow, onHeld };
 }
 
 const rec = () => FakeRecognition.instances.at(-1)!;
@@ -698,5 +699,47 @@ describe("askDevice", () => {
     expect(b.result.current[0]).toBe(true);
     act(() => b.result.current[1](false));
     expect(b.result.current[0]).toBe(false);
+  });
+});
+
+describe("review fixes", () => {
+  it("stop() ends a spoken answer at once: audio stopped, idle, replay offered", async () => {
+    const h = setup();
+    await askAndAnswer(h);
+    await flush();
+    expect(h.result.current.phase).toBe("speaking");
+    act(() => h.result.current.stop());
+    expect(ctx().answerSource()!.stopped).toBe(true);
+    expect(h.result.current.phase).toBe("idle");
+    expect(h.result.current.canReplay).toBe(true);
+  });
+
+  it("stop() outside speaking does nothing", () => {
+    const h = setup();
+    act(() => h.result.current.stop());
+    expect(h.result.current.phase).toBe("idle");
+    expect(h.result.current.canReplay).toBe(false);
+  });
+
+  it("a page write that starts while listening holds the question: nothing is sent, the caller gets it", async () => {
+    const h = setup();
+    act(() => h.result.current.onPill());
+    act(() => rec().say("where does Anna work"));
+    h.rerender({ sound: true, disabled: true });
+    advance(PAUSE_MS);
+    await flush();
+    expect(h.send).not.toHaveBeenCalled();
+    expect(h.onHeld).toHaveBeenCalledWith("where does Anna work");
+    expect(h.result.current.phase).toBe("idle");
+    expect(h.result.current.heard).toBe("");
+  });
+
+  it("clearNotice() drops a showing notice", () => {
+    const h = setup();
+    act(() => h.result.current.onPill());
+    advance(NO_SPEECH_MS);
+    expect(h.result.current.notice).toBe("not_heard");
+    act(() => h.result.current.clearNotice());
+    expect(h.result.current.notice).toBeNull();
   });
 });

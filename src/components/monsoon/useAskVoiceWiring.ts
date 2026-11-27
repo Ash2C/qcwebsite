@@ -1,10 +1,11 @@
 "use client";
 
+import { useEffect } from "react";
 import { sendAskFeedback, type EstateInfo } from "./api";
 import { useAskSound, useIsPhone } from "./askDevice";
 import { refTarget, type AskState } from "./AskPanel";
 import type { ContactTarget } from "./ContactsPanel";
-import type { useAsk } from "./useAsk";
+import { MAX_DRAFT, type useAsk } from "./useAsk";
 import { useVoiceAsk } from "./useVoiceAsk";
 
 const MAX_CHIPS = 3;
@@ -25,8 +26,10 @@ export function useAskVoiceWiring(args: {
   onOpenContact(target: ContactTarget): void;
   /** No speech recognition here: the window shows the keyboard-microphone hint. */
   onSpeakHint(): void;
+  /** The window is open (expanded or minimised). */
+  windowOpen: boolean;
 }) {
-  const { estate, ask, state, onChange, disabled, openAsk, onOpenContact, onSpeakHint } = args;
+  const { estate, ask, state, onChange, disabled, openAsk, onOpenContact, onSpeakHint, windowOpen } = args;
   const phone = useIsPhone();
   const [sound, setSound] = useAskSound();
 
@@ -47,7 +50,24 @@ export function useAskVoiceWiring(args: {
       if (reason === "unsupported") onSpeakHint();
       openAsk(reason === "unsupported" || reason === "mic_blocked" ? { focus: true } : undefined);
     },
+    onHeld: (question) => {
+      // Into the box under anything already typed, never over it, as Ask about this contact does.
+      onChange((prev) => ({
+        ...prev,
+        draft: (prev.draft.trim() === "" ? question : `${prev.draft}\n${question}`).slice(0, MAX_DRAFT),
+      }));
+      openAsk();
+    },
   });
+
+  // A notice is about the last tap; once the window has opened it is stale, so it is gone when the
+  // strip shows again.
+  const { clearNotice } = voice;
+  useEffect(() => {
+    if (windowOpen) clearNotice();
+    // clearNotice only sets state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [windowOpen]);
 
   const lastId = voice.lastTurn?.id;
   const rating = (lastId && state.turns.find((t) => t.id === lastId)?.rating) || null;
@@ -82,6 +102,13 @@ export function useAskVoiceWiring(args: {
     chips,
     onKeyboard,
     /** For the window's header on a phone. */
-    sound: { on: sound, onToggle: () => setSound(!sound) },
+    sound: {
+      on: sound,
+      onToggle: () => {
+        // Sound off mid-answer stops it at once, as the pill's Stop would (the pill is hidden behind the window).
+        if (sound) voice.stop();
+        setSound(!sound);
+      },
+    },
   };
 }

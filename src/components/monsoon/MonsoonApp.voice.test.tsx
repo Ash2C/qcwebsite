@@ -98,6 +98,47 @@ class FakeRecognition {
 }
 const rec = () => FakeRecognition.instances.at(-1)!;
 
+// ---- A fake Web Audio context: an answer's source plays until stopped ----
+class FakeSource {
+  buffer: unknown = null;
+  onended: (() => void) | null = null;
+  stopped = false;
+  connect() {}
+  start() {}
+  stop() {
+    this.stopped = true;
+  }
+}
+class FakeAudioContext {
+  static instances: FakeAudioContext[] = [];
+  currentTime = 0;
+  destination = {};
+  sources: FakeSource[] = [];
+  constructor() {
+    FakeAudioContext.instances.push(this);
+  }
+  resume() {
+    return Promise.resolve();
+  }
+  close() {
+    return Promise.resolve();
+  }
+  createBuffer() {
+    return { silent: true };
+  }
+  createBufferSource() {
+    const src = new FakeSource();
+    this.sources.push(src);
+    return src;
+  }
+  decodeAudioData() {
+    return Promise.resolve({ duration: 3 });
+  }
+}
+/** The answer's source: the last one that is not the silent unlock sample. */
+const answerSource = () =>
+  FakeAudioContext.instances.at(-1)!.sources.filter((src) => (src.buffer as { silent?: boolean } | null)?.silent !== true).at(-1);
+
 function memoryStorage() {
   const data = new Map<string, string>();
   return {
@@ -290,6 +331,96 @@ describe("voice Ask on a phone", () => {
     act(() => rec().onerror?.({ error: "not-allowed" }));
     expect(await screen.findByRole("textbox", { name: "Your question" })).toHaveFocus();
     expect(m.sendAskFeedback).toHaveBeenCalledWith(expect.objectContaining({ kind: "mic_blocked", mode: "voice" }));
+  });
+});
+
+describe("voice Ask review fixes", () => {
+  it("switching sound off in the expanded window stops the answer being spoken", async () => {
+    const user = userEvent.setup();
+    FakeAudioContext.instances = [];
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    vi.stubGlobal("requestAnimationFrame", (cb: (t: number) => void) => setTimeout(() => cb(Date.now()), 16) as unknown as number);
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
+    m.askCrm.mockResolvedValue(spoken("A note is waiting for you to confirm.", { proposals: [NOTE], audio: btoa("mp3") }));
+    await start();
+    await speak(user, "Add a note to Anna");
+    await screen.findByRole("dialog", { name: "Ask" });
+    await waitFor(() => expect(answerSource()).toBeDefined());
+    expect(answerSource()!.stopped).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Turn spoken answers off" }));
+    expect(answerSource()!.stopped).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Minimise Ask and keep reading" }));
+    expect(pill()).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Replay the answer" })).toBeInTheDocument();
+  });
+
+  it("closing the window while an answer is spoken leaves it playing, with Stop on the pill", async () => {
+    const user = userEvent.setup();
+    FakeAudioContext.instances = [];
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    vi.stubGlobal("requestAnimationFrame", (cb: (t: number) => void) => setTimeout(() => cb(Date.now()), 16) as unknown as number);
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
+    m.askCrm.mockResolvedValue(spoken("A note is waiting for you to confirm.", { proposals: [NOTE], audio: btoa("mp3") }));
+    await start();
+    await speak(user, "Add a note to Anna");
+    await screen.findByRole("dialog", { name: "Ask" });
+    await waitFor(() => expect(answerSource()).toBeDefined());
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(answerSource()!.stopped).toBe(false);
+    expect(screen.getByRole("button", { name: "Stop the answer" })).toBeInTheDocument();
+  });
+
+  it("a page write that starts while listening holds the question: it goes into the box and nothing is sent", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockImplementation(() => new Promise(() => {}));
+    await start();
+    await user.type(screen.getByLabelText("Name"), "Anna Lee");
+    await user.click(await screen.findByRole("button", { name: "Ask: tap and speak your question" }));
+    act(() => rec().onresult?.({ results: [[{ transcript: "Who is warm?" }]] }));
+    // The save starts while the phone is still listening.
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Stop listening and ask" }));
+    expect(await screen.findByRole("textbox", { name: "Your question" })).toHaveValue("Who is warm?");
+    expect(m.askCrm).not.toHaveBeenCalled();
+  });
+
+  it("a held question is added under text already in the box, never over it", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockImplementation(() => new Promise(() => {}));
+    await start();
+    await user.click(screen.getByRole("button", { name: "Type a question instead" }));
+    await user.type(screen.getByRole("textbox", { name: "Your question" }), "Typed first");
+    await user.click(screen.getByRole("button", { name: "Minimise Ask and keep reading" }));
+    await user.type(screen.getByLabelText("Name"), "Anna Lee");
+    await user.click(screen.getByRole("button", { name: "Ask: tap and speak your question" }));
+    act(() => rec().onresult?.({ results: [[{ transcript: "Who is warm?" }]] }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Stop listening and ask" }));
+    await waitFor(() => expect(questionBox()).toHaveValue("Typed first\nWho is warm?"));
+    expect(m.askCrm).not.toHaveBeenCalled();
+  });
+
+  it("after a blocked microphone opens the window, closing it leaves no stale notice in the strip", async () => {
+    const user = userEvent.setup();
+    await start();
+    await user.click(screen.getByRole("button", { name: "Ask: tap and speak your question" }));
+    act(() => rec().onerror?.({ error: "not-allowed" }));
+    await screen.findByRole("textbox", { name: "Your question" });
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(pill()).toBeInTheDocument();
+    expect(screen.queryByText(/not allowed to use the microphone/)).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("a not-heard notice is gone once the window has been opened and closed", async () => {
+    const user = userEvent.setup();
+    await start();
+    await user.click(screen.getByRole("button", { name: "Ask: tap and speak your question" }));
+    act(() => rec().end());
+    expect(await screen.findByText("I did not catch that. Tap and try again.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Type a question instead" }));
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByText("I did not catch that. Tap and try again.")).toBeNull();
   });
 });
 
