@@ -19,6 +19,7 @@ import { shortDate } from "./todoDates";
 import { downsizeImage } from "./image";
 import AskPanel, { EMPTY_ASK, prepareMessage, type AskState, type AskViewing } from "./AskPanel";
 import AskSheet from "./AskSheet";
+import { useAsk } from "./useAsk";
 import ContactsPanel, { EMPTY_CONTACTS, withOpen, withOpenResearch, type ContactsState, type ContactTarget } from "./ContactsPanel";
 import TodoPanel, { EMPTY_TODOS, type TodosState } from "./TodoPanel";
 import BatchReview, { makeBatch, type Batch } from "./BatchReview";
@@ -164,7 +165,8 @@ export default function MonsoonApp() {
   // True while a batch save run is in flight (reported by BatchReview).
   const [batchRunning, setBatchRunning] = useState(false);
   // Ask is a sheet over whatever is on screen, not a mode. Its conversation lives here so it survives
-  // closing the sheet and the passcode screen; askBusy is reported by AskPanel.
+  // closing the sheet and the passcode screen. Its request logic (useAsk) lives here too, so a question
+  // can be sent while the sheet is not on screen; askBusy is worked out here from both.
   const [mode, setMode] = useState<"capture" | "todo" | "contacts">("capture");
   const [askOpen, setAskOpen] = useState(false);
   // The loaded profile underneath, reported by ContactsPanel; null whenever none is on screen.
@@ -197,7 +199,6 @@ export default function MonsoonApp() {
   // To do mode: the list and any open form live here too, so they survive tab switches.
   const [todos, setTodos] = useState<TodosState>(EMPTY_TODOS);
   const [ask, setAsk] = useState<AskState>(EMPTY_ASK);
-  const [askBusy, setAskBusy] = useState(false);
   // A "Run research" tap is only good while Contacts is showing; leaving it, or opening Ask over it, withdraws the request.
   useEffect(() => {
     if (mode !== "contacts" || askOpen) setContacts((c) => (c.autoResearch ? { ...c, autoResearch: false } : c));
@@ -226,6 +227,15 @@ export default function MonsoonApp() {
   formRef.current = form;
 
   const estate = estates.find((e) => e.key === estateKey);
+  const askHook = useAsk({
+    estate: estate ?? null,
+    state: ask,
+    onChange: setAsk,
+    viewing: prepared ?? viewing,
+    onUnauthorized: () => setPhase("locked"),
+  });
+  // Ask is busy while a question is out or a change card is being confirmed.
+  const askBusy = askHook.asking || ask.turns.some((t) => t.cards?.some((c) => c.state === "working"));
   const batchStarted = batch?.rows.some((r) => r.status === "saved") ?? false;
 
   const load = useCallback(async () => {
@@ -802,11 +812,11 @@ export default function MonsoonApp() {
     askOpen && estate ? (
       <AskSheet busy={askBusy} onClose={closeAsk}>
         <AskPanel
+          ask={askHook}
           estate={estate}
           state={ask}
           onChange={setAsk}
           onUnauthorized={() => setPhase("locked")}
-          onBusy={setAskBusy}
           onOpenContact={openContact}
           onResearch={openAndResearch}
           focusOnOpen={focusAsk}

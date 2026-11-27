@@ -1,14 +1,27 @@
 // @vitest-environment jsdom
-import React, { useState } from "react";
+import React, { useState, type ComponentProps } from "react";
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import AskPanel, { EMPTY_ASK, prepareMessage, type AskState, type AskTurn, type AskViewing } from "./AskPanel";
+import RealAskPanel, { EMPTY_ASK, prepareMessage, type AskState, type AskTurn, type AskViewing } from "./AskPanel";
+import { useAsk } from "./useAsk";
 import * as api from "./api";
 
 vi.mock("./api", () => ({ askCrm: vi.fn(), actOnCrm: vi.fn() }));
 const m = vi.mocked(api);
+
+// The panel as the app mounts it: the request logic (useAsk) built from the same props, passed in.
+function AskPanel(props: Omit<ComponentProps<typeof RealAskPanel>, "ask">) {
+  const ask = useAsk({
+    estate: props.estate,
+    state: props.state,
+    onChange: props.onChange,
+    viewing: props.viewing ?? null,
+    onUnauthorized: props.onUnauthorized,
+  });
+  return <RealAskPanel {...props} ask={ask} />;
+}
 
 const ESTATE = { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", available: true, todos: true, roles: [] };
 
