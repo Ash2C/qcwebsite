@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testDb } from "../testing/db";
 import { addTodo, completeTodo, dropTodo, type Viewer } from "../todos";
 import { verifyProposal } from "./proposal";
-import { proposeAddTodo, proposeCompleteTodo, proposeDropTodo, proposeMoveTodo } from "./todo-actions";
+import { carryOutTodo, proposeAddTodo, proposeCompleteTodo, proposeDropTodo, proposeMoveTodo } from "./todo-actions";
 
 const NOW = Date.parse("2026-11-26T09:00:00Z");
 const TODAY = "2026-11-26";
@@ -60,6 +60,27 @@ describe.skipIf(!testDb.available)("Ask to-do proposals (real Postgres)", () => 
     const loose = await proposeAddTodo(db, A, undefined, "Renew licence", null, NOW);
     if (!loose.ok) throw new Error(loose.reason);
     expect(loose.signed.proposal).toMatchObject({ memberId: null, memberKind: null, memberName: null });
+  });
+
+  it("a confirmed add for a person moved to another company since the card was shown writes nothing", async () => {
+    const r = await proposeAddTodo(db, A, { personId: id.mia }, "Call her", null, NOW);
+    if (!r.ok) throw new Error("propose failed");
+    const p = r.signed.proposal;
+    if (p.kind !== "add_todo") throw new Error("wrong kind");
+    expect(p.memberId).toBe(id.mRaf);
+    const nor = randomUUID();
+    await db.query("INSERT INTO orgs (id, name, name_key, source) VALUES ($1, 'Norvik AG', 'norvik ag', 'test')", [nor]);
+    await db.query("INSERT INTO members (org_id, role, stage, source) VALUES ($1, 'investor', 'engaged', 'test')", [nor]);
+    await db.query("UPDATE people SET org_id = $1 WHERE id = $2", [nor, id.mia]);
+    expect(await carryOutTodo(db, p, VF, TODAY)).toEqual({ status: "changed", message: "Mia Chen was moved in the meantime; nothing changed." });
+    expect((await db.query("SELECT count(*)::int AS n FROM todos")).rows[0].n).toBe(0);
+  });
+
+  it("a confirmed add for a person still under the company the card showed is filed there", async () => {
+    const r = await proposeAddTodo(db, A, { personId: id.mia }, "Call her", null, NOW);
+    if (!r.ok || r.signed.proposal.kind !== "add_todo") throw new Error("propose failed");
+    expect((await carryOutTodo(db, r.signed.proposal, VF, TODAY)).status).toBe("added");
+    expect((await db.query("SELECT member_id, about_person_id FROM todos")).rows).toEqual([{ member_id: id.mRaf, about_person_id: id.mia }]);
   });
 
   it("refuses an empty title, a long title, a bad date and a missing contact", async () => {

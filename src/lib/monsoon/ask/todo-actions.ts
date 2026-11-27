@@ -157,6 +157,13 @@ const NOTHING = "nothing changed.";
 export async function carryOutTodo(db: ClientBase, p: TodoProposal, viewer: Viewer, today: string): Promise<TodoDone> {
   if (p.kind === "add_todo") {
     const target: Target | undefined = p.aboutPersonId ? { personId: p.aboutPersonId } : p.memberId ? { memberId: p.memberId } : undefined;
+    if (p.aboutPersonId) {
+      // The card named the company the person was filed under; refiled since, nothing is written.
+      const found = await resolve(db, { personId: p.aboutPersonId });
+      if (found.ok && found.member.memberId !== p.memberId) {
+        return { status: "changed", message: `${p.about ?? p.memberName ?? "That contact"} was moved in the meantime; ${NOTHING}` };
+      }
+    }
     const r = await addTodo(db, { title: p.title, dueDate: p.dueDate, target, source: "ask" }, viewer, today);
     if (r.status === "missing") return { status: "missing", message: `${p.memberName ?? "That contact"} is no longer on the pipeline; ${NOTHING}` };
     if (r.status === "invalid") return { status: "invalid", message: r.reason };
