@@ -59,13 +59,17 @@ export function validDay(value: string): boolean {
   return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === value;
 }
 
-/** True when the CRM is at schema version 2 or later, so the to-do table exists. */
+/**
+ * True when the CRM is at schema version 2 or later, so the to-do table exists. False only when the
+ * version table itself is missing (42P01); any other error is the caller's to handle, not "not ready".
+ */
 export async function todosReady(db: ClientBase): Promise<boolean> {
   try {
     const r = await db.query("SELECT coalesce(max(version), 0)::int AS v FROM schema_migrations");
     return r.rows[0].v >= 2;
-  } catch {
-    return false;
+  } catch (err) {
+    if ((err as { code?: unknown })?.code === "42P01") return false;
+    throw err;
   }
 }
 
