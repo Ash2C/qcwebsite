@@ -213,6 +213,14 @@ async function upgradeSchema(conn: ClientBase, schema: string, role: string, fil
   }
 }
 
+// Some networks reset the session pooler port (5432). MONSOON_OWNER_PORT=6543 sends the owner's
+// connection through the transaction pooler; every owner command runs inside one transaction, so both work.
+const OWNER_PORT_ERROR = "MONSOON_OWNER_PORT must be 5432 or 6543";
+export function ownerPort(env: Record<string, string | undefined>): "5432" | "6543" | null {
+  const port = env.MONSOON_OWNER_PORT ?? "5432";
+  return port === "5432" || port === "6543" ? port : null;
+}
+
 function usage(out: (line: string) => void): number {
   for (const l of USAGE) out(l);
   return 1;
@@ -433,7 +441,9 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
 
         const vocabulary = await setupVocabulary(c.id, p);
         const password = (deps.randomPassword ?? (() => randomBytes(32).toString("base64url")))();
-        const owner = await connectOwner(`postgresql://postgres.${ref}:${encodeURIComponent(ownerPassword)}@${pooler}:5432/postgres`);
+        const hostPort = ownerPort(env);
+        if (!hostPort) fail(OWNER_PORT_ERROR);
+        const owner = await connectOwner(`postgresql://postgres.${ref}:${encodeURIComponent(ownerPassword)}@${pooler}:${hostPort}/postgres`);
         try {
           const t = await owner.query("SELECT to_regclass('public.people') AS t");
           if (t.rows[0].t) {
@@ -556,7 +566,9 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         const pooler = poolerFlag.toLowerCase();
         if (!POOLER_HOST.test(pooler)) fail("--pooler must be a Supabase pooler host ending in .pooler.supabase.com");
         if (!PROJECT_REF.test(p.project_ref)) fail("The project on file is not a valid project reference.");
-        const ownerUrl = `postgresql://postgres.${p.project_ref}:${encodeURIComponent(ownerPassword)}@${pooler}:5432/postgres`;
+        const upgradePort = ownerPort(env);
+        if (!upgradePort) return fail(OWNER_PORT_ERROR);
+        const ownerUrl = `postgresql://postgres.${p.project_ref}:${encodeURIComponent(ownerPassword)}@${pooler}:${upgradePort}/postgres`;
         return (await runOn(ownerUrl, [{ label, schema: "public", role: deps.appRole ?? "monsoon_app" }])) ? 0 : 1;
       }
       case "script": {
