@@ -265,16 +265,30 @@ export async function capture(db: ClientBase, input: CaptureInput, owner: string
     ]);
 
     // 8. Offered to-dos: plain inserts in this transaction (addTodo opens its own, which cannot nest).
-    // No timeline entry; the trigger sets the member's next action.
+    // No timeline entry; the trigger sets the member's next action. Behind a savepoint: a to-do
+    // problem must never lose the contact, so on any error the to-dos are skipped and the
+    // capture still commits.
     if (writeTodos) {
-      for (const todo of input.todos ?? []) {
-        const title = typeof todo?.title === "string" ? todo.title.trim().slice(0, MAX_TODO_TITLE) : "";
-        if (!title) continue;
-        const due = typeof todo.due === "string" && validDay(todo.due) ? todo.due : null;
-        await db.query(
-          `INSERT INTO todos (title, due_date, member_id, about_person_id, owner, source)
-           VALUES ($1, $2::date, $3, $4, $5, 'notes')`,
-          [title, due, member.id, filedUnder ? person.id : null, owner],
+      await db.query("SAVEPOINT capture_todos");
+      try {
+        for (const todo of input.todos ?? []) {
+          const title = typeof todo?.title === "string" ? todo.title.trim().slice(0, MAX_TODO_TITLE) : "";
+          if (!title) continue;
+          const due = typeof todo.due === "string" && validDay(todo.due) ? todo.due : null;
+          await db.query(
+            `INSERT INTO todos (title, due_date, member_id, about_person_id, owner, source)
+             VALUES ($1, $2::date, $3, $4, $5, 'notes')`,
+            [title, due, member.id, filedUnder ? person.id : null, owner],
+          );
+        }
+        await db.query("RELEASE SAVEPOINT capture_todos");
+      } catch (err) {
+        await db.query("ROLLBACK TO SAVEPOINT capture_todos");
+        const code = (err as { code?: unknown })?.code;
+        console.error(
+          "monsoon: capture to-dos skipped",
+          err instanceof Error ? err.name : "error",
+          typeof code === "string" ? code.slice(0, 5) : "",
         );
       }
     }

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Client } from "pg";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { capture, type CaptureInput } from "./capture";
 import { ensureOwner } from "./owners";
 import { makeV1TestDb, testDb } from "./testing/db";
@@ -457,6 +457,24 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
       const r = await capture(db, input({ role: "nope", todos: offered }), "VF");
       expect(r.outcome).toBe("invalid");
       expect(await count("todos")).toBe(0);
+    });
+
+    it("a failing to-do insert never loses the contact: the capture commits with no to-do", async () => {
+      // A real database error inside the transaction, with no trigger: every to-do row breaks a check.
+      await db.query("ALTER TABLE todos ADD CONSTRAINT no_todos_for_this_test CHECK (false) NOT VALID");
+      const logged: unknown[][] = [];
+      const spy = vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => void logged.push(a));
+      try {
+        const r = await capture(db, input({ org: "Acme Capital", todos: offered }), "VF");
+        expect(r.outcome).toBe("added");
+      } finally {
+        spy.mockRestore();
+      }
+      expect(await counts()).toEqual([1, 1, 1, 1, 1]);
+      expect(await count("todos")).toBe(0);
+      expect((await db.query("SELECT next_action FROM members")).rows).toEqual([{ next_action: null }]);
+      // Only the error's name and code, never a title or the contact's details.
+      expect(logged).toEqual([["monsoon: capture to-dos skipped", "error", "23514"]]);
     });
 
     it("on a CRM still at schema version 1 the capture succeeds and writes none", async () => {
