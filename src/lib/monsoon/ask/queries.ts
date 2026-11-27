@@ -198,10 +198,10 @@ const MEMBER_COLUMNS = `
 
 const MEMBER_ORDER = "ORDER BY s.ord, m.created_at, m.id";
 
-type ActionTouch = { member_id: string; at: string; kind: string; summary: string };
+export type ActionTouch = { member_id: string; at: string; kind: string; summary: string };
 
 /** Action entries (note, email, call, meeting) for the members, `at` as ISO so they compare in time order. */
-async function actionTouches(db: ClientBase, ids: string[]): Promise<Map<string, ActionTouch[]>> {
+export async function actionTouches(db: ClientBase, ids: string[]): Promise<Map<string, ActionTouch[]>> {
   const out = new Map<string, ActionTouch[]>();
   if (ids.length === 0) return out;
   const r = await db.query(

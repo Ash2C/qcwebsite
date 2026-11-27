@@ -20,7 +20,7 @@ const DUPLICATE_WINDOW = "2 minutes";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NO_CONTACT = "No such contact.";
 
-type Resolved = {
+export type Resolved = {
   memberId: string;
   memberKind: MemberKind;
   memberName: string;
@@ -32,7 +32,7 @@ type Resolved = {
   nextAction: string | null;
   nextDate: string | null;
 };
-type Resolution = { ok: true; member: Resolved } | { ok: false; reason: string };
+export type Resolution = { ok: true; member: Resolved } | { ok: false; reason: string };
 
 const MEMBER_SELECT = `SELECT m.id, m.stage, m.role, m.priority, m.next_action, m.next_action_date::text AS next_action_date, o.name AS org_name, p.name AS person_name, po.name AS person_company
                          FROM members m
@@ -62,7 +62,7 @@ function resolved(row: Record<string, string | null>, about: string | null): Res
 }
 
 /** Read-only: the member a change applies to, from a member id or a person id. */
-async function resolve(db: ClientBase, target: Target): Promise<Resolution> {
+export async function resolve(db: ClientBase, target: Target): Promise<Resolution> {
   const { memberId, personId } = target;
   if (typeof memberId === "string") {
     if (!UUID_RE.test(memberId)) return { ok: false, reason: NO_CONTACT };
@@ -227,7 +227,7 @@ export async function proposePriority(
 }
 
 /** Run `fn` in one read-committed transaction; commit when it asks to, otherwise roll back. */
-async function transaction<T>(db: ClientBase, fn: () => Promise<{ value: T; commit: boolean }>): Promise<T> {
+export async function transaction<T>(db: ClientBase, fn: () => Promise<{ value: T; commit: boolean }>): Promise<T> {
   await db.query("BEGIN ISOLATION LEVEL READ COMMITTED");
   try {
     await db.query("SET LOCAL statement_timeout = '10s'");
