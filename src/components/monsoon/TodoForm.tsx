@@ -2,8 +2,8 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import type { SiftHit } from "@/lib/monsoon/sift";
-import { searchContacts, todoAction, type EstateInfo, type Todo, type TodoActionBody, type TodoTarget } from "./api";
-import { addDays, localToday } from "./todoDates";
+import { searchContacts, todoAction, type EstateInfo, type Todo, type TodoActionBody, type TodoContact, type TodoTarget } from "./api";
+import { addDays, dueFromChoice, localToday, type DateChoice } from "./todoDates";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
 import { useDictation } from "./useDictation";
 
@@ -16,8 +16,8 @@ const KEYBOARD_HINT = "This browser cannot listen. Use the microphone on the key
 const DEBOUNCE_MS = 250;
 const MAX_TITLE = 300;
 
-type Choice = "today" | "tomorrow" | "week" | "pick" | "none";
-const CHOICES: { key: Choice; label: string }[] = [
+type Choice = DateChoice;
+export const CHOICES: { key: Choice; label: string }[] = [
   { key: "today", label: "Today" },
   { key: "tomorrow", label: "Tomorrow" },
   { key: "week", label: "Next week" },
@@ -31,6 +31,12 @@ type Chip = { name: string; target?: TodoTarget };
 function targetOfHit(hit: SiftHit): TodoTarget | null {
   if (hit.kind === "person") return hit.personId ? { personId: hit.personId } : null;
   return hit.member ? { memberId: hit.member.memberId } : null;
+}
+
+/** The target a new to-do for this contact is sent with: the person it is about, else the contact's person, else the pipeline entry. */
+export function contactTarget(c: TodoContact): TodoTarget {
+  const personId = c.aboutPersonId ?? c.personId;
+  return personId ? { personId } : { memberId: c.memberId };
 }
 
 /** The words for a write that did not succeed; "" when the reply was not a failure (so the caller carries on). */
@@ -141,8 +147,7 @@ export default function TodoForm({
     };
   }, [estate.key, q, chip]);
 
-  const dueDate: string | null =
-    choice === "today" ? today : choice === "tomorrow" ? addDays(today, 1) : choice === "week" ? addDays(today, 7) : choice === "pick" ? picked || null : null;
+  const dueDate = dueFromChoice(choice, picked, today);
   const cleanTitle = title.trim();
   const canSave = cleanTitle !== "" && !busy && (choice !== "pick" || picked !== "");
 

@@ -57,3 +57,14 @@ export function shortDate(value: string, now: Date = new Date()): string {
   if (!d || Number.isNaN(d.getTime())) return "";
   return `${d.getDate()} ${MONTHS[d.getMonth()]}${yearPart(d, now)}`;
 }
+
+export type DateChoice = "today" | "tomorrow" | "week" | "pick" | "none";
+
+/** The due date a date choice stands for; `picked` is the day chosen with "Pick a date". */
+export function dueFromChoice(choice: DateChoice, picked: string, today: string): string | null {
+  if (choice === "today") return today;
+  if (choice === "tomorrow") return addDays(today, 1);
+  if (choice === "week") return addDays(today, 7);
+  if (choice === "pick") return picked || null;
+  return null;
+}
