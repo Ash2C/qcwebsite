@@ -8,6 +8,7 @@ import { claudeFailure } from "../claude-failure";
 import { decryptSecret } from "./crypto";
 import { NotConnected, TrialPaused } from "./not-connected";
 import { sharedPipelineIsOwn } from "./shared-names";
+import type { Viewer } from "../todos";
 import {
   evictAccount,
   loadAccountRows,
@@ -15,6 +16,7 @@ import {
   recordClaudeStatus,
   type ClaudeStatus,
   withAccountsDb,
+  activeOwnerKeys,
   type ActivityAction,
   type CustomerRow,
   type PersonRow,
@@ -41,6 +43,8 @@ export type Account = {
   /** Throws NotConnected("Claude key") with no key of its own and no trial use granted by beginAi. */
   anthropic(opts: { timeout: number }): Anthropic;
   model(): string;
+  /** Who is looking at the to-do list: this person, and the owner keys of the customer's active people. Cached for the request. */
+  viewer(): Promise<Viewer>;
   record(action: ActivityAction, pipelineKey?: string | null): Promise<void>;
   /** True for the one person who may change the customer's Claude key. */
   canChangeKey: boolean;
@@ -84,6 +88,7 @@ export function buildAccount(rows: { customer: CustomerRow; person: PersonRow; p
   let trialGranted = false;
   let trialProbe = false;
   let trialUsed = false;
+  let viewerPromise: Promise<Viewer> | null = null;
   // Which of the key's own faults `err` is, if any.
   const keyFault = (err: unknown): ClaudeStatus | null => {
     const reason = claudeFailure(err);
@@ -133,6 +138,17 @@ export function buildAccount(rows: { customer: CustomerRow; person: PersonRow; p
         throw new Error("This model is not allowed for this customer");
       }
       return customer.model;
+    },
+    viewer() {
+      viewerPromise ??= activeOwnerKeys(customer.id).then((keys) => {
+        const appOwnerKeys = [...new Set([person.ownerKey, ...keys])];
+        return { ownerKey: person.ownerKey, appOwnerKeys, solo: appOwnerKeys.length === 1 };
+      });
+      // A failed lookup is not kept: the next call asks again.
+      viewerPromise.catch(() => {
+        viewerPromise = null;
+      });
+      return viewerPromise;
     },
     record(action, pipelineKey = null) {
       return recordActivity({ customerId: customer.id, personId: person.id, pipelineKey, action });

@@ -242,6 +242,14 @@ export async function settleAttempt(db: Client, id: string, ok: true | null, per
   await db.query("UPDATE sign_in_attempts SET ok = $2, person_id = $3 WHERE id = $1", [id, ok, personId]);
 }
 
+/** The owner keys of a customer's active people: one query. */
+export async function activeOwnerKeys(customerId: string): Promise<string[]> {
+  return withAccountsDb(async (db) => {
+    const r = await db.query("SELECT owner_key FROM people WHERE customer_id = $1 AND status = 'active'", [customerId]);
+    return r.rows.map((row) => row.owner_key as string);
+  });
+}
+
 /** Never throws; logs the error class name only. */
 export async function recordActivity(a: {
   customerId: string;

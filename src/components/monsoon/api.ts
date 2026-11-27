@@ -16,6 +16,8 @@ import type { ClaudeKeyState } from "@/lib/monsoon/accounts/claude-key";
 import type { GranolaKeyState } from "@/lib/monsoon/accounts/granola-key";
 import type { PageInput, UserPage } from "@/lib/monsoon/accounts/profile";
 import type { SignupRow } from "@/lib/monsoon/accounts/signups";
+import type { Nudge, Nudges } from "@/lib/monsoon/nudges";
+import type { Todo, TodoContact } from "@/lib/monsoon/todos";
 import { claudeStatusOf, reportClaudeStatus, type ClaudeChipStatus } from "./claudeStatus";
 
 export type EstateInfo = {
@@ -462,4 +464,50 @@ export async function loadImportContacts(
   if (sift?.high) params.set("high", "1");
   if (sift && sift.sort !== "recent") params.set("sort", sift.sort);
   return parse(await request(`/api/monsoon/contacts?${params}`, { cache: "no-store" }, TIMEOUT_MS.quick));
+}
+
+// --- to-dos --------------------------------------------------------------------------------------
+
+export type { Todo, TodoContact, Nudge, Nudges };
+
+export type TodosReply = { ready: false } | { ready: true; open: Todo[]; done: Todo[]; nudges?: Nudges };
+
+/** What a to-do write is aimed at: a contact by member or person id. */
+export type TodoTarget = { memberId?: string; personId?: string };
+
+export type TodoActionBody =
+  | { action: "add"; title: string; dueDate: string | null; target?: TodoTarget; source?: "app" | "next" }
+  | { action: "complete"; id: string }
+  | { action: "outcome"; id: string; outcome: string }
+  | { action: "edit"; id: string; title?: string; dueDate?: string | null; target?: TodoTarget | null }
+  | { action: "drop"; id: string }
+  | { action: "reopen"; id: string }
+  | { action: "snooze"; memberId: string };
+
+/**
+ * The to-do list and the nudges (or, with `member`, one contact's to-dos). `ready: false` means the
+ * CRM is not yet upgraded for to-dos. `allNudges` lifts the nudge list limit.
+ */
+export async function loadTodos(
+  estate: string,
+  opts?: { member?: string; allNudges?: boolean },
+): Promise<ApiResult<TodosReply | { error: string } | null>> {
+  const params = new URLSearchParams({ estate, today: localDay() });
+  if (opts?.member) params.set("member", opts.member);
+  if (opts?.allNudges) params.set("nudges", "all");
+  return parse(await request(`/api/monsoon/todos?${params}`, { cache: "no-store" }, TIMEOUT_MS.quick));
+}
+
+/** One to-do write (add, tick, outcome, edit, drop, reopen) or "Not now" on a nudge. */
+export async function todoAction(
+  estate: string,
+  body: TodoActionBody,
+): Promise<ApiResult<{ status: "ok" | "already"; todo: Todo } | { error: string } | null>> {
+  return parse(
+    await request(
+      "/api/monsoon/todos",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ estate, today: localDay(), ...body }) },
+      TIMEOUT_MS.standard,
+    ),
+  );
 }

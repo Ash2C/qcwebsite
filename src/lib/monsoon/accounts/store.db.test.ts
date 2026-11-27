@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Client } from "pg";
 import { makeAccountsTestDb } from "../testing/db";
 import {
+  activeOwnerKeys,
   clearAccountCache,
   failuresSince,
   findCustomerByCode,
@@ -45,6 +46,17 @@ describe.skipIf(!db.available)("accounts store", () => {
     );
     return { cid, pid: p.rows[0].id };
   }
+
+  it("activeOwnerKeys lists only the active people of that customer", async () => {
+    const { cid } = await seed();
+    const other = (await client.query("INSERT INTO customers (code, name) VALUES ('other-co', 'Other') RETURNING id")).rows[0].id;
+    await client.query(
+      `INSERT INTO people (customer_id, display_name, owner_key, passcode_hash, status) VALUES
+         ($1, 'Bob', 'BO', 'h', 'active'), ($1, 'Cy', 'CY', 'h', 'suspended'), ($2, 'Di', 'DI', 'h', 'active')`,
+      [cid, other],
+    );
+    expect((await activeOwnerKeys(cid)).sort()).toEqual(["AN", "BO"]);
+  });
 
   it("findCustomerByCode lowercases its input and returns null for unknown", async () => {
     const { cid } = await seed();

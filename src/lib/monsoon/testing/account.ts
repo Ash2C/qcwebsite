@@ -11,6 +11,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { Client } from "pg";
 import { vi } from "vitest";
 import type { Account, PipelineInfo } from "../accounts/account";
+import type { Viewer } from "../todos";
 import { NotConnected, TrialPaused } from "../accounts/not-connected";
 
 type Refusal = () => Response;
@@ -31,6 +32,8 @@ export type FakeAccountOptions = {
   model?: string;
   /** Whether this person may change the Claude key (default false). */
   canChangeKey?: boolean;
+  /** Owner keys of the customer's active people (default: only this person, so a solo account). */
+  people?: string[];
 };
 
 export function fakeAccount(over: FakeAccountOptions = {}): Account {
@@ -40,6 +43,11 @@ export function fakeAccount(over: FakeAccountOptions = {}): Account {
   // Like the real account: no Claude client before the AI gate. A route that forgets the gate fails its tests.
   let began = false;
   return {
+    async viewer(): Promise<Viewer> {
+      const ownerKey = (over.person?.ownerKey ?? "VF") as string;
+      const keys = [...new Set([ownerKey, ...(over.people ?? [])])];
+      return { ownerKey, appOwnerKeys: keys, solo: keys.length === 1 };
+    },
     customer: { id: "00000000-0000-4000-8000-000000000001", code: "test-co", name: "Test Co", model, ...over.customer },
     person: { id: "00000000-0000-4000-8000-000000000002", name: "Vincent", ownerKey: "VF", ...over.person },
     pipelines,

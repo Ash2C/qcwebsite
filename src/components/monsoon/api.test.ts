@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { actOnCrm, addUserNote, askCrm, disconnectGranolaKey, loadGranolaKey, saveGranolaKey, testGranolaKey, loadUserPage, saveUserPage, researchContact, loadEstates, loadProfile, proposeChange, searchContacts, readCards, refineCard, saveCard, signIn, actOnRequest, loadRequests, loadSignInOptions, mapImportColumns, checkImportRows, saveImportRows, loadImports, loadImportContacts } from "./api";
+import { actOnCrm, addUserNote, askCrm, disconnectGranolaKey, loadGranolaKey, saveGranolaKey, testGranolaKey, loadUserPage, saveUserPage, researchContact, loadEstates, loadProfile, proposeChange, searchContacts, readCards, refineCard, saveCard, signIn, actOnRequest, loadRequests, loadSignInOptions, mapImportColumns, checkImportRows, saveImportRows, loadImports, loadImportContacts, loadTodos, todoAction } from "./api";
 
 // `fetch` is stubbed: nothing here touches the network.
 const fetchMock = vi.fn();
@@ -80,7 +80,33 @@ const CALLS: [string, string, number, () => Promise<unknown>][] = [
     15_000,
     () => loadImportContacts("traxo", "A", { high: true, sort: "stage" }),
   ],
+  ["loadTodos", `/api/monsoon/todos?estate=traxo&today=${LOCAL_DAY}`, 15_000, () => loadTodos("traxo")],
+  ["todoAction", "/api/monsoon/todos", 35_000, () => todoAction("traxo", { action: "complete", id: "t1" })],
 ];
+
+describe("to-do helpers", () => {
+  it("loadTodos sends member and nudges=all when asked", async () => {
+    await loadTodos("zero one", { member: "m1", allNudges: true });
+    expect(fetchMock.mock.calls[0][0]).toBe(`/api/monsoon/todos?estate=zero+one&today=${LOCAL_DAY}&member=m1&nudges=all`);
+  });
+  it("todoAction posts the body with the estate and the local day", async () => {
+    await todoAction("traxo", { action: "add", title: "Call", dueDate: null, target: { memberId: "m1" } });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      estate: "traxo",
+      today: LOCAL_DAY,
+      action: "add",
+      title: "Call",
+      dueDate: null,
+      target: { memberId: "m1" },
+    });
+  });
+  it("returns the status and body as data", async () => {
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ ready: false }), { status: 200 }));
+    expect(await loadTodos("traxo")).toEqual({ status: 200, body: { ready: false } });
+  });
+});
 
 describe("client timeouts", () => {
   it.each(CALLS)("%s passes an abort signal that times out after the right limit", async (_name, url, ms, call) => {
