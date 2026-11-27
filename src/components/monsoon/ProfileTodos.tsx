@@ -5,6 +5,7 @@ import MonsoonLoader from "./MonsoonLoader";
 import TickSheet from "./TickSheet";
 import TodoForm from "./TodoForm";
 import TodoRowView from "./TodoRowView";
+import UndoBar, { useUndo } from "./UndoBar";
 import { loadTodos, type EstateInfo, type Todo, type TodoTarget } from "./api";
 import { card, secondaryButton } from "./styles";
 import { shortDate } from "./todoDates";
@@ -55,6 +56,8 @@ export default function ProfileTodos({
   const [problem, setProblem] = useState<string | null>(null);
   const [sheet, setSheet] = useState<Todo | null>(null);
   const [doneOpen, setDoneOpen] = useState(false);
+  // After a drop: one Undo at a time, for 6 seconds, gone when another estate or contact is shown.
+  const { undo, showUndo, clearUndo } = useUndo();
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((n) => n + 1), []);
   const unauthorizedRef = useRef(onUnauthorized);
@@ -63,6 +66,8 @@ export default function ProfileTodos({
   const scope = `${estate.key}|${memberId}`;
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
+
+  useEffect(() => clearUndo, [scope, clearUndo]);
 
   useEffect(() => {
     let live = true;
@@ -143,9 +148,12 @@ export default function ProfileTodos({
             reload();
           }}
           onDropped={(dropped) => {
+            // A drop that ends after another estate or contact is shown is left to that screen's read.
+            if (scopeRef.current !== scope) return;
             setNotice(null);
             setOpen((l) => l.filter((t) => t.id !== dropped.id));
             setForm(null);
+            showUndo(dropped, `Dropped: ${dropped.title}`);
           }}
           onDone={(saved) => {
             setNotice(null);
@@ -254,6 +262,17 @@ export default function ProfileTodos({
             </ul>
           ) : null}
         </>
+      ) : null}
+
+      {undo ? (
+        <UndoBar
+          text={undo.text}
+          onUndo={() => {
+            const t = undo.todo;
+            clearUndo();
+            void reopen(t);
+          }}
+        />
       ) : null}
 
       {sheet ? (

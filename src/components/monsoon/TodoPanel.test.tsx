@@ -344,6 +344,58 @@ describe("TodoPanel edit", () => {
     expect(screen.getByText("Keep me")).toBeInTheDocument();
   });
 
+  it("after a Drop an Undo bar shows for 6 seconds, above the Ask button, and Undo posts reopen and puts the row back", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const t = todo({ id: "d2", title: "Old idea", dueDate: TODAY, contact: CONTACT });
+      m.loadTodos.mockResolvedValue(list([t]));
+      m.todoAction.mockResolvedValueOnce(written({ ...t, status: "dropped" })).mockResolvedValueOnce(written(t));
+      render(<Harness />);
+      await user.click(await screen.findByRole("button", { name: /^Old idea/ }));
+      await user.click(screen.getByRole("button", { name: "Drop" }));
+      const bar = await screen.findByText("Dropped: Old idea");
+      // Clear of the floating Ask button, which sits in the bottom 1rem plus its 60px.
+      expect(bar.closest("[role=status]")).toHaveClass("bottom-[calc(6rem+env(safe-area-inset-bottom))]");
+      expect(screen.queryByRole("button", { name: "Mark done: Old idea" })).not.toBeInTheDocument();
+      await act(async () => void vi.advanceTimersByTime(5000));
+      await user.click(screen.getByRole("button", { name: "Undo" }));
+      expect(m.todoAction).toHaveBeenLastCalledWith("traxo", { action: "reopen", id: "d2" });
+      expect(await screen.findByRole("button", { name: "Mark done: Old idea" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the Drop Undo goes after 6 seconds, and does not follow to another estate", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const a = todo({ id: "d3", title: "First", dueDate: TODAY });
+      const b = todo({ id: "d4", title: "Second", dueDate: TODAY });
+      m.loadTodos.mockResolvedValue(list([a, b]));
+      m.todoAction.mockResolvedValueOnce(written({ ...a, status: "dropped" }));
+      const view = render(<Harness />);
+      await user.click(await screen.findByRole("button", { name: /^First/ }));
+      await user.click(screen.getByRole("button", { name: "Drop" }));
+      await screen.findByText("Dropped: First");
+      await act(async () => void vi.advanceTimersByTime(6500));
+      expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+
+      m.todoAction.mockResolvedValueOnce(written({ ...b, status: "dropped" }));
+      await user.click(screen.getByRole("button", { name: /^Second/ }));
+      await user.click(screen.getByRole("button", { name: "Drop" }));
+      await screen.findByText("Dropped: Second");
+      m.loadTodos.mockResolvedValue(list([todo({ id: "z9", title: "Zero One task" })]));
+      view.rerender(<Harness estate={{ ...ESTATE, key: "zeroone", label: "Zero One" }} />);
+      await screen.findByText("Zero One task");
+      expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a failed edit shows the error and leaves the row as it was", async () => {
     const user = userEvent.setup();
     const t = todo({ id: "f1", title: "Stays", dueDate: TODAY });

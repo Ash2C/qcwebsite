@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProfileTodos from "./ProfileTodos";
@@ -116,6 +116,71 @@ describe("ProfileTodos", () => {
     await user.click(screen.getByRole("button", { name: "Reopen: Old thing" }));
     expect(m.todoAction).toHaveBeenCalledWith("traxo", { action: "reopen", id: d.id });
     expect(await screen.findByRole("button", { name: "Mark done: Old thing" })).toBeInTheDocument();
+  });
+
+  it("after a Drop an Undo bar shows above the Ask button, and Undo posts reopen and puts the row back", async () => {
+    const user = userEvent.setup();
+    const t = todo({ title: "Old idea" });
+    m.loadTodos.mockResolvedValue(reply([t]));
+    m.todoAction.mockResolvedValueOnce(written({ ...t, status: "dropped" })).mockResolvedValueOnce(written(t));
+    show();
+    await user.click(await screen.findByRole("button", { name: /^Old idea/ }));
+    await user.click(screen.getByRole("button", { name: "Drop" }));
+    expect(m.todoAction).toHaveBeenCalledWith("traxo", { action: "drop", id: t.id });
+    const bar = await screen.findByText("Dropped: Old idea");
+    expect(bar.closest("[role=status]")).toHaveClass("bottom-[calc(6rem+env(safe-area-inset-bottom))]");
+    expect(screen.queryByRole("button", { name: "Mark done: Old idea" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Undo" }));
+    expect(m.todoAction).toHaveBeenLastCalledWith("traxo", { action: "reopen", id: t.id });
+    expect(await screen.findByRole("button", { name: "Mark done: Old idea" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+  });
+
+  it("the Drop Undo goes after 6 seconds, and when another contact is shown", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const a = todo({ title: "First" });
+      const b = todo({ title: "Second" });
+      m.loadTodos.mockResolvedValue(reply([a, b]));
+      m.todoAction.mockResolvedValueOnce(written({ ...a, status: "dropped" }));
+      const view = render(<ProfileTodos estate={ESTATE} memberId="m1" target={{ personId: "p1" }} name="Jane Tan" />);
+      await user.click(await screen.findByRole("button", { name: /^First/ }));
+      await user.click(screen.getByRole("button", { name: "Drop" }));
+      await screen.findByText("Dropped: First");
+      await act(async () => void vi.advanceTimersByTime(5000));
+      expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+      await act(async () => void vi.advanceTimersByTime(1500));
+      expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+
+      m.todoAction.mockResolvedValueOnce(written({ ...b, status: "dropped" }));
+      await user.click(screen.getByRole("button", { name: /^Second/ }));
+      await user.click(screen.getByRole("button", { name: "Drop" }));
+      await screen.findByText("Dropped: Second");
+      m.loadTodos.mockResolvedValue(reply([todo({ title: "Other task", contact: { ...CONTACT, memberId: "m2" } })]));
+      view.rerender(<ProfileTodos estate={ESTATE} memberId="m2" target={{ personId: "p2" }} name="Sam Lee" />);
+      expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an Undo whose reply lands after the contact changed does not put the row on the new contact's list", async () => {
+    const user = userEvent.setup();
+    const t = todo({ title: "Old idea" });
+    m.loadTodos.mockResolvedValue(reply([t]));
+    m.todoAction.mockResolvedValueOnce(written({ ...t, status: "dropped" }));
+    const view = render(<ProfileTodos estate={ESTATE} memberId="m1" target={{ personId: "p1" }} name="Jane Tan" />);
+    await user.click(await screen.findByRole("button", { name: /^Old idea/ }));
+    await user.click(screen.getByRole("button", { name: "Drop" }));
+    let release: (v: never) => void = () => {};
+    m.todoAction.mockReturnValueOnce(new Promise((r) => (release = r as never)));
+    await user.click(await screen.findByRole("button", { name: "Undo" }));
+    m.loadTodos.mockResolvedValue(reply([]));
+    view.rerender(<ProfileTodos estate={ESTATE} memberId="m2" target={{ personId: "p2" }} name="Sam Lee" />);
+    expect(await screen.findByText("Nothing to do for Sam Lee yet.")).toBeInTheDocument();
+    await act(async () => release(written(t)));
+    expect(screen.queryByText("Old idea")).not.toBeInTheDocument();
   });
 
   it("a person filed under a company sees their own to-dos and the company-wide ones, with other people named", async () => {

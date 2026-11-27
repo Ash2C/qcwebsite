@@ -7,6 +7,7 @@ import NudgeList from "./NudgeList";
 import TickSheet from "./TickSheet";
 import TodoForm from "./TodoForm";
 import TodoRowView from "./TodoRowView";
+import UndoBar, { useUndo } from "./UndoBar";
 import { loadTodos, type EstateInfo, type Nudge, type Nudges, type Todo, type TodoContact, type TodoTarget } from "./api";
 import { card, secondaryButton } from "./styles";
 import { bucketOf, localToday, shortDate, type TodoBucket } from "./todoDates";
@@ -33,7 +34,6 @@ export const EMPTY_TODOS: TodosState = { estate: null, ready: null, open: [], do
 const NOT_READY = "To do is being set up for this CRM.";
 const EMPTY = "Nothing to do yet. Add your first to-do.";
 const LOAD_FAILED = "Could not load to-dos. Check signal.";
-const UNDO_MS = 6000;
 
 const GROUPS: { bucket: TodoBucket; heading: string }[] = [
   { bucket: "overdue", heading: "Overdue" },
@@ -84,9 +84,9 @@ export default function TodoPanel({
   const [problem, setProblem] = useState<string | null>(null);
   // The to-do whose "what happened" sheet is open.
   const [sheet, setSheet] = useState<Todo | null>(null);
-  const [undo, setUndo] = useState<Todo | null>(null);
+  // After a tick with no contact or a drop: one Undo at a time, for 6 seconds.
+  const { undo, showUndo, clearUndo } = useUndo();
   const [doneOpen, setDoneOpen] = useState(false);
-  const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The latest props, so a reply that arrives later builds on what is on screen now.
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -141,22 +141,6 @@ export default function TodoPanel({
     }
   }
 
-  function clearUndo() {
-    if (undoTimer.current) clearTimeout(undoTimer.current);
-    undoTimer.current = null;
-    setUndo(null);
-  }
-
-  /** Only one Undo at a time: a new one replaces the old and restarts the 6 seconds. */
-  function showUndo(t: Todo) {
-    if (undoTimer.current) clearTimeout(undoTimer.current);
-    setUndo(t);
-    undoTimer.current = setTimeout(() => {
-      undoTimer.current = null;
-      setUndo(null);
-    }, UNDO_MS);
-  }
-
   // Read when the tab opens and when the estate changes.
   useEffect(() => {
     // A sheet, an Undo or an error from another estate's to-dos does not carry over.
@@ -197,7 +181,7 @@ export default function TodoPanel({
     ticked: (saved, t, key) => {
       change(key, (s) => ({ done: s.done.map((x) => (x.id === t.id ? saved : x)) }));
       if (t.contact) setSheet(saved);
-      else showUndo(saved);
+      else showUndo(saved, `Done: ${saved.title}`);
     },
     tickFailed: (t, key) =>
       change(key, (s) => ({
@@ -283,8 +267,12 @@ export default function TodoPanel({
             void load(estate.key);
           }}
           onDropped={(dropped) => {
+            // A drop that ends after the estate changed is left to that estate's next read.
+            const key = estate.key;
+            if (estateKeyRef.current !== key || stateRef.current.estate !== key) return;
             setNotice(null);
-            change(estate.key, (s) => ({ open: s.open.filter((t) => t.id !== dropped.id), form: null }));
+            change(key, (s) => ({ open: s.open.filter((t) => t.id !== dropped.id), form: null }));
+            showUndo(dropped, `Dropped: ${dropped.title}`);
           }}
           onDone={(saved) => {
             setNotice(null);
@@ -433,23 +421,14 @@ export default function TodoPanel({
       ) : null}
 
       {undo ? (
-        <div
-          role="status"
-          className="fixed inset-x-4 bottom-[max(1rem,env(safe-area-inset-bottom))] z-10 mx-auto flex max-w-md items-center justify-between gap-3 rounded-2xl bg-neutral-900 py-1 pl-4 pr-2 text-white shadow-lg dark:bg-neutral-100 dark:text-neutral-900"
-        >
-          <span className="break-words text-[15px]">{`Done: ${undo.title}`}</span>
-          <button
-            type="button"
-            onClick={() => {
-              const t = undo;
-              clearUndo();
-              void reopen(t);
-            }}
-            className="min-h-[44px] shrink-0 rounded-xl px-3 text-[16px] font-semibold text-[#6AE6FF] dark:text-[#0E7FA6]"
-          >
-            Undo
-          </button>
-        </div>
+        <UndoBar
+          text={undo.text}
+          onUndo={() => {
+            const t = undo.todo;
+            clearUndo();
+            void reopen(t);
+          }}
+        />
       ) : null}
 
       {sheet ? (
