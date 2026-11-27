@@ -48,7 +48,8 @@ async function main(): Promise<number> {
     return await runAdmin(process.argv.slice(2), {
       db,
       out: (l) => console.log(l),
-      env: process.env,
+      // Settings in monsoon-accounts.env count too (shared admin address, owner passwords); the real environment wins.
+      env: { ...file, ...process.env },
       connectOwner: async (ownerUrl) => {
         // The setup script runs in one statement; allow it longer than the app's 10 s query limit.
         const owner = new Client({ ...clientConfig(ownerUrl), query_timeout: 60_000 });

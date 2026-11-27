@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { Client } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { hashToken, verifyPasscode } from "@/lib/monsoon/accounts/crypto";
-import { makeAccountsTestDb, makeTestDb, testRoleName } from "@/lib/monsoon/testing/db";
+import { clientNames } from "@/lib/monsoon/accounts/shared-names";
+import { makeAccountsTestDb, makeTestDb, makeV1TestDb, testRoleName } from "@/lib/monsoon/testing/db";
 import { runAdmin } from "./admin-commands";
 
 const db = makeAccountsTestDb();
@@ -835,6 +836,267 @@ describe.skipIf(!db.available)("monsoon admin", () => {
       };
       expect(await run(hostArgs(), deps)).toBe(1);
       expect(lines).toEqual(["Error: Error (28P01)"]);
+    });
+  });
+
+  describe("upgrade", () => {
+    const crm = makeV1TestDb("upgrade");
+    const role = `${testRoleName()}_up`;
+    const REF = "abcdefghij0123456789";
+    const POOLER = "aws-0-eu-west-1.pooler.supabase.com";
+    const OWNER_PW = "owner p@ss/word:with#odd?chars";
+    const SHARED_PW = "shared-admin-pw-9f3";
+    const SHARED_URL = `postgresql://postgres.${REF}:${SHARED_PW}@${POOLER}:5432/postgres`;
+    const LOGIN_PW = "restricted-login-pw-1234";
+    let connects: string[];
+    let owners: Client[];
+    const schemas: string[] = [];
+
+    const upDeps = (env: Record<string, string> = {}) => ({
+      env: { OWNER_PW_VAR: OWNER_PW, ...env },
+      appRole: role,
+      connectOwner: async (url: string) => {
+        connects.push(url);
+        const c = await crm.connect();
+        owners.push(c);
+        return c;
+      },
+    });
+    const upgrade = (argv: string[], env: Record<string, string> = {}) => run(["upgrade", ...argv], upDeps(env));
+    const ownArgs = ["acme", "main", "--owner-password-from-env", "OWNER_PW_VAR", "--pooler", POOLER];
+    const noSecrets = () => {
+      for (const l of lines) {
+        for (const s of [OWNER_PW, encodeURIComponent(OWNER_PW), SHARED_PW, LOGIN_PW]) expect(l).not.toContain(s);
+        expect(l).not.toMatch(/postgres(ql)?:\/\//);
+      }
+    };
+
+    async function dropRole(name: string) {
+      const c = await crm.connect();
+      try {
+        if ((await c.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [name])).rowCount) {
+          await c.query(`DROP OWNED BY ${name}`);
+          await c.query(`DROP ROLE ${name}`);
+        }
+      } finally {
+        await c.end();
+      }
+    }
+    /** A version 1 CRM's restricted login: it can read, add and change every table that exists in the schema. */
+    async function v1Login(c: Client, schema: string, name: string) {
+      await c.query(`CREATE ROLE ${name} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT PASSWORD '${LOGIN_PW}'`);
+      await c.query(`GRANT USAGE ON SCHEMA ${schema} TO ${name}`);
+      await c.query(`GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA ${schema} TO ${name}`);
+      const t = await c.query("SELECT tablename FROM pg_tables WHERE schemaname = $1", [schema]);
+      for (const { tablename } of t.rows as { tablename: string }[]) {
+        for (const [a, clause] of [["select", "USING (true)"], ["insert", "WITH CHECK (true)"], ["update", "USING (true) WITH CHECK (true)"]]) {
+          await c.query(`CREATE POLICY ${name}_${a} ON ${schema}.${tablename} FOR ${a.toUpperCase()} TO ${name} ${clause}`);
+        }
+      }
+    }
+    async function seedMember(c: Client) {
+      await c.query("INSERT INTO people (name, name_key, source) VALUES ('Pat', 'pat', 'test')");
+      await c.query(
+        `INSERT INTO members (person_id, role, stage, owner, source, next_action, next_action_date)
+         SELECT id, 'investor', 'contacted', 'VF', 'test', 'Send deck', '2026-12-01' FROM people`,
+      );
+    }
+    async function loginTo(schema: string, user: string): Promise<Client> {
+      const url = new URL(crm.url());
+      const l = new Client({ host: url.hostname, port: Number(url.port), database: url.pathname.slice(1), user, password: LOGIN_PW });
+      await l.connect();
+      await l.query(`SET search_path TO ${schema}`);
+      return l;
+    }
+    async function expectUpgraded(schema: string, user: string) {
+      const c = await crm.connect();
+      try {
+        await c.query(`SET search_path TO ${schema}`);
+        expect((await c.query("SELECT max(version)::int AS v FROM schema_migrations")).rows[0].v).toBe(2);
+        expect((await c.query("SELECT title, source, status FROM todos")).rows).toEqual([{ title: "Send deck", source: "migrated", status: "open" }]);
+      } finally {
+        await c.end();
+      }
+      const l = await loginTo(schema, user);
+      try {
+        await l.query("INSERT INTO todos (title, source) VALUES ('Call back', 'app')");
+        await expect(l.query("DELETE FROM todos")).rejects.toMatchObject({ code: "42501" });
+        expect((await l.query("SELECT count(*)::int AS n FROM todos")).rows[0].n).toBe(2);
+      } finally {
+        await l.end();
+      }
+    }
+    async function count(schema: string): Promise<number> {
+      const c = await crm.connect();
+      try {
+        await c.query(`SET search_path TO ${schema}`);
+        return (await c.query("SELECT count(*)::int AS n FROM todos")).rows[0].n;
+      } finally {
+        await c.end();
+      }
+    }
+
+    beforeEach(async () => {
+      connects = [];
+      owners = [];
+      await dropRole(role);
+      await crm.reset();
+      const c = await crm.connect();
+      for (const s of schemas.splice(0)) await c.query(`DROP SCHEMA IF EXISTS ${s} CASCADE`);
+      await c.end();
+      await run(["customer", "add", "acme", "Acme"]);
+      await run(["pipeline", "add", "acme", "main", "Main", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
+    });
+    afterEach(async () => {
+      for (const o of owners) await o.end().catch(() => undefined);
+      const c = await crm.connect();
+      for (const s of schemas.splice(0)) await c.query(`DROP SCHEMA IF EXISTS ${s} CASCADE`);
+      await c.end();
+      await dropRole(role);
+    });
+
+    /** Builds a version 1 CRM for a customer in the shared database's way: its own schema and login. */
+    async function sharedV1(code: string, build = true): Promise<{ schema: string; login: string }> {
+      const id = (await client.query("SELECT id FROM customers WHERE code = $1", [code])).rows[0].id as string;
+      const { schema, role: login } = clientNames(id);
+      schemas.push(schema);
+      await client.query("UPDATE pipelines SET shared_schema = $2 WHERE customer_id = $1", [id, schema]);
+      if (build) {
+        const c = await crm.connect();
+        try {
+          await c.query(`CREATE SCHEMA ${schema}`);
+          await c.query(`SET search_path TO ${schema}`);
+          await c.query(readFileSync(join(process.cwd(), "src/lib/monsoon/testing/0001_init.sql"), "utf8"));
+          await c.query("INSERT INTO schema_migrations (version) VALUES (1)");
+          await c.query("INSERT INTO stages (key, ord, label, terminal) VALUES ('contacted', 1, 'Contacted', false)");
+          await c.query("INSERT INTO roles (key, label) VALUES ('investor', 'Investor')");
+          await c.query("INSERT INTO owners (key, display_name) VALUES ('VF', 'Vincent')");
+          await seedMember(c);
+          await v1Login(c, schema, login);
+        } finally {
+          await c.end();
+        }
+      }
+      return { schema, login };
+    }
+
+    it("brings a version 1 CRM on its own project to version 2, migrates the next action, and the login cannot delete a to-do", async () => {
+      const c = await crm.connect();
+      await seedMember(c);
+      await v1Login(c, "public", role);
+      await c.end();
+      await client.query("UPDATE pipelines SET project_ref = $1", [REF]);
+
+      expect(await upgrade(ownArgs)).toBe(0);
+      expect(lines).toEqual(["acme/main: 1 -> 2"]);
+      noSecrets();
+      expect(connects).toEqual([`postgresql://postgres.${REF}:${encodeURIComponent(OWNER_PW)}@${POOLER}:5432/postgres`]);
+      await expectUpgraded("public", role);
+
+      // The second run changes nothing.
+      expect(await upgrade(ownArgs)).toBe(0);
+      expect(lines).toEqual(["acme/main: already at 2"]);
+      expect(await count("public")).toBe(2);
+    });
+
+    it("brings a shared CRM to version 2 through the shared admin address, applying only what is above its version", async () => {
+      const { schema, login } = await sharedV1("acme");
+      expect(await upgrade(["acme", "main"], { MONSOON_SHARED_DB_ADMIN_URL: SHARED_URL })).toBe(0);
+      expect(lines).toEqual(["acme/main: 1 -> 2"]);
+      noSecrets();
+      expect(connects).toEqual([SHARED_URL]);
+      await expectUpgraded(schema, login);
+      const c = await crm.connect();
+      try {
+        // Nothing leaked into public, and version 1 was not applied again.
+        expect((await c.query("SELECT to_regclass('public.todos') AS t")).rows[0].t).toBeNull();
+        await c.query(`SET search_path TO ${schema}`);
+        expect((await c.query("SELECT version FROM schema_migrations ORDER BY version")).rows.map((r) => r.version)).toEqual([1, 2]);
+      } finally {
+        await c.end();
+      }
+
+      expect(await upgrade(["acme", "main"], { MONSOON_SHARED_DB_ADMIN_URL: SHARED_URL })).toBe(0);
+      expect(lines).toEqual(["acme/main: already at 2"]);
+      expect(await count(schema)).toBe(2);
+    });
+
+    it("a failed upgrade rolls back and leaves the CRM at version 1", async () => {
+      const { schema } = await sharedV1("acme");
+      const c = await crm.connect();
+      await c.query(`SET search_path TO ${schema}`);
+      // A to-do table that is not the one version 2 expects makes 0002 fail part way through.
+      await c.query("CREATE TABLE todos (id int)");
+      await c.end();
+      expect(await upgrade(["acme", "main"], { MONSOON_SHARED_DB_ADMIN_URL: SHARED_URL })).toBe(1);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/^acme\/main: failed \(\w+ \(\w{5}\)\)$/);
+      noSecrets();
+      const d = await crm.connect();
+      try {
+        await d.query(`SET search_path TO ${schema}`);
+        expect((await d.query("SELECT max(version)::int AS v FROM schema_migrations")).rows[0].v).toBe(1);
+        expect((await d.query("SELECT count(*)::int AS n FROM information_schema.columns WHERE table_schema = $1 AND column_name = 'nudge_after'", [schema])).rows[0].n).toBe(0);
+      } finally {
+        await d.end();
+      }
+    });
+
+    it("--all-shared upgrades every shared CRM, reports a failed one, tries the rest and exits 1", async () => {
+      await sharedV1("acme");
+      await run(["customer", "add", "other", "Other"]);
+      await run(["pipeline", "add", "other", "main", "Main", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
+      await sharedV1("other", false);
+      await run(["customer", "add", "zeta", "Zeta"]);
+      await run(["pipeline", "add", "zeta", "main", "Main", "--default-role", "investor", "--stages", STAGES, "--roles", ROLES]);
+      await sharedV1("zeta");
+
+      expect(await upgrade(["--all-shared"], { MONSOON_SHARED_DB_ADMIN_URL: SHARED_URL })).toBe(1);
+      expect(lines).toHaveLength(3);
+      expect(lines[0]).toBe("acme/main: 1 -> 2");
+      expect(lines[1]).toMatch(/^other\/main: failed \(/);
+      expect(lines[2]).toBe("zeta/main: 1 -> 2");
+      noSecrets();
+      expect(connects).toEqual([SHARED_URL]);
+      for (const code of ["acme", "zeta"]) {
+        const id = (await client.query("SELECT id FROM customers WHERE code = $1", [code])).rows[0].id as string;
+        expect(await count(clientNames(id).schema)).toBe(1);
+      }
+    });
+
+    it("a pipeline with its own database needs --owner-password-from-env", async () => {
+      await client.query("UPDATE pipelines SET project_ref = $1", [REF]);
+      expect(await upgrade(["acme", "main"])).toBe(1);
+      expect(lines).toEqual(["Error: This pipeline has its own database: pass --owner-password-from-env."]);
+      expect(connects).toHaveLength(0);
+    });
+
+    it("refuses a CRM that is neither shared nor on a project on file", async () => {
+      expect(await upgrade(["acme", "main", "--owner-password-from-env", "OWNER_PW_VAR"])).toBe(1);
+      expect(lines).toEqual(["Error: This CRM is upgraded by the Quantcloud core, not here."]);
+      expect(connects).toHaveLength(0);
+    });
+
+    it("fails before connecting when the owner password variable, the pooler or the shared address is missing", async () => {
+      await client.query("UPDATE pipelines SET project_ref = $1", [REF]);
+      expect(await upgrade(["acme", "main", "--owner-password-from-env", "NOPE", "--pooler", POOLER])).toBe(1);
+      expect(lines).toEqual(["Error: environment variable NOPE is not set"]);
+      expect(await upgrade(["acme", "main", "--owner-password-from-env", "OWNER_PW_VAR"])).toBe(1);
+      expect(lines[0]).toMatch(/^Error: --pooler is required/);
+      expect(await upgrade(["acme", "main", "--owner-password-from-env", "OWNER_PW_VAR", "--pooler", "evil.example.com"])).toBe(1);
+      expect(lines[0]).toMatch(/^Error: --pooler must be/);
+      await client.query("UPDATE pipelines SET project_ref = NULL");
+      await sharedV1("acme", false);
+      expect(await upgrade(["acme", "main"])).toBe(1);
+      expect(lines).toEqual(["Error: MONSOON_SHARED_DB_ADMIN_URL is not set"]);
+      expect(connects).toHaveLength(0);
+    });
+
+    it("never passes a schema that is not the customer's own", async () => {
+      await client.query("UPDATE pipelines SET shared_schema = 'c_0b9d2a476a3e4c1f9d552f7a3c1e8b10'");
+      expect(await upgrade(["acme", "main"], { MONSOON_SHARED_DB_ADMIN_URL: SHARED_URL })).toBe(1);
+      expect(lines).toEqual(["Error: The stored schema is not this customer's."]);
+      expect(connects).toHaveLength(0);
     });
   });
 

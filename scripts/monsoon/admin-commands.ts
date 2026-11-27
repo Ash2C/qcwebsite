@@ -1,13 +1,21 @@
 // Command logic for the Monsoon admin tool. Takes its database and output as dependencies so tests can drive it.
 // Never reads the master key, so it can never decrypt or print a stored credential.
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClientBase } from "pg";
 import { POOLER_HOST, PROJECT_REF } from "../../src/lib/monsoon/accounts/address";
 import { generatePasscode, hashPasscode, hashToken, newToken } from "../../src/lib/monsoon/accounts/crypto";
-import { generateSetupScript, loginAndPoliciesScript, type SetupVocabulary } from "../../src/lib/monsoon/accounts/setup-script";
+import { CRM_LATEST_VERSION } from "../../src/lib/monsoon/accounts/crm-schema.generated";
+import {
+  checkSchemaName,
+  generateSetupScript,
+  loginAndPoliciesScript,
+  todoGrantStatements,
+  type SetupVocabulary,
+} from "../../src/lib/monsoon/accounts/setup-script";
+import { clientNames } from "../../src/lib/monsoon/accounts/shared-names";
 
 export type PostReply = { status: number; body: { ok?: boolean; error?: string; failure?: string } };
 
@@ -34,6 +42,8 @@ const USAGE = [
   "  person reset|suspend|resume <code> <OWNER>",
   '  pipeline add <code> <key> "<label>" --default-role <role> --stages <json> --roles <json>',
   "  host <code> <pipeline key> --ref <ref> --pooler <host> --owner-password-from-env <VAR> [--replace]",
+  "  upgrade <code> <pipeline key> [--owner-password-from-env <VAR> --pooler <host>]",
+  "  upgrade --all-shared",
   "  link <code>",
   "  script <code> <pipeline key> [--login-only]",
   "  status",
@@ -159,6 +169,46 @@ function errorLine(err: unknown): string {
   return `Error: ${name}${typeof code === "string" && code.length === 5 ? ` (${code})` : ""}`;
 }
 
+/** The schema files this tool applies, by version number, read from the repo at run time. */
+function schemaFiles(): { version: number; sql: string }[] {
+  const dir = join(process.cwd(), "src", "lib", "monsoon", "testing");
+  return readdirSync(dir)
+    .filter((f) => /^\d{4}_.*\.sql$/.test(f))
+    .sort()
+    .map((f) => ({ version: Number(f.slice(0, 4)), sql: readFileSync(join(dir, f), "utf8") }))
+    .filter((f) => f.version <= CRM_LATEST_VERSION);
+}
+
+/**
+ * Brings one CRM to the newest version in one transaction: every schema file numbered above the CRM's
+ * highest recorded version, one by one, then the restricted login's rights on what they added.
+ * Returns what to print, `1 -> 2` or `already at 2`. Rolls back and throws on any failure.
+ */
+async function upgradeSchema(conn: ClientBase, schema: string, role: string, files: { version: number; sql: string }[]): Promise<string> {
+  const sch = checkSchemaName(schema);
+  await conn.query("BEGIN");
+  try {
+    await conn.query(`SET LOCAL search_path TO ${sch}`);
+    const t = await conn.query("SELECT to_regclass('schema_migrations') AS t");
+    if (!t.rows[0].t) fail("this database holds no Monsoon CRM");
+    const cur = (await conn.query("SELECT coalesce(max(version), 0)::int AS v FROM schema_migrations")).rows[0].v as number;
+    if (cur >= CRM_LATEST_VERSION) {
+      await conn.query("COMMIT");
+      return `already at ${cur}`;
+    }
+    for (const f of files.filter((x) => x.version > cur)) {
+      await conn.query(f.sql);
+      await conn.query("INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING", [f.version]);
+    }
+    await conn.query(todoGrantStatements(role, sch));
+    await conn.query("COMMIT");
+    return `${cur} -> ${CRM_LATEST_VERSION}`;
+  } catch (err) {
+    await conn.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  }
+}
+
 function usage(out: (line: string) => void): number {
   for (const l of USAGE) out(l);
   return 1;
@@ -176,7 +226,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
   }
   async function pipeline(customerId: string, key: string) {
     const r = await db.query(
-      "SELECT id, vocab, label, project_ref, (db_url_enc IS NOT NULL) AS connected FROM pipelines WHERE customer_id = $1 AND key = $2",
+      "SELECT id, vocab, label, project_ref, shared_schema, (db_url_enc IS NOT NULL) AS connected FROM pipelines WHERE customer_id = $1 AND key = $2",
       [customerId, key],
     );
     return r.rows[0] ?? fail(`no pipeline ${key}`);
@@ -425,6 +475,85 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
         } finally {
           await owner.end().catch(() => undefined);
         }
+      }
+      case "upgrade": {
+        // Brings existing client CRMs to the newest schema version on the owner's connection. One transaction
+        // per CRM; a failed CRM is reported and the rest are still tried. Nothing here prints an address or password.
+        const { pos, flags } = parseArgs(argv.slice(1), ["--owner-password-from-env", "--pooler"], ["--all-shared"]);
+        const { connectOwner } = deps;
+        if (!connectOwner) return fail("upgrade is not available here");
+        const files = schemaFiles();
+        const sharedUrl = () => env.MONSOON_SHARED_DB_ADMIN_URL || fail("MONSOON_SHARED_DB_ADMIN_URL is not set");
+        const reason = (err: unknown) => errorLine(err).replace(/^Error: /, "");
+        const runOn = async (url: string, targets: { label: string; schema: string; role: string }[]): Promise<boolean> => {
+          let conn: ClientBase & { end(): Promise<void> };
+          try {
+            conn = await connectOwner(url);
+          } catch (err) {
+            for (const t of targets) out(`${t.label}: failed (${reason(err)})`);
+            return false;
+          }
+          let ok = true;
+          try {
+            for (const t of targets) {
+              try {
+                out(`${t.label}: ${await upgradeSchema(conn, t.schema, t.role, files)}`);
+              } catch (err) {
+                ok = false;
+                out(`${t.label}: failed (${reason(err)})`);
+              }
+            }
+          } finally {
+            await conn.end().catch(() => undefined);
+          }
+          return ok;
+        };
+
+        if (flags.has("--all-shared")) {
+          if (pos.length > 0 || flags.size > 1) fail("upgrade --all-shared takes nothing else");
+          const url = sharedUrl();
+          const r = await db.query(
+            `SELECT c.id, c.code, p.key, p.shared_schema FROM pipelines p JOIN customers c ON c.id = p.customer_id
+              WHERE p.shared_schema IS NOT NULL ORDER BY c.code, p.key`,
+          );
+          if (r.rowCount === 0) {
+            out("No pipelines in the shared database.");
+            return 0;
+          }
+          const targets: { label: string; schema: string; role: string }[] = [];
+          let allGood = true;
+          for (const row of r.rows as { id: string; code: string; key: string; shared_schema: string }[]) {
+            const names = clientNames(row.id);
+            if (row.shared_schema !== names.schema) {
+              out(`${row.code}/${row.key}: failed (the stored schema is not this customer's)`);
+              allGood = false;
+            } else targets.push({ label: `${row.code}/${row.key}`, schema: names.schema, role: names.role });
+          }
+          return (await runOn(url, targets)) && allGood ? 0 : 1;
+        }
+
+        need(pos, 2);
+        if (pos.length > 2) fail("upgrade takes a company code and a pipeline key");
+        const c = await customer(pos[0]);
+        const p = await pipeline(c.id, pos[1]);
+        const label = `${pos[0]}/${pos[1]}`;
+        if (p.shared_schema) {
+          const names = clientNames(c.id);
+          if (p.shared_schema !== names.schema) fail("The stored schema is not this customer's.");
+          return (await runOn(sharedUrl(), [{ label, schema: names.schema, role: names.role }])) ? 0 : 1;
+        }
+        if (!p.project_ref) return fail("This CRM is upgraded by the Quantcloud core, not here.");
+        const pwVar = flags.get("--owner-password-from-env");
+        if (typeof pwVar !== "string") return fail("This pipeline has its own database: pass --owner-password-from-env.");
+        const ownerPassword = env[pwVar];
+        if (!ownerPassword) return fail(`environment variable ${pwVar} is not set`);
+        const poolerFlag = flags.get("--pooler");
+        if (typeof poolerFlag !== "string") return fail("--pooler is required for a pipeline with its own database");
+        const pooler = poolerFlag.toLowerCase();
+        if (!POOLER_HOST.test(pooler)) fail("--pooler must be a Supabase pooler host ending in .pooler.supabase.com");
+        if (!PROJECT_REF.test(p.project_ref)) fail("The project on file is not a valid project reference.");
+        const ownerUrl = `postgresql://postgres.${p.project_ref}:${encodeURIComponent(ownerPassword)}@${pooler}:5432/postgres`;
+        return (await runOn(ownerUrl, [{ label, schema: "public", role: deps.appRole ?? "monsoon_app" }])) ? 0 : 1;
       }
       case "script": {
         const { pos, flags } = parseArgs(argv.slice(1), [], ["--login-only"]);
