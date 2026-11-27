@@ -47,6 +47,7 @@ function setup(
     ownerNames?: Record<string, string>;
     person?: { name: string; ownerKey: string };
     granola?: { key: string; onStatus?: (status: "key_rejected" | "no_access") => void };
+    todos?: { viewer: { ownerKey: string; solo: boolean; appOwnerKeys: string[] } };
   } = {},
 ) {
   const calls: Record<string, unknown>[] = [];
@@ -78,6 +79,7 @@ function setup(
     about: extra.about,
     ownerNames: extra.ownerNames,
     ...(extra.granola ? { granola: extra.granola } : {}),
+    ...(extra.todos ? { todos: extra.todos } : {}),
   };
   return { calls, create, timeouts, run: (m: AskMessage[] = Q) => runAsk(deps, m) };
 }
@@ -979,5 +981,44 @@ describe("the about block cannot be made to look finished", () => {
         expect(line.replace(/[^!-~]/g, "")).not.toBe("");
       }
     }
+  });
+});
+
+const TODO_PROMPT =
+  `For "what should I do today" or similar: call list_todos, then list_nudges. Give overdue to-dos first, then today's, then the rest of this week, each ordered by the contact's priority and then by how far along its stage is. Name each to-do and its contact. Then mention up to three contacts from the nudges that need a next step. When asked to prepare the user for a to-do, read the contact and its timeline, then give where things stand in a few lines, talking points, and, when the to-do is a message to send, a draft the user can copy. You never send anything.`;
+
+describe("to-do tools in Ask", () => {
+  const VIEWER = { ownerKey: "AL", solo: true, appOwnerKeys: ["AL"] };
+  const TODO_NAMES = ["list_todos", "list_nudges", "propose_todo", "propose_complete_todo", "propose_move_todo", "propose_drop_todo"];
+
+  it("the prompt gains the to-do paragraph only when the to-do tools are offered", () => {
+    const plain = buildSystem("Traxo", VOCAB, "2026-11-13", ANN);
+    expect(plain).not.toContain("list_todos");
+    const withTodos = buildSystem("Traxo", VOCAB, "2026-11-13", ANN, undefined, undefined, undefined, false, true);
+    expect(withTodos).toBe(`${plain}
+
+${TODO_PROMPT}`);
+    const both = buildSystem("Traxo", VOCAB, "2026-11-13", ANN, undefined, undefined, undefined, true, true);
+    expect(both.endsWith(`
+
+${TODO_PROMPT}`)).toBe(true);
+  });
+
+  it("offers the six to-do tools and passes the viewer to the tools when the CRM is ready", async () => {
+    runTool.mockResolvedValue({ result: { todos: [], total: 0 }, refs: [] });
+    const s = setup([use("tu_1", "list_todos"), text("Nothing due.")], () => 0, { todos: { viewer: VIEWER } });
+    await s.run();
+    const sent = (s.calls[0].tools as { name: string }[]).map((t) => t.name);
+    for (const n of TODO_NAMES) expect(sent).toContain(n);
+    expect(s.calls[0].system).toContain(TODO_PROMPT);
+    expect(runTool.mock.calls[0][0]).toMatchObject({ todos: { viewer: VIEWER } });
+  });
+
+  it("offers none of them, and no paragraph, on an older CRM", async () => {
+    const s = setup([text("Hi.")]);
+    await s.run();
+    const sent = (s.calls[0].tools as { name: string }[]).map((t) => t.name);
+    for (const n of TODO_NAMES) expect(sent).not.toContain(n);
+    expect(s.calls[0].system).not.toContain("list_todos");
   });
 });

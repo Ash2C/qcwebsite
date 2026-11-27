@@ -288,6 +288,7 @@ function changeStatus(
   today: string,
   to: TodoStatus,
   label: string,
+  outcome?: string,
 ): Promise<WriteResult> {
   return withLockedTodo(db, id, async (row) => {
     if (row.status === to) {
@@ -295,14 +296,37 @@ function changeStatus(
       return { value: { status: "already" as const, todo }, commit: false };
     }
     await db.query("UPDATE todos SET status = $1 WHERE id = $2", [to, id]);
-    const todo = (await loadOne(db, viewer, id, today)) as Todo;
+    let todo = (await loadOne(db, viewer, id, today)) as Todo;
     await timeline(db, todo, "system", `${label}: ${todo.title}`, viewer.ownerKey);
+    if (outcome !== undefined) {
+      // Same transaction as the tick: the to-do is never done without the outcome that was asked for.
+      await db.query("UPDATE todos SET outcome = $1 WHERE id = $2", [outcome, id]);
+      todo = (await loadOne(db, viewer, id, today)) as Todo;
+      await timeline(db, todo, "note", `${todo.title}: ${outcome}`, viewer.ownerKey);
+    }
     return { value: { status: "ok" as const, todo }, commit: true };
   });
 }
 
-export function completeTodo(db: ClientBase, id: string, viewer: Viewer, today: string): Promise<WriteResult> {
-  return changeStatus(db, id, viewer, today, "done", "To-do done");
+function checkOutcome(outcome: unknown): { ok: true; text: string } | { ok: false; reason: string } {
+  const text = typeof outcome === "string" ? outcome.trim() : "";
+  if (text.length < 1) return { ok: false, reason: "The outcome is empty." };
+  if (text.length > MAX_OUTCOME) return { ok: false, reason: `The outcome is too long (limit ${MAX_OUTCOME} characters).` };
+  return { ok: true, text };
+}
+
+/** Ticks a to-do off. With an `outcome`, the tick and the outcome are written in one transaction. */
+export async function completeTodo(
+  db: ClientBase,
+  id: string,
+  viewer: Viewer,
+  today: string,
+  outcome?: string,
+): Promise<WriteResult> {
+  if (outcome === undefined) return changeStatus(db, id, viewer, today, "done", "To-do done");
+  const o = checkOutcome(outcome);
+  if (!o.ok) return { status: "invalid", reason: o.reason };
+  return changeStatus(db, id, viewer, today, "done", "To-do done", o.text);
 }
 
 export function dropTodo(db: ClientBase, id: string, viewer: Viewer, today: string): Promise<WriteResult> {
@@ -320,9 +344,9 @@ export async function setOutcome(
   viewer: Viewer,
   today: string,
 ): Promise<WriteResult> {
-  const text = typeof outcome === "string" ? outcome.trim() : "";
-  if (text.length < 1) return { status: "invalid", reason: "The outcome is empty." };
-  if (text.length > MAX_OUTCOME) return { status: "invalid", reason: `The outcome is too long (limit ${MAX_OUTCOME} characters).` };
+  const o = checkOutcome(outcome);
+  if (!o.ok) return { status: "invalid", reason: o.reason };
+  const text = o.text;
   return withLockedTodo(db, id, async (row) => {
     if (row.status !== "done") {
       return { value: { status: "invalid" as const, reason: "Only a to-do that is done can have an outcome." }, commit: false };

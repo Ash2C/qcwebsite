@@ -98,6 +98,50 @@ export type Proposal =
       logMemberId: string | null;
       addsToPipeline: string | null;
       expires: number;
+    }
+  | {
+      kind: "add_todo";
+      customer: string;
+      estate: string;
+      title: string;
+      dueDate: string | null; // YYYY-MM-DD
+      memberId: string | null; // the contact it is filed under, when there is one
+      memberKind: MemberKind | null;
+      memberName: string | null;
+      company: string | null;
+      aboutPersonId: string | null; // a person filed under their company
+      about: string | null;
+      expires: number;
+    }
+  | {
+      kind: "complete_todo";
+      customer: string;
+      estate: string;
+      todoId: string;
+      title: string; // as read when proposed
+      memberName: string | null;
+      outcome: string | null;
+      expires: number;
+    }
+  | {
+      kind: "move_todo";
+      customer: string;
+      estate: string;
+      todoId: string;
+      title: string;
+      memberName: string | null;
+      fromDate: string | null; // YYYY-MM-DD
+      toDate: string | null; // null clears the date
+      expires: number;
+    }
+  | {
+      kind: "drop_todo";
+      customer: string;
+      estate: string;
+      todoId: string;
+      title: string;
+      memberName: string | null;
+      expires: number;
     };
 
 export const PRIORITIES = ["high", "medium", "low"] as const;
@@ -124,6 +168,9 @@ export const MAX_NEXT_ACTION = 300;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_FROM = 2000;
 const MAX_IDENTITY = 400;
+// The to-do limits (todos.ts holds the same two; this file cannot import it without a cycle).
+const MAX_TODO_TITLE = 300;
+const MAX_TODO_OUTCOME = 2000;
 const MAX_URL = 500;
 const RESEARCH_FIELDS: readonly string[] = ["title", "linkedin", "country", "email", "phone", "website"];
 const FINDING_ID_RE = /^f[1-8]$/;
@@ -146,6 +193,10 @@ const KEYS: Record<string, readonly string[]> = {
   set_next_action: [...COMMON, "fromAction", "fromDate", "toAction", "toDate"],
   update_details: ["kind", "customer", "estate", "target", "targetName", "company", "changes", "logMemberId", "addsToPipeline", "expires"],
   apply_research: ["kind", "customer", "estate", "person", "company", "identity", "findings", "summarySources", "logMemberId", "addsToPipeline", "expires"],
+  add_todo: ["kind", "customer", "estate", "title", "dueDate", "memberId", "memberKind", "memberName", "company", "aboutPersonId", "about", "expires"],
+  complete_todo: ["kind", "customer", "estate", "todoId", "title", "memberName", "outcome", "expires"],
+  move_todo: ["kind", "customer", "estate", "todoId", "title", "memberName", "fromDate", "toDate", "expires"],
+  drop_todo: ["kind", "customer", "estate", "todoId", "title", "memberName", "expires"],
 };
 
 function secret(): string {
@@ -247,6 +298,27 @@ function wellFormedResearch(o: Record<string, unknown>): boolean {
   return true;
 }
 
+function wellFormedTodo(o: Record<string, unknown>): boolean {
+  const day = (v: unknown) => v === null || (isString(v) && DAY_RE.test(v));
+  if (!isString(o.title) || o.title.trim() === "" || o.title.length > MAX_TODO_TITLE) return false;
+  if (!isStringOrNull(o.memberName)) return false;
+  if (o.kind === "add_todo") {
+    if (!day(o.dueDate) || !isStringOrNull(o.company) || !isStringOrNull(o.about)) return false;
+    if (o.aboutPersonId !== null && !(isString(o.aboutPersonId) && UUID_RE.test(o.aboutPersonId))) return false;
+    if (o.memberId === null) {
+      // No contact: nothing about one either.
+      return [o.memberKind, o.memberName, o.company, o.aboutPersonId, o.about].every((v) => v === null);
+    }
+    return isString(o.memberId) && UUID_RE.test(o.memberId) && (o.memberKind === "person" || o.memberKind === "company") && o.memberName !== null;
+  }
+  if (!isString(o.todoId) || !UUID_RE.test(o.todoId)) return false;
+  if (o.kind === "complete_todo") {
+    return o.outcome === null || (isString(o.outcome) && o.outcome.trim() !== "" && o.outcome.length <= MAX_TODO_OUTCOME);
+  }
+  if (o.kind === "move_todo") return day(o.fromDate) && day(o.toDate) && o.fromDate !== o.toDate;
+  return true; // drop_todo
+}
+
 function wellFormed(p: unknown): p is Proposal {
   if (typeof p !== "object" || p === null || Array.isArray(p)) return false;
   const o = p as Record<string, unknown>;
@@ -259,6 +331,7 @@ function wellFormed(p: unknown): p is Proposal {
   if (typeof o.expires !== "number" || !Number.isFinite(o.expires)) return false;
   if (o.kind === "update_details") return wellFormedDetails(o);
   if (o.kind === "apply_research") return wellFormedResearch(o);
+  if (o.kind === "add_todo" || o.kind === "complete_todo" || o.kind === "move_todo" || o.kind === "drop_todo") return wellFormedTodo(o);
   if (!isString(o.memberId) || !isString(o.memberName)) return false;
   if (o.memberKind !== "person" && o.memberKind !== "company") return false;
   if (!isStringOrNull(o.company) || !isStringOrNull(o.about)) return false;

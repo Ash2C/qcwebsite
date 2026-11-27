@@ -5,6 +5,8 @@ import type { ActivityAction } from "@/lib/monsoon/accounts/store";
 import { addNote, moveStage, setNextAction, setPriority, setRole } from "@/lib/monsoon/ask/actions";
 import { verifyProposal, type Proposal } from "@/lib/monsoon/ask/proposal";
 import { vocabulary } from "@/lib/monsoon/ask/queries";
+import { carryOutTodo } from "@/lib/monsoon/ask/todo-actions";
+import { resolveToday } from "@/lib/monsoon/today";
 import { readJson } from "@/lib/monsoon/body";
 import { applyDetails, DETAIL_LABELS } from "@/lib/monsoon/details";
 import { applyResearch } from "@/lib/monsoon/research-apply";
@@ -29,6 +31,10 @@ const ACTIVITY: Record<Proposal["kind"], ActivityAction> = {
   set_next_action: "act_details",
   update_details: "act_details",
   apply_research: "act_research",
+  add_todo: "act_details",
+  complete_todo: "act_details",
+  move_todo: "act_details",
+  drop_todo: "act_details",
 };
 
 function bad(error: string) {
@@ -99,6 +105,9 @@ export async function POST(request: Request) {
           }
           throw err;
         }
+      }
+      if (proposal.kind === "add_todo" || proposal.kind === "complete_todo" || proposal.kind === "move_todo" || proposal.kind === "drop_todo") {
+        return carryOutTodo(db, proposal, await account.viewer(), resolveToday(undefined, Date.now()));
       }
       if (proposal.kind === "apply_research") {
         const done = await applyResearch(db, proposal, ticked, text, owner);

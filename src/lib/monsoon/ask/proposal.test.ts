@@ -326,3 +326,58 @@ describe("apply_research proposals", () => {
     expect(verifyProposal(research({ customer: OTHER_CUSTOMER }), sig, NOW)).toBe(false);
   });
 });
+
+describe("to-do proposals", () => {
+  const TODO = "55555555-5555-4555-8555-555555555555";
+  const base = { customer: CUSTOMER, estate: "traxo", expires: NOW + PROPOSAL_TTL_MS };
+  const add = {
+    kind: "add_todo", ...base, title: "Send deck", dueDate: "2026-12-01",
+    memberId: MEMBER, memberKind: "company", memberName: "Northwind Capital", company: null,
+    aboutPersonId: PERSON, about: "Jane Tan",
+  } as Proposal;
+  const addLoose = {
+    kind: "add_todo", ...base, title: "Renew licence", dueDate: null,
+    memberId: null, memberKind: null, memberName: null, company: null, aboutPersonId: null, about: null,
+  } as Proposal;
+  const complete = { kind: "complete_todo", ...base, todoId: TODO, title: "Send deck", memberName: "Jane Tan", outcome: "Sent, she liked it" } as Proposal;
+  const move = { kind: "move_todo", ...base, todoId: TODO, title: "Send deck", memberName: "Jane Tan", fromDate: "2026-12-01", toDate: "2026-12-08" } as Proposal;
+  const drop = { kind: "drop_todo", ...base, todoId: TODO, title: "Send deck", memberName: null } as Proposal;
+  const ok = (p: unknown) => verifyProposal(p, signProposal(p as Proposal), NOW);
+
+  it("round-trips sign and verify for all four kinds", () => {
+    for (const p of [add, addLoose, complete, move, drop]) expect(verifyProposal(p, signProposal(p), NOW)).toBe(true);
+    expect(ok({ ...complete, outcome: null })).toBe(true);
+    expect(ok({ ...move, toDate: null })).toBe(true);
+  });
+
+  it("rejects a changed title or toDate, and any other changed field", () => {
+    for (const p of [add, complete, move, drop]) {
+      expect(verifyProposal({ ...p, title: "Send something else" }, signProposal(p), NOW), p.kind).toBe(false);
+      expect(verifyProposal({ ...p, customer: OTHER_CUSTOMER }, signProposal(p), NOW), p.kind).toBe(false);
+    }
+    expect(verifyProposal({ ...move, toDate: "2026-12-09" }, signProposal(move), NOW)).toBe(false);
+    expect(verifyProposal({ ...move, fromDate: "2026-11-30" }, signProposal(move), NOW)).toBe(false);
+    expect(verifyProposal({ ...complete, outcome: "Other" }, signProposal(complete), NOW)).toBe(false);
+    expect(verifyProposal({ ...add, dueDate: "2026-12-02" }, signProposal(add), NOW)).toBe(false);
+    expect(verifyProposal({ ...add, aboutPersonId: MEMBER }, signProposal(add), NOW)).toBe(false);
+  });
+
+  it("refuses a validly signed proposal of the wrong shape", () => {
+    const bad: unknown[] = [
+      { ...add, title: "" },
+      { ...add, title: "x".repeat(301) },
+      { ...add, dueDate: "2026-02-30x" },
+      { ...add, memberId: "nope" },
+      { ...addLoose, memberName: "Someone" },
+      { ...add, memberKind: "robot" },
+      { ...complete, todoId: "nope" },
+      { ...complete, outcome: "   " },
+      { ...complete, outcome: "x".repeat(2001) },
+      { ...move, fromDate: move.kind === "move_todo" ? move.toDate : null },
+      { ...move, toDate: "tomorrow" },
+      { ...drop, sneaky: 1 },
+      { ...drop, memberName: 5 },
+    ];
+    for (const p of bad) expect(ok(p)).toBe(false);
+  });
+});

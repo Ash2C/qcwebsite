@@ -7,9 +7,12 @@
 import type { ClientBase } from "pg";
 import { DETAIL_LABELS, proposeDetails, type DetailInput } from "../details";
 import { GRANOLA_TIMEOUT_MS, getGranolaNote, searchGranolaNotes, searchGranolaTranscripts, type GranolaFailure } from "../granola/client";
+import { listNudges, type Nudge } from "../nudges";
 import { readSubject } from "../research-subject";
-import { proposeNote, proposeStage, type Target } from "./actions";
+import { listTodos, type TodoContact, type Viewer } from "../todos";
+import { proposeNote, proposeStage, resolve, type Target } from "./actions";
 import type { DetailField, SignedProposal } from "./proposal";
+import { proposeAddTodo, proposeCompleteTodo, proposeDropTodo, proposeMoveTodo } from "./todo-actions";
 import {
   chaseList,
   findContacts,
@@ -51,12 +54,14 @@ export type ToolContext = {
   remainingMs?: () => number;
   /** Set only when the person has a Granola key on file; without it the meeting tools do not exist. */
   granola?: GranolaAccess;
+  /** Set only when the CRM has the to-do table; without it the six to-do tools do not exist. */
+  todos?: { viewer: Viewer };
 };
 /** An offer to research one person; the user runs it from the profile. */
 export type ResearchOffer = { personId: string; name: string; company: string | null };
 export type ToolOutcome = { result: unknown; refs: Ref[]; proposal?: SignedProposal; research?: ResearchOffer };
 
-type Prop = { type: "string" | "integer"; description: string; enum?: string[] };
+type Prop = { type: "string" | "integer"; description: string; enum?: string[]; allowBlank?: boolean };
 type ToolDef = {
   name: string;
   description: string;
@@ -207,12 +212,68 @@ export const GRANOLA_TOOLS: ToolDef[] = [
 const GRANOLA_NAMES = new Set(GRANOLA_TOOLS.map((t) => t.name));
 const WITH_GRANOLA: ToolDef[] = [...TOOLS, ...GRANOLA_TOOLS];
 
-/** The tools sent to the model: the twelve, unchanged, or the twelve and the three meeting tools. */
-export function toolsFor(granola: boolean): ToolDef[] {
-  return granola ? WITH_GRANOLA : TOOLS;
+/**
+ * The tools sent to the model: the twelve, plus the three meeting tools with a Granola key, plus
+ * the six to-do tools when the CRM has the to-do table. Ask has no other way to change a to-do or a
+ * next action, so the model never has two ways to do the same thing.
+ */
+export function toolsFor(granola: boolean, todos = false): ToolDef[] {
+  if (granola && todos) return WITH_BOTH;
+  return granola ? WITH_GRANOLA : todos ? WITH_TODOS : TOOLS;
 }
 
-const SCHEMAS = new Map(WITH_GRANOLA.map((t) => [t.name, t.input_schema]));
+const TODO_ID: Prop = { type: "string", description: "A to-do id taken from a list_todos result." };
+
+/** Offered only when the CRM has the to-do table. Two read the viewer's to-dos; four prepare a change. */
+export const TODO_TOOLS: ToolDef[] = [
+  tool(
+    "list_todos",
+    "List the user's open to-dos, at most 50, in due order, each with its id, due date, due bucket (overdue, today, week, later, undated), how many times it was moved, and its contact with stage, priority and last contact. Optionally only one due bucket, or only one contact's to-dos. Use it for what the user has to do.",
+    { due: { type: "string", description: "A due bucket.", enum: DUE }, member_id: MEMBER_ID, person_id: PERSON_ID },
+  ),
+  tool(
+    "list_nudges",
+    "List contacts that need a next step: those with no open to-do, and important contacts who have gone quiet. Both lists with totals. Use it after list_todos for what to do today, or when asked who needs attention.",
+    {},
+  ),
+  tool(
+    "propose_todo",
+    "Prepare adding a to-do for the user to confirm. Nothing is saved until the user confirms. Use it only when the user asks in their current message to add a to-do or reminder. Give member_id or person_id when it is about a contact.",
+    {
+      title: { type: "string", description: "What to do, 1 to 300 characters." },
+      due_date: { type: "string", description: "The due day, written YYYY-MM-DD. Leave it out for no date.", allowBlank: true },
+      member_id: MEMBER_ID,
+      person_id: PERSON_ID,
+    },
+    ["title"],
+  ),
+  tool(
+    "propose_complete_todo",
+    "Prepare ticking a to-do off for the user to confirm, with an optional outcome. Nothing changes until the user confirms. Use it only when the user asks in their current message to tick off or complete a to-do.",
+    { todo_id: TODO_ID, outcome: { type: "string", description: "What came of it, up to 2,000 characters. Leave it out for none." } },
+    ["todo_id"],
+  ),
+  tool(
+    "propose_move_todo",
+    "Prepare moving a to-do to another day for the user to confirm. Nothing changes until the user confirms. Use it only when the user asks in their current message to move, postpone or reschedule a to-do.",
+    {
+      todo_id: TODO_ID,
+      due_date: { type: "string", description: "The new due day, written YYYY-MM-DD. An empty string clears the date.", allowBlank: true },
+    },
+    ["todo_id", "due_date"],
+  ),
+  tool(
+    "propose_drop_todo",
+    "Prepare dropping a to-do (it no longer needs doing) for the user to confirm. Nothing changes until the user confirms. Use it only when the user asks in their current message to drop or cancel a to-do.",
+    { todo_id: TODO_ID },
+    ["todo_id"],
+  ),
+];
+const TODO_NAMES = new Set(TODO_TOOLS.map((t) => t.name));
+const WITH_TODOS: ToolDef[] = [...TOOLS, ...TODO_TOOLS];
+const WITH_BOTH: ToolDef[] = [...TOOLS, ...GRANOLA_TOOLS, ...TODO_TOOLS];
+
+const SCHEMAS = new Map(WITH_BOTH.map((t) => [t.name, t.input_schema]));
 const DATE_KEYS = new Set(["from_date", "to_date"]);
 const isDay = (v: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`));
 
@@ -234,7 +295,7 @@ function validate(name: string, input: unknown): { ok: true; args: Record<string
     }
     if (prop.type === "string") {
       if (typeof v !== "string") return { ok: false, error: `${key} must be a string.` };
-      if (schema.required.includes(key) && v.trim() === "") return { ok: false, error: `${key} must not be empty.` };
+      if (schema.required.includes(key) && !prop.allowBlank && v.trim() === "") return { ok: false, error: `${key} must not be empty.` };
       if (v.length > 4000) return { ok: false, error: `${key} is too long.` };
       if (prop.enum && !prop.enum.includes(v)) return { ok: false, error: `${key} must be one of: ${prop.enum.join(", ")}.` };
       if (DATE_KEYS.has(key)) {
@@ -298,6 +359,18 @@ export function extractRefs(result: unknown): Ref[] {
 
 function describeChange(p: SignedProposal): string {
   const x = p.proposal;
+  if (x.kind === "add_todo") {
+    const who = x.memberName ? ` for ${x.about ? `${x.about} (${x.memberName})` : x.memberName}` : "";
+    return clip(`Add a to-do${who}: ${x.title}${x.dueDate ? ` (due ${x.dueDate})` : ""}`, 600) as string;
+  }
+  if (x.kind === "complete_todo") {
+    return clip(`Tick off the to-do "${x.title}"${x.memberName ? ` for ${x.memberName}` : ""}${x.outcome ? `, outcome: ${x.outcome}` : ""}`, 600) as string;
+  }
+  if (x.kind === "move_todo") {
+    const to = x.toDate ? `to ${x.toDate}` : "to no date";
+    return clip(`Move the to-do "${x.title}"${x.memberName ? ` for ${x.memberName}` : ""} from ${x.fromDate ?? "no date"} ${to}`, 600) as string;
+  }
+  if (x.kind === "drop_todo") return clip(`Drop the to-do "${x.title}"${x.memberName ? ` for ${x.memberName}` : ""}`, 600) as string;
   if (x.kind === "update_details") {
     const list = x.changes.map((c) => `${DETAIL_LABELS[c.field]}: ${c.from ?? "(empty)"} → ${c.to ?? "(empty)"}`).join("; ");
     return clip(`Update the details of ${x.targetName}: ${list}`, 600) as string;
@@ -460,6 +533,96 @@ async function dispatch(ctx: ToolContext, name: string, a: Record<string, string
   }
 }
 
+const TODO_ROWS = 50;
+
+/** A contact as the model reads it. A person filed under a company is named by the person, with the company beside. */
+function contactRow(c: TodoContact): Record<string, unknown> {
+  const filed = c.aboutPersonId !== null && c.aboutName !== null;
+  return {
+    memberId: c.memberId,
+    memberKind: c.memberKind,
+    name: filed ? c.aboutName : c.name,
+    company: filed ? c.name : c.company,
+    personId: filed ? c.aboutPersonId : c.personId,
+    ...(c.memberKind === "company" && !filed && c.orgId ? { orgId: c.orgId } : {}),
+    stage: c.stageLabel,
+    priority: c.priority,
+    lastContact: c.lastAction ? `${c.lastAction.kind} ${c.lastAction.at.slice(0, 10)}` : "never",
+  };
+}
+
+const nudgeRow = (n: Nudge): Record<string, unknown> => ({ ...contactRow(n.contact), reason: n.kind, quietDays: n.quietDays });
+
+/** The six to-do tools. They read the viewer's to-dos or prepare a signed proposal; nothing is written. */
+async function todoTool(ctx: ToolContext, viewer: Viewer, name: string, a: Record<string, string | number>): Promise<ToolOutcome> {
+  const { db, today } = ctx;
+  const bind = { customer: ctx.customerId, estate: ctx.estate };
+  const opts = ctx.remainingMs ? { timeoutMs: Math.max(1000, ctx.remainingMs() - 3000) } : undefined;
+  const read = (result: unknown): ToolOutcome => ({ result, refs: extractRefs(result) });
+  const target: Target = {
+    ...(typeof a.member_id === "string" ? { memberId: a.member_id } : {}),
+    ...(typeof a.person_id === "string" ? { personId: a.person_id } : {}),
+  };
+  const hasTarget = target.memberId !== undefined || target.personId !== undefined;
+  const text = (key: string): string | null => (typeof a[key] === "string" && (a[key] as string).trim() !== "" ? (a[key] as string).trim() : null);
+  const proposed = (r: Awaited<ReturnType<typeof proposeAddTodo>>): ToolOutcome => {
+    if (!r.ok) return fail(r.reason);
+    return {
+      result: { status: "shown to the user for confirmation; not done yet", change: describeChange(r.signed) },
+      refs: [],
+      proposal: r.signed,
+    };
+  };
+  switch (name) {
+    case "list_todos": {
+      let memberId: string | undefined;
+      let aboutOnly: string | undefined;
+      if (hasTarget) {
+        const found = await resolve(db, target);
+        if (!found.ok) return fail(found.reason);
+        memberId = found.member.memberId;
+        if (found.member.about !== null && typeof target.personId === "string") aboutOnly = target.personId;
+      }
+      const { open } = await listTodos(db, viewer, today, { ...(memberId ? { memberId } : {}), ...opts });
+      const rows = open.filter(
+        (t) => (a.due === undefined || t.due === a.due) && (aboutOnly === undefined || t.contact?.aboutPersonId === aboutOnly),
+      );
+      const shown = rows.slice(0, TODO_ROWS).map((t) => ({
+        id: t.id,
+        title: t.title,
+        dueDate: t.dueDate,
+        due: t.due,
+        ...(t.movedCount > 0 ? { movedCount: t.movedCount } : {}),
+        ...(t.contact ? contactRow(t.contact) : {}),
+      }));
+      return read({
+        todos: slim(shown),
+        total: rows.length,
+        ...(rows.length > TODO_ROWS ? { note: `Showing the first ${TODO_ROWS} of ${rows.length}; ${rows.length - TODO_ROWS} not shown.` } : {}),
+      });
+    }
+    case "list_nudges": {
+      const r = await listNudges(db, viewer, today, opts);
+      return read({
+        noNextStep: slim(r.noNextStep.map(nudgeRow)),
+        quiet: slim(r.quiet.map(nudgeRow)),
+        noNextStepTotal: r.noNextStepTotal,
+        quietTotal: r.quietTotal,
+      });
+    }
+    case "propose_todo":
+      return proposed(await proposeAddTodo(db, bind, hasTarget ? target : undefined, a.title as string, text("due_date"), ctx.nowMs));
+    case "propose_complete_todo":
+      return proposed(await proposeCompleteTodo(db, bind, viewer, a.todo_id as string, text("outcome"), ctx.nowMs));
+    case "propose_move_todo":
+      return proposed(await proposeMoveTodo(db, bind, viewer, a.todo_id as string, text("due_date"), ctx.nowMs));
+    case "propose_drop_todo":
+      return proposed(await proposeDropTodo(db, bind, viewer, a.todo_id as string, ctx.nowMs));
+    default:
+      return fail("Unknown tool.");
+  }
+}
+
 const GRANOLA_REFUSED = "The Granola key was refused.";
 const GRANOLA_DOWN = "Granola could not be reached.";
 const NO_MEETING = "No such meeting.";
@@ -559,9 +722,12 @@ export async function runTool(ctx: ToolContext, name: string, input: unknown): P
   // Without a key the meeting tools are not tools at all, whatever the model asks for.
   const granola = GRANOLA_NAMES.has(name) ? (ctx.granola?.key ? ctx.granola : null) : undefined;
   if (granola === null) return fail("Unknown tool.");
+  // Likewise the to-do tools exist only when the CRM has the to-do table.
+  if (TODO_NAMES.has(name) && !ctx.todos) return fail("Unknown tool.");
   const v = validate(name, input);
   if (!v.ok) return fail(v.error);
   try {
+    if (TODO_NAMES.has(name) && ctx.todos) return await todoTool(ctx, ctx.todos.viewer, name, v.args);
     return granola ? await meetingTool(ctx, granola, name, v.args) : await dispatch(ctx, name, v.args);
   } catch (err) {
     // Tool name, error name and a numeric code or status only: never the message or the arguments.

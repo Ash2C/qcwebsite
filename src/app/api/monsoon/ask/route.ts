@@ -9,6 +9,7 @@ import { getProfile } from "@/lib/monsoon/contacts";
 import type { Ref } from "@/lib/monsoon/ask/tools";
 import { readJson } from "@/lib/monsoon/body";
 import { resolveToday } from "@/lib/monsoon/today";
+import { todosReady } from "@/lib/monsoon/todos";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -204,6 +205,9 @@ export async function POST(request: Request) {
     const pendingGranola = granolaKey(who);
     const result = await account.withDb(estate.key, async (db) => {
       const [viewing, context, granola] = await Promise.all([resolveViewing(db, viewingTarget, today), pendingContext, pendingGranola]);
+      // With the to-do table, Ask is offered the to-do tools for this viewer. A failed check is an
+      // error (answered below), never "not ready".
+      const todos = (await todosReady(db)) ? { viewer: await account.viewer() } : undefined;
       return runAsk(
         {
           db,
@@ -219,6 +223,7 @@ export async function POST(request: Request) {
           startedAt,
           viewing,
           ...(context ? { about: aboutOf(context.page), ownerNames: context.ownerNames } : {}),
+          ...(todos ? { todos } : {}),
           ...(granola !== null ? { granola: { key: granola, onStatus: granolaStatusRecorder(who) } } : {}),
         },
         messages,

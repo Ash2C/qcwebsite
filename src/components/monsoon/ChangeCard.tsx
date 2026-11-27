@@ -27,6 +27,10 @@ export function describeChange(c: AskCard): string {
   const p = c.signed.proposal;
   if (p.kind === "update_details") return `change the details of ${p.targetName}`;
   if (p.kind === "apply_research") return `save research about ${p.person.name}`;
+  if (p.kind === "add_todo") return `add the to-do "${p.title}"`;
+  if (p.kind === "complete_todo") return `tick off the to-do "${p.title}"`;
+  if (p.kind === "move_todo") return `move the to-do "${p.title}"`;
+  if (p.kind === "drop_todo") return `drop the to-do "${p.title}"`;
   if (p.kind === "set_next_action") return p.toAction ? `set the next action for ${p.memberName}` : `clear the next action for ${p.memberName}`;
   if (p.kind === "set_role") return `change the type of ${p.memberName} from ${stageLabel(p.fromRole)} to ${stageLabel(p.toRole)}`;
   if (p.kind === "set_priority") return `change the priority of ${p.memberName} from ${p.fromPriority ?? "none"} to ${p.toPriority ?? "none"}`;
@@ -110,6 +114,27 @@ export default function ChangeCard({
             {`This also adds ${p.targetName} to the pipeline as ${p.addsToPipeline.replace(/_/g, " ")}.`}
           </p>
         )}
+        {status}
+        {buttons(false)}
+      </div>
+    );
+  }
+
+  if (p.kind === "add_todo" || p.kind === "complete_todo" || p.kind === "move_todo" || p.kind === "drop_todo") {
+    const heading = { add_todo: "Add to-do", complete_todo: "Tick off to-do", move_todo: "Move to-do", drop_todo: "Drop to-do" }[p.kind];
+    const date = (v: string | null) => v ?? "No date";
+    const contact = p.kind === "add_todo" && p.about ? `${p.about} (${p.memberName})` : p.memberName;
+    const muted = "break-words text-[15px] text-neutral-500 dark:text-neutral-400";
+    return (
+      <div className={`${cardClass} flex min-w-0 flex-col gap-3 p-4`}>
+        <p className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">{heading}</p>
+        <div className="flex min-w-0 flex-col">
+          <p className="break-words text-[17px] font-semibold leading-snug">{p.title}</p>
+          {contact && <p className={muted}>{contact}</p>}
+        </div>
+        {p.kind === "add_todo" && <p className="break-words text-[17px]">{date(p.dueDate)}</p>}
+        {p.kind === "move_todo" && <p className="break-words text-[17px]">{`${date(p.fromDate)} → ${date(p.toDate)}`}</p>}
+        {p.kind === "complete_todo" && p.outcome && <p className="whitespace-pre-wrap break-words text-[17px]">{p.outcome}</p>}
         {status}
         {buttons(false)}
       </div>

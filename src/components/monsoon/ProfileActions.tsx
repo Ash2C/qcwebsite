@@ -59,72 +59,6 @@ function researchRoleLabel(estate: EstateInfo, key: string | null): string | und
   return key ? estate.roles.find((r) => r.key === key)?.label : undefined;
 }
 
-// The next action and its optional due date. It starts from what is on file; Save sends both, and
-// Clear sends a blank action (which clears the date too). Nothing is sent until one of them is tapped.
-function NextActionForm({
-  action,
-  date,
-  disabled,
-  onSave,
-  onCancel,
-}: {
-  action: string;
-  date: string;
-  disabled: boolean;
-  onSave: (action: string, date: string | null) => void;
-  onCancel: () => void;
-}) {
-  const ids = useId();
-  const [text, setText] = useState(action);
-  const [day, setDay] = useState(date);
-  const unchanged = text.trim() === action.trim() && day === date;
-  const inputClass =
-    "block min-h-[48px] w-full break-words rounded-xl bg-neutral-100 px-4 py-2.5 text-[17px] text-neutral-900 placeholder:text-neutral-400 focus:outline-none dark:bg-white/10 dark:text-white dark:placeholder:text-neutral-500";
-  return (
-    <div className={panelBox}>
-      <div className="flex flex-col gap-1">
-        <label htmlFor={`${ids}-next`} className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-          Next action
-        </label>
-        <input
-          id={`${ids}-next`}
-          type="text"
-          maxLength={300}
-          value={text}
-          disabled={disabled}
-          placeholder="e.g. Send the deck"
-          onChange={(e) => setText(e.target.value)}
-          className={inputClass}
-        />
-      </div>
-      <div className="flex flex-col gap-1">
-        <label htmlFor={`${ids}-due`} className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-          Due date (optional)
-        </label>
-        <input id={`${ids}-due`} type="date" value={day} disabled={disabled} onChange={(e) => setDay(e.target.value)} className={inputClass} />
-      </div>
-      <button
-        type="button"
-        className={primaryButton}
-        disabled={disabled || unchanged || text.trim() === ""}
-        onClick={() => onSave(text.trim(), day === "" ? null : day)}
-      >
-        Save next action
-      </button>
-      <div className={`grid gap-2 ${action.trim() !== "" ? "grid-cols-2" : "grid-cols-1"}`}>
-        {action.trim() !== "" && (
-          <button type="button" className={secondaryButton} disabled={disabled} onClick={() => onSave("", null)}>
-            Clear next action
-          </button>
-        )}
-        <button type="button" className={secondaryButton} disabled={disabled} onClick={onCancel}>
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-}
-
 export default function ProfileActions({
   estate,
   profile,
@@ -503,21 +437,6 @@ export default function ProfileActions({
                 })}
               </div>
             </div>,
-            stagePick.slot,
-          )
-        : null}
-      {stagePick?.open === "next" && stagePick.slot && p.member
-        ? createPortal(
-            <NextActionForm
-              action={p.member.nextAction ?? ""}
-              date={p.member.nextActionDate ?? ""}
-              disabled={busy || openWork}
-              onCancel={stagePick.close}
-              onSave={(action, date) => {
-                stagePick.close();
-                void propose({ kind: "set_next_action", target: timelineTarget, action, date });
-              }}
-            />,
             stagePick.slot,
           )
         : null}

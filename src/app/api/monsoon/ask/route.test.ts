@@ -13,6 +13,8 @@ vi.mock("@/lib/monsoon/accounts/granola-key", () => ({
   readGranolaKeyForAsk: (...a: unknown[]) => readGranolaKeyForAsk(...a),
   recordGranolaStatus: (...a: unknown[]) => recordGranolaStatus(...a),
 }));
+const todosReady = vi.fn();
+vi.mock("@/lib/monsoon/todos", () => ({ todosReady: (...a: unknown[]) => todosReady(...a) }));
 vi.mock("@/lib/monsoon/accounts/account", async () =>
   (await import("@/lib/monsoon/testing/account")).mockRequireAccount(),
 );
@@ -53,6 +55,7 @@ const valid = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   runAsk.mockReset().mockResolvedValue(RESULT);
+  todosReady.mockReset().mockResolvedValue(false);
   getProfile.mockReset();
   loadAskContext.mockReset().mockResolvedValue(null);
   readGranolaKeyForAsk.mockReset().mockResolvedValue(null);
@@ -621,5 +624,30 @@ describe("POST /api/monsoon/ask and the free trial", () => {
     expect(await res.json()).toEqual({ error: "claude_trial_paused" });
     expect(account.aiError).toHaveBeenCalledWith(refusedKey);
     expect(account.noteClaude).toHaveBeenCalledWith(refusedKey);
+  });
+});
+
+describe("POST /api/monsoon/ask: to-do tools", () => {
+  const depsOf = () => runAsk.mock.calls[0][0];
+
+  it("hands runAsk the viewer when the CRM has the to-do table", async () => {
+    todosReady.mockResolvedValue(true);
+    const res = await POST(post(valid()));
+    expect(res.status).toBe(200);
+    expect(todosReady).toHaveBeenCalledWith(fakeDb);
+    expect(depsOf().todos).toEqual({ viewer: { ownerKey: "AL", appOwnerKeys: ["AL"], solo: true } });
+  });
+
+  it("hands it nothing on an older CRM", async () => {
+    await POST(post(valid()));
+    expect(depsOf()).not.toHaveProperty("todos");
+  });
+
+  it("answers 502 rather than guessing when the check itself fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    todosReady.mockRejectedValue(new Error("connection lost"));
+    const res = await POST(post(valid()));
+    expect(res.status).toBe(502);
+    expect(runAsk).not.toHaveBeenCalled();
   });
 });

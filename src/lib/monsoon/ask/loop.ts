@@ -2,6 +2,7 @@
 // the model's final text is the answer. Proposals are collected; nothing here writes anything.
 import type { ClientBase } from "pg";
 import type { SignedProposal } from "./proposal";
+import type { Viewer } from "../todos";
 import { vocabulary, type Vocabulary } from "./queries";
 import { refKey, runTool, toolsFor, type GranolaAccess, type Ref, type ResearchOffer } from "./tools";
 
@@ -169,6 +170,9 @@ const GRANOLA_RULES = `Granola meetings: this user has connected their own Grano
 - If the meeting tools fail, answer from the CRM and say meetings were unavailable.
 - Take meeting ids from meeting tool results; never invent one and never show one to the user.`;
 
+// Added to the prompt only when the CRM has the to-do table and the to-do tools are offered.
+const TODO_RULES = `For "what should I do today" or similar: call list_todos, then list_nudges. Give overdue to-dos first, then today's, then the rest of this week, each ordered by the contact's priority and then by how far along its stage is. Name each to-do and its contact. Then mention up to three contacts from the nudges that need a next step. When asked to prepare the user for a to-do, read the contact and its timeline, then give where things stand in a few lines, talking points, and, when the to-do is a message to send, a draft the user can copy. You never send anything.`;
+
 /**
  * `ownerNames` maps an owner key to that person's name in their Monsoon account. A person can
  * rename themself there and the app never writes to the CRM's owners table, so for a key in the map
@@ -184,6 +188,8 @@ export function buildSystem(
   ownerNames?: Record<string, string>,
   /** True only when the person has a Granola key on file; otherwise the prompt is unchanged. */
   granola?: boolean,
+  /** True only when the to-do tools are offered; otherwise the prompt is unchanged. */
+  todos?: boolean,
 ): string {
   // Own keys only: a key such as "constructor" must not pick up something every object has.
   const accountName = (key: string): string | null => {
@@ -230,7 +236,8 @@ Rules:
 - Use the ids from earlier tool results; never invent an id.
 - When the user dictates a note, the note text is the user's own words, tidied only for grammar. Add no facts from the record, no dates, nothing the user did not say, and do not restate what is already on file.
 - Do not say a person is not in the CRM unless a lookup for that person returned nothing in this turn.`;
-  const rules = granola === true ? `${base}\n\n${GRANOLA_RULES}` : base;
+  const withMeetings = granola === true ? `${base}\n\n${GRANOLA_RULES}` : base;
+  const rules = todos === true ? `${withMeetings}\n\n${TODO_RULES}` : withMeetings;
   // After the rules, so "the rules above" is true of it; before the contact on screen.
   const block = about ? aboutBlock(about) : null;
   const withAbout = block ? `${rules}\n\n${block}` : rules;
@@ -306,6 +313,8 @@ export async function runAsk(
     ownerNames?: Record<string, string>;
     /** The person's own Granola key, when they have one: adds the three meeting tools. */
     granola?: GranolaAccess;
+    /** Set only when the CRM has the to-do table: adds the six to-do tools, for this viewer. */
+    todos?: { viewer: Viewer };
   },
   messages: AskMessage[],
 ): Promise<AskResult> {
@@ -316,8 +325,9 @@ export async function runAsk(
   const vocab = await vocabulary(db);
   // A key with nothing in it is no key: the tools and the prompt stay exactly as without Granola.
   const granola = deps.granola?.key ? deps.granola : undefined;
-  const tools = toolsFor(granola !== undefined);
-  const system = buildSystem(estateLabel, vocab, today, person, deps.viewing, deps.about, deps.ownerNames, granola !== undefined);
+  const todos = deps.todos;
+  const tools = toolsFor(granola !== undefined, todos !== undefined);
+  const system = buildSystem(estateLabel, vocab, today, person, deps.viewing, deps.about, deps.ownerNames, granola !== undefined, todos !== undefined);
   const convo = toModelMessages(messages);
 
   const refs = new Map<string, Ref>();
@@ -374,7 +384,7 @@ export async function runAsk(
       else if (sentChars > MAX_TOTAL_RESULT_CHARS) result = { error: ENOUGH };
       else if (!(name.startsWith("propose_") && proposals.length >= MAX_PROPOSALS)) {
         const out = await runTool(
-          { db, customerId, estate, defaultRole, today, nowMs: now(), remainingMs: remaining, ...(granola ? { granola } : {}) },
+          { db, customerId, estate, defaultRole, today, nowMs: now(), remainingMs: remaining, ...(granola ? { granola } : {}), ...(todos ? { todos } : {}) },
           name,
           use.input,
         );
