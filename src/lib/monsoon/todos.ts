@@ -3,7 +3,7 @@
 // timeline entry for each change in the same transaction. Nothing here deletes.
 import type { ClientBase } from "pg";
 import { resolve, transaction, type Target } from "./ask/actions";
-import { actionTouches, readOnly, type MemberKind, type QueryOptions } from "./ask/queries";
+import { actionTouches, readOnly, type ActionTouch, type MemberKind, type QueryOptions } from "./ask/queries";
 import { ensureOwner } from "./owners";
 import { dueBucket, lastAction, type DueBucket } from "./rules";
 
@@ -86,6 +86,25 @@ const TODO_SELECT = `
     LEFT JOIN orgs o ON o.id = m.org_id
     LEFT JOIN people ap ON ap.id = t.about_person_id`;
 
+/** Builds a TodoContact from a row with the member columns (member_id, kind, name, company, ...) and its action touches. */
+export function contactFromRow(row: Record<string, any>, touches: ActionTouch[]): TodoContact {
+  const last = lastAction(touches);
+  return {
+    memberId: row.member_id,
+    memberKind: row.kind,
+    name: row.name,
+    company: row.company ?? null,
+    personId: row.person_id ?? null,
+    orgId: row.org_id ?? null,
+    aboutPersonId: row.about_person_id ?? null,
+    aboutName: row.about_name ?? null,
+    stage: row.stage,
+    stageLabel: row.stage_label,
+    priority: row.priority ?? null,
+    lastAction: last ? { kind: last.kind, at: last.at } : null,
+  };
+}
+
 /** Runs a to-do SELECT with `where`/`order`/`limit` after it and builds the Todo values. No transaction of its own. */
 async function loadTodos(
   db: ClientBase,
@@ -100,21 +119,7 @@ async function loadTodos(
   return r.rows.map((row) => {
     let contact: TodoContact | null = null;
     if (row.member_id) {
-      const last = lastAction(touches.get(row.member_id) ?? []);
-      contact = {
-        memberId: row.member_id,
-        memberKind: row.kind,
-        name: row.name,
-        company: row.company ?? null,
-        personId: row.person_id ?? null,
-        orgId: row.org_id ?? null,
-        aboutPersonId: row.about_person_id ?? null,
-        aboutName: row.about_name ?? null,
-        stage: row.stage,
-        stageLabel: row.stage_label,
-        priority: row.priority ?? null,
-        lastAction: last ? { kind: last.kind, at: last.at } : null,
-      };
+      contact = contactFromRow(row, touches.get(row.member_id) ?? []);
     }
     return {
       id: row.id,
