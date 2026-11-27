@@ -47,6 +47,7 @@ const USAGE = [
   "  link <code>",
   "  script <code> <pipeline key> [--login-only]",
   "  status",
+  "  ask-review",
   "  people <code>",
   "  suspend|resume <code>",
   "  forget <code>",
@@ -604,6 +605,59 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
           out(`${c.code} | ${c.status} | ${c.people} people | ${pipes || "no pipelines"} | Claude key ${c.has_key ? "set" : "missing"} | key holder ${c.key_person ?? "none"}`);
         }
         if (cs.rowCount === 0) out("No customers.");
+        return 0;
+      }
+      case "ask-review": {
+        parseArgs(argv.slice(1));
+        // Counts only, read-only: nothing here comes from a customer's CRM, and no question or answer is stored anywhere.
+        const failures = ["no_speech", "mic_blocked", "unsupported"];
+        const windows = [7, 30];
+        const cs = await db.query("SELECT id, code FROM customers ORDER BY code");
+        let shown = 0;
+        for (const c of cs.rows) {
+          const counts = async (days: number) => {
+            const a = await db.query(
+              `SELECT count(*) FILTER (WHERE action = 'ask')::int AS questions,
+                      count(*) FILTER (WHERE action = 'speak')::int AS spoken
+                 FROM activity WHERE customer_id = $1 AND at > now() - make_interval(days => $2)`,
+              [c.id, days],
+            );
+            const f = await db.query(
+              `SELECT kind, count(*)::int AS n FROM ask_feedback
+                WHERE customer_id = $1 AND at > now() - make_interval(days => $2) GROUP BY kind`,
+              [c.id, days],
+            );
+            const byKind = new Map<string, number>(f.rows.map((r: { kind: string; n: number }) => [r.kind, r.n]));
+            return { questions: a.rows[0].questions as number, spoken: a.rows[0].spoken as number, byKind };
+          };
+          const rows = await Promise.all(windows.map(counts));
+          const any = rows[1].questions + rows[1].spoken + [...rows[1].byKind.values()].reduce((x, y) => x + y, 0);
+          if (any === 0) continue;
+          shown++;
+          windows.forEach((days, i) => {
+            const r = rows[i];
+            const parts = [
+              `${c.code} | last ${days} days`,
+              `questions ${r.questions}`,
+              `spoken ${r.spoken}`,
+              `up ${r.byKind.get("up") ?? 0}`,
+              `down ${r.byKind.get("down") ?? 0}`,
+              ...failures.map((k) => `${k} ${r.byKind.get(k) ?? 0}`),
+            ];
+            out(parts.join(" | "));
+          });
+          for (const kind of failures) {
+            const d = await db.query(
+              `SELECT left(split_part(detail, ';', 1), 40) AS prefix, count(*)::int AS n
+                 FROM ask_feedback
+                WHERE customer_id = $1 AND kind = $2 AND detail IS NOT NULL AND at > now() - interval '30 days'
+                GROUP BY 1 ORDER BY n DESC, prefix LIMIT 3`,
+              [c.id, kind],
+            );
+            if (d.rowCount) out(`${c.code} | ${kind} details | ${d.rows.map((r: { prefix: string; n: number }) => `${r.prefix} x${r.n}`).join(" | ")}`);
+          }
+        }
+        if (shown === 0) out("No Ask activity or feedback in the last 30 days.");
         return 0;
       }
       case "suspend":

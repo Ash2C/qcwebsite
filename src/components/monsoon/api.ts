@@ -11,6 +11,8 @@ import type { ImportInfo, SiftHit, Sort } from "@/lib/monsoon/sift";
 import type { RowClass } from "@/lib/monsoon/import/classify";
 import type { ImportContact, Mapping } from "@/lib/monsoon/import/mapping";
 import type { SaveOutcome } from "@/lib/monsoon/import/save";
+import type { Caption } from "@/lib/monsoon/ask/speech";
+import type { FeedbackKind } from "@/lib/monsoon/accounts/store";
 import type { SignedProposal } from "@/lib/monsoon/ask/proposal";
 import type { ClaudeKeyState } from "@/lib/monsoon/accounts/claude-key";
 import type { GranolaKeyState } from "@/lib/monsoon/accounts/granola-key";
@@ -164,13 +166,20 @@ export async function refineCard(
   );
 }
 
+/** What Ask answers; `audio` (base64) and `captions` come only for a spoken request and only when speech worked. */
+export type AskReply = AskResult & { audio?: string | null; captions?: Caption[] };
+
 export async function askCrm(body: {
   estate: string;
   today: string;
   messages: AskMessage[];
   /** The contact open on screen, by id only; the server reads the rest itself. */
   viewing?: { memberId?: string; personId?: string; orgId?: string };
-}): Promise<ApiResult<AskResult | { error: string }>> {
+  /** The question was spoken: the answer comes back short, with audio and captions when speech is set up. */
+  spoken?: boolean;
+  /** Sound is on: ask for audio. */
+  sound?: boolean;
+}): Promise<ApiResult<AskReply | { error: string }>> {
   return noted(
     await parse(
       await request(
@@ -180,6 +189,20 @@ export async function askCrm(body: {
       ),
     ),
   );
+}
+
+/** Fire and forget, keepalive; never throws, never awaited by callers. */
+export function sendAskFeedback(body: { estate: string; kind: FeedbackKind; mode: "voice" | "typed"; detail?: string }): void {
+  try {
+    void fetch("/api/monsoon/ask/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      keepalive: true,
+    }).catch(() => undefined);
+  } catch {
+    // Feedback is a courtesy; a failure to send it is never shown.
+  }
 }
 
 export async function actOnCrm(body: {

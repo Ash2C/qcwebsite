@@ -257,6 +257,44 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     expect(text()).toContain("User pages blanked: notes removed 0, work details removed 0, phone and email cleared for 0.");
   });
 
+  it("ask-review counts questions, spoken answers, ratings and failures for 7 and 30 days, and skips older rows", async () => {
+    await run(["customer", "add", "acme", "Acme Ltd"]);
+    await run(["customer", "add", "quiet", "Quiet Ltd"]);
+    const acme = (await client.query("SELECT id FROM customers WHERE code = 'acme'")).rows[0].id;
+    const act = (action: string, days: number, n = 1) =>
+      client.query(
+        "INSERT INTO activity (customer_id, action, at) SELECT $1, $2, now() - make_interval(days => $3) FROM generate_series(1, $4)",
+        [acme, action, days, n],
+      );
+    const fb = (kind: string, days: number, detail: string | null = null, n = 1) =>
+      client.query(
+        "INSERT INTO ask_feedback (customer_id, kind, mode, detail, at) SELECT $1, $2, 'voice', $3, now() - make_interval(days => $4) FROM generate_series(1, $5)",
+        [acme, kind, detail, days, n],
+      );
+    await act("ask", 1, 3);
+    await act("ask", 20, 2);
+    await act("ask", 31, 9);
+    await act("speak", 2, 2);
+    await act("speak", 25);
+    await fb("up", 1, null, 2);
+    await fb("down", 10);
+    await fb("no_speech", 3, "heard nothing; ua 1");
+    await fb("no_speech", 4, "heard nothing; ua 2");
+    await fb("no_speech", 5, "other");
+    await fb("mic_blocked", 40, "old", 4);
+    expect(await run(["ask-review"])).toBe(0);
+    expect(lines[0]).toBe("acme | last 7 days | questions 3 | spoken 2 | up 2 | down 0 | no_speech 3 | mic_blocked 0 | unsupported 0");
+    expect(lines[1]).toBe("acme | last 30 days | questions 5 | spoken 3 | up 2 | down 1 | no_speech 3 | mic_blocked 0 | unsupported 0");
+    expect(lines[2]).toBe("acme | no_speech details | heard nothing x2 | other x1");
+    expect(lines).toHaveLength(3);
+  });
+
+  it("ask-review says so when nothing is in the window", async () => {
+    await run(["customer", "add", "acme", "Acme Ltd"]);
+    expect(await run(["ask-review"])).toBe(0);
+    expect(text()).toBe("No Ask activity or feedback in the last 30 days.");
+  });
+
   it("the first person keeps the Claude key until keyholder names another", async () => {
     await run(["customer", "add", "acme", "Acme Ltd"]);
     await run(["person", "add", "acme", "Ann", "AN"]);

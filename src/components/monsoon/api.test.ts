@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { actOnCrm, addUserNote, askCrm, disconnectGranolaKey, loadGranolaKey, saveGranolaKey, testGranolaKey, loadUserPage, saveUserPage, researchContact, loadEstates, loadProfile, proposeChange, searchContacts, readCards, refineCard, saveCard, signIn, actOnRequest, loadRequests, loadSignInOptions, mapImportColumns, checkImportRows, saveImportRows, loadImports, loadImportContacts, loadTodos, todoAction } from "./api";
+import { actOnCrm, addUserNote, askCrm, disconnectGranolaKey, loadGranolaKey, saveGranolaKey, testGranolaKey, loadUserPage, saveUserPage, researchContact, loadEstates, loadProfile, proposeChange, searchContacts, readCards, refineCard, saveCard, signIn, actOnRequest, loadRequests, loadSignInOptions, mapImportColumns, checkImportRows, saveImportRows, loadImports, loadImportContacts, loadTodos, todoAction, sendAskFeedback } from "./api";
 
 // `fetch` is stubbed: nothing here touches the network.
 const fetchMock = vi.fn();
@@ -308,5 +308,36 @@ describe("client timeouts", () => {
       expect(vi.getTimerCount()).toBe(0);
       expect((fetchMock.mock.calls[0][1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
     });
+  });
+});
+
+describe("Ask voice additions", () => {
+  it("askCrm sends spoken and sound and returns audio with captions", async () => {
+    fetchMock.mockImplementationOnce(
+      async () => new Response(JSON.stringify({ answer: "Hi.", refs: [], proposals: [], audio: "QUJD", captions: [{ text: "Hi.", start: 0, end: 1 }] }), { status: 200 }),
+    );
+    const r = await askCrm({ estate: "traxo", today: "2026-11-13", messages: [], spoken: true, sound: true });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ spoken: true, sound: true });
+    expect("audio" in r.body ? r.body.audio : null).toBe("QUJD");
+  });
+
+  it("sendAskFeedback posts with keepalive and returns nothing", () => {
+    expect(sendAskFeedback({ estate: "traxo", kind: "no_speech", mode: "voice", detail: "x" })).toBeUndefined();
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/monsoon/ask/feedback");
+    expect(init).toMatchObject({ method: "POST", keepalive: true });
+    expect(JSON.parse(init.body)).toEqual({ estate: "traxo", kind: "no_speech", mode: "voice", detail: "x" });
+  });
+
+  it("sendAskFeedback never throws, whether fetch throws or rejects", async () => {
+    fetchMock.mockImplementationOnce(() => {
+      throw new Error("offline");
+    });
+    expect(() => sendAskFeedback({ estate: "traxo", kind: "up", mode: "typed" })).not.toThrow();
+    fetchMock.mockImplementationOnce(async () => {
+      throw new Error("offline");
+    });
+    expect(() => sendAskFeedback({ estate: "traxo", kind: "up", mode: "typed" })).not.toThrow();
+    await Promise.resolve();
   });
 });
