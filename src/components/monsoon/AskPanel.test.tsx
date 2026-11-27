@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import AskPanel, { EMPTY_ASK, type AskState, type AskTurn, type AskViewing } from "./AskPanel";
+import AskPanel, { EMPTY_ASK, prepareMessage, type AskState, type AskTurn, type AskViewing } from "./AskPanel";
 import * as api from "./api";
 
 vi.mock("./api", () => ({ askCrm: vi.fn(), actOnCrm: vi.fn() }));
@@ -1036,6 +1036,31 @@ describe("speaking a question", () => {
       render(<Harness initial={{ turns: [], draft: "half a thought" }} send={{ id: "s1", text: "Prepare" }} />);
       await screen.findByText("Done.");
       expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("half a thought");
+    });
+  });
+
+  describe("prepareMessage", () => {
+    it("is the fixed request, with the due date when there is one", () => {
+      expect(prepareMessage("Jane Tan", "Send deck", "27 Nov")).toBe('Prepare me for this to-do with Jane Tan: "Send deck", due 27 Nov.');
+      expect(prepareMessage("Jane Tan", "Send deck", null)).toBe('Prepare me for this to-do with Jane Tan: "Send deck".');
+    });
+
+    it("a 300-character title fits the box untouched", () => {
+      const title = "x".repeat(300);
+      expect(prepareMessage("Jane Tan", title, "27 Nov")).toContain(`"${title}"`);
+    });
+
+    it("cuts only the quoted title when the whole request would not fit, and the result is sent", async () => {
+      const name = "N".repeat(1800);
+      const title = "t".repeat(300);
+      const text = prepareMessage(name, title, "27 Nov");
+      expect(text.length).toBeLessThanOrEqual(2000);
+      expect(text.startsWith(`Prepare me for this to-do with ${name}: "t`)).toBe(true);
+      expect(text.endsWith('…", due 27 Nov.')).toBe(true);
+      m.askCrm.mockResolvedValue(answer("Ok."));
+      render(<Harness send={{ id: "s1", text }} />);
+      await screen.findByText("Ok.");
+      expect(m.askCrm).toHaveBeenCalledTimes(1);
     });
   });
 });

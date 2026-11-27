@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React, { useState } from "react";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TodoPanel, { EMPTY_TODOS, type TodosState } from "./TodoPanel";
@@ -369,5 +369,66 @@ describe("TodoPanel estate", () => {
     expect(await screen.findByText("Zero One task")).toBeInTheDocument();
     expect(screen.queryByText("Traxo task")).not.toBeInTheDocument();
     expect(m.loadTodos).toHaveBeenLastCalledWith("zeroone");
+  });
+
+  describe("a reply that arrives after the estate was switched", () => {
+    const ZERO = { ...ESTATE, key: "zeroone", label: "Zero One" };
+
+    async function switchWhilePending(user: ReturnType<typeof userEvent.setup>, trigger: () => Promise<void>) {
+      let release: (v: never) => void = () => {};
+      m.todoAction.mockReturnValue(new Promise((r) => (release = r as never)));
+      const view = render(<Harness />);
+      await trigger();
+      m.loadTodos.mockResolvedValue(list([todo({ id: "z1", title: "Zero One task", contact: CONTACT })]));
+      view.rerender(<Harness estate={ZERO} />);
+      await screen.findByText("Zero One task");
+      void user;
+      return release;
+    }
+    const settle = () => act(async () => {});
+
+    it("a saved tick does not open a sheet or change the new estate's list", async () => {
+      const user = userEvent.setup();
+      const t = todo({ id: "a1", title: "Send deck", contact: CONTACT });
+      m.loadTodos.mockResolvedValueOnce(list([t]));
+      const release = await switchWhilePending(user, async () => {
+        await user.click(await screen.findByRole("button", { name: "Mark done: Send deck" }));
+      });
+      await act(async () => release(written({ ...t, status: "done" })));
+      await settle();
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.getByText("Zero One task")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^Done/ })).not.toBeInTheDocument();
+      expect(screen.queryByText("Send deck")).not.toBeInTheDocument();
+    });
+
+    it("a failed tick shows no error and puts no row back in the new estate", async () => {
+      const user = userEvent.setup();
+      const t = todo({ id: "a2", title: "Send deck", contact: CONTACT });
+      m.loadTodos.mockResolvedValueOnce(list([t]));
+      const release = await switchWhilePending(user, async () => {
+        await user.click(await screen.findByRole("button", { name: "Mark done: Send deck" }));
+      });
+      await act(async () => release({ status: 409, body: { error: "It changed." } } as never));
+      await settle();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.queryByText("Send deck")).not.toBeInTheDocument();
+      expect(screen.getByText("Zero One task")).toBeInTheDocument();
+    });
+
+    it("a reopen does not add the old estate's to-do to the new list", async () => {
+      const user = userEvent.setup();
+      const d = todo({ id: "a3", title: "Old thing", status: "done", closedAt: new Date().toISOString() });
+      m.loadTodos.mockResolvedValueOnce({ status: 200, body: { ready: true, open: [], done: [d] } } as never);
+      const release = await switchWhilePending(user, async () => {
+        await user.click(await screen.findByRole("button", { name: /^Done/ }));
+        await user.click(screen.getByRole("button", { name: "Reopen: Old thing" }));
+      });
+      await act(async () => release(written({ ...d, status: "open", closedAt: null })));
+      await settle();
+      expect(screen.queryByText("Old thing")).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.getByText("Zero One task")).toBeInTheDocument();
+    });
   });
 });

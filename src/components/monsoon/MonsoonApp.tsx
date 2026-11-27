@@ -17,7 +17,7 @@ import type { RefineOutput } from "@/lib/monsoon/refine";
 import { loadEstates, loadSignInOptions, readCards, saveCard, signIn, type EstateInfo, type SaveBody, type Todo } from "./api";
 import { shortDate } from "./todoDates";
 import { downsizeImage } from "./image";
-import AskPanel, { EMPTY_ASK, type AskState, type AskViewing } from "./AskPanel";
+import AskPanel, { EMPTY_ASK, prepareMessage, type AskState, type AskViewing } from "./AskPanel";
 import AskSheet from "./AskSheet";
 import ContactsPanel, { EMPTY_CONTACTS, withOpen, withOpenResearch, type ContactsState, type ContactTarget } from "./ContactsPanel";
 import TodoPanel, { EMPTY_TODOS, type TodosState } from "./TodoPanel";
@@ -423,7 +423,7 @@ export default function MonsoonApp() {
     const name = c.aboutPersonId && c.aboutName ? c.aboutName : c.name;
     const company = personId ? (c.aboutPersonId ? c.name : c.company) : null;
     setPrepared({ target, name, company });
-    setSendRequest({ id: crypto.randomUUID(), text: `Prepare me for this to-do with ${name}: "${todo.title}"${todo.dueDate ? `, due ${shortDate(todo.dueDate)}` : ""}.` });
+    setSendRequest({ id: crypto.randomUUID(), text: prepareMessage(name, todo.title, todo.dueDate ? shortDate(todo.dueDate) : null) });
     setAskOpen(true);
   }
 

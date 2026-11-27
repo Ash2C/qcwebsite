@@ -39,6 +39,18 @@ const MIC_DENIED =
   "Monsoon is not allowed to use the microphone. Allow it in the browser settings, or use the microphone on the keyboard.";
 const MIC_FAILED = "Could not listen. Try again, or use the microphone on the keyboard.";
 
+/**
+ * The fixed Prepare me request. A title too long for the question box is cut with an ellipsis, so the
+ * request is always sent; the rest of the message is exact. `due` is already written as "27 Nov" or null.
+ */
+export function prepareMessage(name: string, title: string, due: string | null): string {
+  const head = `Prepare me for this to-do with ${name}: "`;
+  const tail = `"${due ? `, due ${due}` : ""}.`;
+  const room = MAX_DRAFT - head.length - tail.length;
+  const quoted = title.length <= room ? title : `${title.slice(0, Math.max(0, room - 1)).trimEnd()}…`;
+  return `${head}${quoted}${tail}`;
+}
+
 // The phone's local date, never the UTC one.
 export function localDate(): string {
   const d = new Date();

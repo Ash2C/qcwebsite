@@ -93,8 +93,9 @@ export default function ProfileTodos({
 
   const { tick: tickOff, reopen } = useTodoActions({
     estateKey: estate.key,
+    scope,
     onUnauthorized: () => unauthorizedRef.current?.(),
-    current: () => scopeRef.current === scope,
+    current: (started) => scopeRef.current === started,
     problem: setProblem,
     reload,
     ticking: (t) => {

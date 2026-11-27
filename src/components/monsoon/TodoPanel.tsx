@@ -182,26 +182,26 @@ export default function TodoPanel({
   const { tick, reopen } = useTodoActions({
     estateKey: estate.key,
     onUnauthorized: () => unauthorizedRef.current(),
-    current: () => stateRef.current.estate === estate.key,
+    current: (key) => stateRef.current.estate === key,
     problem: setProblem,
-    reload: () => void load(estate.key),
-    ticking: (t) => {
+    reload: (key) => void load(key),
+    ticking: (t, key) => {
       clearUndo();
       setNotice(null);
-      change(estate.key, (s) => ({ open: s.open.filter((x) => x.id !== t.id), done: [{ ...t, status: "done" }, ...s.done.filter((x) => x.id !== t.id)] }));
+      change(key, (s) => ({ open: s.open.filter((x) => x.id !== t.id), done: [{ ...t, status: "done" }, ...s.done.filter((x) => x.id !== t.id)] }));
     },
-    ticked: (saved, t) => {
-      change(estate.key, (s) => ({ done: s.done.map((x) => (x.id === t.id ? saved : x)) }));
+    ticked: (saved, t, key) => {
+      change(key, (s) => ({ done: s.done.map((x) => (x.id === t.id ? saved : x)) }));
       if (t.contact) setSheet(saved);
       else showUndo(saved);
     },
-    tickFailed: (t) =>
-      change(estate.key, (s) => ({
+    tickFailed: (t, key) =>
+      change(key, (s) => ({
         done: s.done.filter((x) => x.id !== t.id),
         open: s.open.some((x) => x.id === t.id) ? s.open : [...s.open, t],
       })),
-    reopened: (back, t) =>
-      change(estate.key, (s) => ({ done: s.done.filter((x) => x.id !== t.id), open: [...s.open.filter((x) => x.id !== t.id), back] })),
+    reopened: (back, t, key) =>
+      change(key, (s) => ({ done: s.done.filter((x) => x.id !== t.id), open: [...s.open.filter((x) => x.id !== t.id), back] })),
   });
 
   /** Not now: the row goes at once and comes back, with the reason, if the call fails. */
