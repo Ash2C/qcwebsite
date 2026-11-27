@@ -196,6 +196,10 @@ async function upgradeSchema(conn: ClientBase, schema: string, role: string, fil
       await conn.query("COMMIT");
       return `already at ${cur}`;
     }
+    // Every version up to the newest must be on disk before anything is applied.
+    for (let v = cur + 1; v <= CRM_LATEST_VERSION; v++) {
+      if (!files.some((f) => f.version === v)) fail(`the schema file for version ${v} is missing; run this from the app checkout root`);
+    }
     for (const f of files.filter((x) => x.version > cur)) {
       await conn.query(f.sql);
       await conn.query("INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING", [f.version]);

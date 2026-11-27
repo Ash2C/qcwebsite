@@ -1,7 +1,8 @@
-import { readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "pg";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashToken, verifyPasscode } from "@/lib/monsoon/accounts/crypto";
 import { clientNames } from "@/lib/monsoon/accounts/shared-names";
 import { makeAccountsTestDb, makeTestDb, makeV1TestDb, testRoleName } from "@/lib/monsoon/testing/db";
@@ -1037,6 +1038,29 @@ describe.skipIf(!db.available)("monsoon admin", () => {
         await d.query(`SET search_path TO ${schema}`);
         expect((await d.query("SELECT max(version)::int AS v FROM schema_migrations")).rows[0].v).toBe(1);
         expect((await d.query("SELECT count(*)::int AS n FROM information_schema.columns WHERE table_schema = $1 AND column_name = 'nudge_after'", [schema])).rows[0].n).toBe(0);
+      } finally {
+        await d.end();
+      }
+    });
+
+    it("refuses, changing nothing, when the schema files on disk stop short of the newest version", async () => {
+      const { schema } = await sharedV1("acme");
+      // A checkout that only has 0001: the run must not print 1 -> 2 or record anything.
+      const stale = mkdtempSync(join(tmpdir(), "monsoon-upgrade-"));
+      try {
+        mkdirSync(join(stale, "src", "lib", "monsoon", "testing"), { recursive: true });
+        copyFileSync(join(process.cwd(), "src/lib/monsoon/testing/0001_init.sql"), join(stale, "src/lib/monsoon/testing/0001_init.sql"));
+        vi.spyOn(process, "cwd").mockReturnValue(stale);
+        expect(await upgrade(["acme", "main"], { MONSOON_SHARED_DB_ADMIN_URL: SHARED_URL })).toBe(1);
+      } finally {
+        vi.restoreAllMocks();
+        rmSync(stale, { recursive: true, force: true });
+      }
+      expect(lines).toEqual(["acme/main: failed (the schema file for version 2 is missing; run this from the app checkout root)"]);
+      const d = await crm.connect();
+      try {
+        await d.query(`SET search_path TO ${schema}`);
+        expect((await d.query("SELECT max(version)::int AS v FROM schema_migrations")).rows[0].v).toBe(1);
       } finally {
         await d.end();
       }
