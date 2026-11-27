@@ -26,7 +26,8 @@ vi.mock("@/lib/monsoon/accounts/account", async () =>
 import type { Account } from "@/lib/monsoon/accounts/account";
 import { TrialPaused } from "@/lib/monsoon/accounts/not-connected";
 import { fakeAccount, signInAs, signOut } from "@/lib/monsoon/testing/account";
-import { MAX_SPOKEN_CHARS, POST, SPOKEN_DAILY_LIMIT } from "./route";
+import { MAX_SPOKEN_CHARS, SPOKEN_DAILY_LIMIT } from "@/lib/monsoon/ask/speech";
+import { POST } from "./route";
 
 const fakeDb = { fake: true };
 const fakeMessages = { create: vi.fn() };

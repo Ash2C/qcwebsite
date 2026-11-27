@@ -4,6 +4,11 @@
 
 export const SPEECH_TIMEOUT_MS = 8_000;
 
+/** Spoken answers with audio, per person per 24 hours; beyond it the answer comes as captions only. */
+export const SPOKEN_DAILY_LIMIT = 150;
+/** Longest answer sent to the paid speech service; a longer one gets captions only. */
+export const MAX_SPOKEN_CHARS = 700;
+
 /** Added to the reader's question for a spoken reply. */
 export const SPOKEN_REPLY_INSTRUCTION =
   "Spoken reply: this answer is read aloud and shown as captions. Answer in at most 70 words, in two to four short spoken sentences. No lists, headings, markdown or brackets. Say names in full and dates the way they are spoken. When there are more than three items, give the three that matter most and say how many more there are. If you propose a change, say that a card is waiting to be confirmed, and never say the change is done.";

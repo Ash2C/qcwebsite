@@ -7,7 +7,14 @@ import { loadAskContext, type AskContext, type UserPage, type Who } from "@/lib/
 import { readGranolaKeyForAsk, recordGranolaStatus } from "@/lib/monsoon/accounts/granola-key";
 import { getProfile } from "@/lib/monsoon/contacts";
 import type { Ref } from "@/lib/monsoon/ask/tools";
-import { captionsFor, speak, speechConfigured, type Caption } from "@/lib/monsoon/ask/speech";
+import {
+  captionsFor,
+  MAX_SPOKEN_CHARS,
+  speak,
+  speechConfigured,
+  SPOKEN_DAILY_LIMIT,
+  type Caption,
+} from "@/lib/monsoon/ask/speech";
 import { readJson } from "@/lib/monsoon/body";
 import { resolveToday } from "@/lib/monsoon/today";
 import { todosReady } from "@/lib/monsoon/todos";
@@ -15,11 +22,6 @@ import { todosReady } from "@/lib/monsoon/todos";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
-
-/** Spoken answers with audio, per person per 24 hours; beyond it the answer comes as captions only. */
-export const SPOKEN_DAILY_LIMIT = 150;
-/** Longest answer sent to the paid speech service; a longer one gets captions only. */
-export const MAX_SPOKEN_CHARS = 700;
 
 const MAX_BODY = 262_144;
 const MAX_MESSAGES = 30;
