@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CardFields, CardKind } from "@/lib/monsoon/extract";
 import type { CardMatch } from "@/lib/monsoon/match";
 import type { CaptureResult } from "@/lib/monsoon/capture";
-import type { RefineOutput } from "@/lib/monsoon/refine";
+import type { OfferedTodo, RefineOutput } from "@/lib/monsoon/refine";
 import { loadEstates, loadSignInOptions, readCards, saveCard, signIn, type EstateInfo, type SaveBody, type Todo } from "./api";
 import { shortDate } from "./todoDates";
 import { downsizeImage } from "./image";
@@ -28,6 +28,7 @@ import PromptButtons from "./PromptButtons";
 import MatchLine, { type MatchChoice } from "./MatchLine";
 import { changeOf, choiceAfter, confidentId, NEEDS_CHOICE_HINT, needsChoice } from "./matchState";
 import { mergeRefine, type Snapshot } from "./merge";
+import OfferedTodos, { appendOffered } from "./OfferedTodos";
 import SpeakNotes from "./SpeakNotes";
 import { card, fieldInput, fieldLabel, primaryButton, primaryLink, secondaryButton } from "./styles";
 
@@ -146,7 +147,13 @@ export default function MonsoonApp() {
   // Spoken notes: the draft survives a 401; the snapshot lets Undo restore the form, and
   // `changed` lists the fields still highlighted (a hand edit drops just that field).
   const [spokenDraft, setSpokenDraft] = useState("");
-  const [beforeRefine, setBeforeRefine] = useState<{ form: Form; changed: FormKey[] } | null>(null);
+  const [beforeRefine, setBeforeRefine] = useState<{ form: Form; changed: FormKey[]; offered: OfferedTodo[] } | null>(null);
+  // To-dos the tidy offered, kept here with the rest of the form so a tab switch does not lose them.
+  // The generation restarts the list's own Undo whenever the form is cleared.
+  const [offered, setOffered] = useState<OfferedTodo[]>([]);
+  const [offeredGen, setOfferedGen] = useState(0);
+  const offeredRef = useRef(offered);
+  offeredRef.current = offered;
   const [tidying, setTidying] = useState(false);
   // Bumped whenever the form is cleared or replaced; a tidy result stamped with an older value is dropped.
   const genRef = useRef(0);
@@ -333,6 +340,8 @@ export default function MonsoonApp() {
     genRef.current += 1;
     setBeforeRefine(null);
     setSpokenDraft("");
+    setOffered([]);
+    setOfferedGen((g) => g + 1);
   }
 
   // Nothing is saved here. The first snapshot is kept across repeated applies.
@@ -344,10 +353,12 @@ export default function MonsoonApp() {
     const merged: Form = { ...cur, ...next.fields, notes: next.notes };
     setForm(merged);
     matchStale(cur, merged);
+    const offeredBefore = offeredRef.current;
+    if (estate?.todos) setOffered(appendOffered(offeredBefore, result.todos));
     setBeforeRefine((prev) => {
       const base = prev?.form ?? cur;
       const keys = Object.keys(merged) as FormKey[];
-      return { form: base, changed: keys.filter((k) => merged[k] !== base[k]) };
+      return { form: base, changed: keys.filter((k) => merged[k] !== base[k]), offered: prev?.offered ?? offeredBefore };
     });
     dropPrompt();
     setNewOrg(false);
@@ -358,6 +369,7 @@ export default function MonsoonApp() {
     if (!beforeRefine) return;
     setForm(beforeRefine.form);
     matchStale(form, beforeRefine.form);
+    setOffered(beforeRefine.offered);
     setBeforeRefine(null);
     dropPrompt();
     setNewOrg(false);
@@ -529,6 +541,7 @@ export default function MonsoonApp() {
       fields,
       ...(extracted ? { extracted } : {}),
       ...(kind ? { kind } : {}),
+      ...(estate.todos && offered.length > 0 ? { todos: offered } : {}),
     };
     const wantNewOrg = overrides?.newOrg ?? newOrg;
     if (wantNewOrg) body.newOrg = true;
@@ -1099,6 +1112,9 @@ export default function MonsoonApp() {
                     }}
                     disabled={busy}
                   />
+                  {estate?.todos && (
+                    <OfferedTodos key={offeredGen} todos={offered} onChange={setOffered} disabled={busy} />
+                  )}
                   {beforeRefine && (
                     <button type="button" disabled={tidying} className={secondaryButton} onClick={undoRefine}>
                       Undo

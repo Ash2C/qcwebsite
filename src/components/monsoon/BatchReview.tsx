@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { CardFields, CardKind } from "@/lib/monsoon/extract";
 import type { CardMatch } from "@/lib/monsoon/match";
-import type { RefineOutput } from "@/lib/monsoon/refine";
+import type { OfferedTodo, RefineOutput } from "@/lib/monsoon/refine";
 import { saveCard, type EstateInfo, type SaveBody } from "./api";
 import { changedClass, notesRows, Was } from "./Highlight";
 import { describeResult, type SavePrompt } from "./outcomes";
@@ -11,6 +11,7 @@ import MatchLine, { type MatchChoice } from "./MatchLine";
 import { changeOf, choiceAfter, confidentId, matchTag, NEEDS_CHOICE_HINT, needsChoice } from "./matchState";
 import PromptButtons from "./PromptButtons";
 import { mergeRefine, type Snapshot } from "./merge";
+import OfferedTodos, { appendOffered } from "./OfferedTodos";
 import SpeakNotes from "./SpeakNotes";
 import { card, fieldInput, fieldLabel, FIELD_ROWS, primaryButton, secondaryButton, type FieldKey } from "./styles";
 
@@ -35,7 +36,9 @@ export type BatchRow = {
   spoken?: string; // dictation draft for this card
   // Snapshot taken by the first spoken-notes apply, for Undo. `notes` is the override then
   // (undefined = the batch note); `changed` lists the fields still highlighted.
-  before?: { fields: Record<FieldKey, string>; notes?: string; changed: (FieldKey | "notes")[] };
+  before?: { fields: Record<FieldKey, string>; notes?: string; changed: (FieldKey | "notes")[]; offered?: OfferedTodo[] };
+  // To-dos a tidy offered for this card; sent with its save, and gone with a discarded card.
+  offered?: OfferedTodo[];
 };
 export type Batch = { rows: BatchRow[]; role: string; note: string };
 
@@ -191,7 +194,7 @@ export default function BatchReview({
         if (r.id !== id || r.status === "saving" || r.status === "saved") return r;
         const nowNotes = r.notes ?? prev.note;
         const next = mergeRefine({ fields: r.fields, notes: nowNotes }, sent, result);
-        const base = r.before ?? { fields: r.fields, notes: r.notes, changed: [] };
+        const base = r.before ?? { fields: r.fields, notes: r.notes, changed: [], offered: r.offered };
         const wasNotes = base.notes ?? prev.note;
         const changed: (FieldKey | "notes")[] = FIELD_ROWS.map((f) => f.key).filter(
           (k) => next.fields[k] !== base.fields[k],
@@ -216,7 +219,8 @@ export default function BatchReview({
           fields: { ...next.fields },
           // Notes equal to what the card already shows stay on "Same as batch".
           notes: next.notes === nowNotes ? r.notes : next.notes,
-          before: { fields: base.fields, notes: base.notes, changed },
+          before: { fields: base.fields, notes: base.notes, changed, offered: base.offered },
+          ...(estate.todos ? { offered: appendOffered(r.offered ?? [], result.todos) } : {}),
         };
       }),
     }));
@@ -237,7 +241,7 @@ export default function BatchReview({
             samePerson: choiceAfter(row.samePerson, change === "same" ? "person" : change),
           }
         : {};
-    patchRow(row.id, { ...reset, ...stale, fields: row.before.fields, notes: row.before.notes, before: undefined });
+    patchRow(row.id, { ...reset, ...stale, fields: row.before.fields, notes: row.before.notes, offered: row.before.offered, before: undefined });
   }
 
   // Saves one row. Resolves false when the loop must stop (401).
@@ -262,6 +266,7 @@ export default function BatchReview({
       newOrg: row.newOrg || undefined,
       // A prompt answer wins over the match choice; nothing chosen sends nothing.
       samePerson: row.samePerson ?? row.choice,
+      ...(estate.todos && row.offered?.length ? { todos: row.offered } : {}),
     };
     const failed = (message: string) => patchRow(row.id, { status: "failed", message });
     try {
@@ -290,7 +295,7 @@ export default function BatchReview({
           estateLabel: estate.label,
           roleLabel: (key) => estate.roles.find((r) => r.key === key)?.label ?? key,
         });
-        if (out.kind === "done") patchRow(row.id, { status: "saved", message: out.text, before: undefined, spoken: undefined });
+        if (out.kind === "done") patchRow(row.id, { status: "saved", message: out.text, before: undefined, spoken: undefined, offered: undefined });
         else if (out.kind === "prompt") patchRow(row.id, { status: "needs", message: out.text, prompt: out.prompt });
         else patchRow(row.id, { status: "needs", message: out.text });
       } else if (res.status === 400) {
@@ -436,6 +441,7 @@ export default function BatchReview({
                   onApply={(next, sent) => applyRefine(row.id, next, sent)}
                   onBusy={(b) => setRowBusy(row.id, b)}
                   onUndo={() => undoRefine(row)}
+                  onOffered={(offered) => patchRow(row.id, { offered })}
                   onUnauthorized={onUnauthorized}
                   onRemove={() => remove(row)}
                 />
@@ -492,6 +498,7 @@ function RowEditor({
   onApply,
   onBusy,
   onUndo,
+  onOffered,
   onUnauthorized,
   onRemove,
 }: {
@@ -511,6 +518,7 @@ function RowEditor({
   onApply: (next: RefineOutput, sent: Snapshot) => void;
   onBusy: (busy: boolean) => void;
   onUndo: () => void;
+  onOffered: (todos: OfferedTodo[]) => void;
   onUnauthorized: () => void;
   onRemove: () => void;
 }) {
@@ -589,6 +597,13 @@ function RowEditor({
       </div>
       {row.status !== "saved" && (
         <div className="flex flex-col gap-2 p-3">
+          {estate.todos && (
+            <OfferedTodos
+              todos={row.offered ?? []}
+              onChange={onOffered}
+              disabled={running || row.status === "saving" || tidying}
+            />
+          )}
           <SpeakNotes
             fields={row.fields}
             notes={row.notes ?? batchNote}

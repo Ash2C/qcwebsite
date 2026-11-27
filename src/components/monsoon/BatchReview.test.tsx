@@ -40,7 +40,9 @@ function Harness({
   matches = null,
   handlers,
   onOpenProfile,
+  estate = ESTATE,
 }: {
+  estate?: EstateInfo;
   cards: ReturnType<typeof cardOf>[];
   matches?: (CardMatch | null)[] | null;
   handlers: Handlers;
@@ -50,7 +52,7 @@ function Harness({
   setBatchOutside = setBatch;
   return (
     <BatchReview
-      estate={ESTATE}
+      estate={estate}
       batch={batch}
       onChange={(next) => setBatch((prev) => (typeof next === "function" ? next(prev) : next))}
       onUnauthorized={handlers.onUnauthorized}
@@ -62,6 +64,9 @@ function Harness({
 }
 
 let handlers: Handlers;
+function showWith(estate: EstateInfo) {
+  render(<Harness cards={[JANE]} handlers={handlers} estate={estate} />);
+}
 function show(cards = [JANE, BOB, CY], matches: (CardMatch | null)[] | null = null, onOpenProfile?: (id: string) => void) {
   render(<Harness cards={cards} matches={matches} handlers={handlers} onOpenProfile={onOpenProfile} />);
 }
@@ -471,6 +476,69 @@ describe("BatchReview", () => {
       expect(jane.fields.notes).toBe("Now CIO.\nCall next week.");
       expect(bob.fields.title).toBe("");
       expect(bob.fields.notes).toBe("met at demo day");
+    });
+
+    describe("offered to-dos", () => {
+      const SEND = { title: "Send the deck", due: "2026-11-27" };
+      const CALL = { title: "Call back", due: null };
+      // Echoes what the card sent, so only the offered to-dos differ.
+      const offering = (todos: { title: string; due: string | null }[]) => async (b: { fields: unknown; notes: string }) =>
+        ({ status: 200, body: { fields: b.fields, notes: b.notes, todos } }) as never;
+
+      it("each card keeps its own list, and save all sends each one's", async () => {
+        const user = userEvent.setup();
+        m.refineCard.mockImplementationOnce(offering([SEND, CALL]) as never).mockImplementationOnce(offering([CALL]) as never);
+        m.saveCard.mockResolvedValue(added);
+        show([JANE, BOB]);
+        await open(user, "Jane Tan");
+        await speak(user, "a");
+        await screen.findByText("Send the deck · 27 Nov");
+        await user.click(screen.getByRole("button", { name: "Remove to-do: Call back" }));
+        await open(user, "Bob Lee");
+        await speak(user, "b");
+        await screen.findByText("Call back · no date");
+        expect(screen.queryByText("Send the deck · 27 Nov")).toBeNull();
+        await user.click(screen.getByRole("button", { name: "Save all (2)" }));
+        await screen.findByText("2 saved to Traxo.");
+        const [jane, bob] = m.saveCard.mock.calls.map((c) => c[0]);
+        expect(jane.todos).toEqual([SEND]);
+        expect(bob.todos).toEqual([CALL]);
+      });
+
+      it("Undo of the tidy takes its to-dos away, and a failed save keeps them for the retry", async () => {
+        const user = userEvent.setup();
+        m.refineCard.mockImplementation(offering([SEND]) as never);
+        show([JANE]);
+        await open(user, "Jane Tan");
+        await speak(user, "a");
+        await screen.findByText("Send the deck · 27 Nov");
+        await user.click(screen.getByRole("button", { name: "Undo" }));
+        expect(screen.queryByText("Send the deck · 27 Nov")).toBeNull();
+        await speak(user, "a");
+        await screen.findByText("Send the deck · 27 Nov");
+        m.saveCard.mockResolvedValueOnce({ status: 500, body: {} } as never).mockResolvedValueOnce(added);
+        await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+        await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(1));
+        expect(await screen.findByText("Send the deck · 27 Nov")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: /Save all/ }));
+        await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(2));
+        expect(m.saveCard.mock.calls[1][0].todos).toEqual([SEND]);
+      });
+
+      it("shows nothing and sends nothing when the estate has no to-dos", async () => {
+        const user = userEvent.setup();
+        m.refineCard.mockImplementation(offering([SEND]) as never);
+        m.saveCard.mockResolvedValue(added);
+        showWith({ ...ESTATE, todos: false });
+        await open(user, "Jane Tan");
+        await speak(user, "a");
+        await waitFor(() => expect(m.refineCard).toHaveBeenCalledTimes(1));
+        await screen.findByRole("button", { name: "Undo" });
+        expect(screen.queryByText("Send the deck · 27 Nov")).toBeNull();
+        await user.click(screen.getByRole("button", { name: "Save all (1)" }));
+        await screen.findByText("1 saved to Traxo.");
+        expect(m.saveCard.mock.calls[0][0]).not.toHaveProperty("todos");
+      });
     });
 
     it("Undo on a card restores it", async () => {

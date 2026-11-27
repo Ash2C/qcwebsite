@@ -83,6 +83,24 @@ describe("SpeakNotes", () => {
     expect(screen.getByRole("button", { name: "Speak notes" })).toBeInTheDocument();
   });
 
+  it("hands the offered to-dos on with the result, and Use as typed offers none", async () => {
+    const user = userEvent.setup();
+    const todos = [{ title: "Send the deck", due: "2026-11-27" }];
+    m.refineCard.mockResolvedValueOnce({ status: 200, body: { ...RESULT, todos } });
+    render(<Harness />);
+    await openIt(user);
+    await user.type(screen.getByRole("textbox"), "send the deck on Friday");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => expect(onApply).toHaveBeenCalledTimes(1));
+    expect(onApply.mock.calls[0][0].todos).toEqual(todos);
+    m.refineCard.mockRejectedValueOnce(new Error("down"));
+    await openIt(user);
+    await user.type(screen.getByRole("textbox"), "again");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await user.click(await screen.findByRole("button", { name: "Use as typed" }));
+    expect(onApply.mock.calls[1][0].todos).toEqual([]);
+  });
+
   it("Cancel closes and keeps the draft", async () => {
     const user = userEvent.setup();
     render(<Harness />);

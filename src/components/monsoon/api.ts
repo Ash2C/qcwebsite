@@ -139,10 +139,12 @@ export async function readCards(
 export async function saveCard(
   body: SaveBody,
 ): Promise<ApiResult<CaptureResult | { error: string }>> {
+  // Offered to-dos always travel with the browser's local day, so every caller gets it.
+  const sent = body.todos?.length ? { ...body, today: localDay() } : body;
   return parse(
     await request(
       "/api/monsoon/save",
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sent) },
       TIMEOUT_MS.standard,
     ),
   );

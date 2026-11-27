@@ -1265,6 +1265,118 @@ describe("MonsoonApp", () => {
       expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
     });
 
+    describe("offered to-dos", () => {
+      const SEND = { title: "Send the deck", due: "2026-11-27" };
+      const CALL = { title: "Call back", due: null };
+      const withTodos = (todos: { title: string; due: string | null }[], notes = "Now CIO.") =>
+        ({ status: 200, body: { fields: { ...FIELDS, title: "CIO" }, notes, todos } }) as never;
+      const added = { status: 200, body: { outcome: "added", person: "p", org: null } } as never;
+
+      it("shows what the tidy offered, and saving sends the ones left", async () => {
+        const user = userEvent.setup();
+        m.refineCard.mockResolvedValue(withTodos([SEND, CALL]));
+        m.saveCard.mockResolvedValue(added);
+        await loadCard(user);
+        await speak(user, "x");
+        expect(await screen.findByText("Send the deck · 27 Nov")).toBeInTheDocument();
+        expect(screen.getByText("Call back · no date")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Remove to-do: Call back" }));
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(1));
+        expect(m.saveCard.mock.calls[0][0].todos).toEqual([SEND]);
+        await screen.findByText(/Saved|saved|Added|added/);
+        expect(screen.queryByRole("heading", { name: "To do" })).toBeNull();
+        expect(screen.queryByText("Send the deck · 27 Nov")).toBeNull();
+      });
+
+      it("Undo brings a removed to-do back", async () => {
+        const user = userEvent.setup();
+        m.refineCard.mockResolvedValue(withTodos([SEND, CALL]));
+        m.saveCard.mockResolvedValue(added);
+        await loadCard(user);
+        await speak(user, "x");
+        await user.click(await screen.findByRole("button", { name: "Remove to-do: Send the deck" }));
+        const undos = screen.getAllByRole("button", { name: "Undo" });
+        await user.click(undos[0]);
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(1));
+        expect(m.saveCard.mock.calls[0][0].todos).toEqual([SEND, CALL]);
+      });
+
+      it("a second tidy offering the same title does not duplicate it", async () => {
+        const user = userEvent.setup();
+        m.refineCard
+          .mockResolvedValueOnce(withTodos([SEND]))
+          .mockResolvedValueOnce(withTodos([SEND, CALL], "More."));
+        await loadCard(user);
+        await speak(user, "x");
+        await screen.findByText("Send the deck · 27 Nov");
+        await speak(user, "y");
+        await screen.findByText("Call back · no date");
+        expect(screen.getAllByText("Send the deck · 27 Nov")).toHaveLength(1);
+      });
+
+      it("undoing the tidy takes the to-dos it offered away", async () => {
+        const user = userEvent.setup();
+        m.refineCard.mockResolvedValue(withTodos([SEND]));
+        await loadCard(user);
+        await speak(user, "x");
+        await screen.findByText("Send the deck · 27 Nov");
+        await user.click(screen.getByRole("button", { name: "Undo" }));
+        expect(screen.queryByText("Send the deck · 27 Nov")).toBeNull();
+      });
+
+      it("a failed save keeps them on screen, and the retry sends them again", async () => {
+        const user = userEvent.setup();
+        m.refineCard.mockResolvedValue(withTodos([SEND]));
+        m.saveCard
+          .mockResolvedValueOnce({ status: 500, body: { error: "no" } } as never)
+          .mockResolvedValueOnce(added);
+        await loadCard(user);
+        await speak(user, "x");
+        await screen.findByText("Send the deck · 27 Nov");
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await screen.findByText(/Could not save/);
+        expect(screen.getByText("Send the deck · 27 Nov")).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(2));
+        expect(m.saveCard.mock.calls[1][0].todos).toEqual([SEND]);
+      });
+
+      it("keeps them when switching tab and back", async () => {
+        const user = userEvent.setup();
+        m.refineCard.mockResolvedValue(withTodos([SEND]));
+        m.searchContacts.mockResolvedValue({ status: 200, body: { results: [] } } as never);
+        await loadCard(user);
+        await speak(user, "x");
+        await screen.findByText("Send the deck · 27 Nov");
+        await user.click(screen.getByRole("button", { name: "Contacts" }));
+        await user.click(screen.getByRole("button", { name: "Capture" }));
+        expect(await screen.findByText("Send the deck · 27 Nov")).toBeInTheDocument();
+      });
+
+      it("shows nothing and sends nothing when the estate has no to-dos", async () => {
+        const user = userEvent.setup();
+        m.loadEstates.mockResolvedValue({
+          status: 200,
+          body: { ...ESTATES, estates: [{ ...ESTATES.estates[0], todos: false }, ESTATES.estates[1]] },
+        });
+        m.refineCard.mockResolvedValue(withTodos([SEND]));
+        m.saveCard.mockResolvedValue(added);
+        m.readCards.mockResolvedValue({ status: 200, body: { cards: [CARD] } });
+        render(<MonsoonApp />);
+        await ready();
+        await pickPhoto(user);
+        await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan"));
+        await speak(user, "x");
+        await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue("CIO"));
+        expect(screen.queryByText("Send the deck · 27 Nov")).toBeNull();
+        await user.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(m.saveCard).toHaveBeenCalledTimes(1));
+        expect(m.saveCard.mock.calls[0][0]).not.toHaveProperty("todos");
+      });
+    });
+
     // Starts a tidy and leaves it pending; returns the function that finishes it.
     async function pendingTidy(user: User) {
       let resolve!: (v: never) => void;

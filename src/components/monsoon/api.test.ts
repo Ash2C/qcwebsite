@@ -237,6 +237,14 @@ describe("client timeouts", () => {
     expect(fetchMock.mock.calls[1][1]).toMatchObject({ cache: "no-store" });
   });
 
+  it("saveCard sends the local day with offered to-dos, and nothing extra without them", async () => {
+    const todos = [{ title: "Send the deck", due: "2026-11-27" }];
+    await saveCard({ ...save, todos });
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({ ...save, todos, today: LOCAL_DAY });
+    await saveCard({ ...save, todos: [] });
+    expect(JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)).toEqual({ ...save, todos: [] });
+  });
+
   it("an aborted request rejects like a network failure, and a late response is never used", async () => {
     fetchMock.mockImplementation(
       (_url: string, init: RequestInit) =>
