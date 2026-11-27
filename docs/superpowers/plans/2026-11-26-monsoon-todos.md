@@ -400,15 +400,34 @@ expect(cleanOfferedTodos("nope", "2026-11-26")).toEqual([]);
 
 ### Task 14: Rollout (with Vincent; nothing here runs without his go-ahead)
 
-**Files:** Create `docs/superpowers/plans/2026-11-26-monsoon-todos-rollout.md` (the runbook below with real outputs filled in as it is run)
+Rewritten 2026-11-27 after the final whole-branch review (its rollout risks R1 to R9). Record real outputs in `docs/superpowers/plans/2026-11-26-monsoon-todos-rollout.md` as each step runs.
 
-- [ ] **Step 1:** Whole-branch review of both branches; full test runs green in both repos.
-- [ ] **Step 2:** Merge the core branch to `master`. Run `py -3.13 -m quantcloud.crm <estate> migrate` for Qforce, then Zero One, then Traxo. After each: `SELECT max(version) FROM schema_migrations` is 2; `SELECT count(*) FROM todos WHERE source = 'migrated'` equals the count of members that had a next action before (record both numbers first); `verify` reports no drift. The live app keeps working on these CRMs before the push: its next-action writes are converted by the guard.
-- [ ] **Step 3:** Confirm how the app logs in to Traxo and Zero One. If with a restricted login, run `todoGrantStatements` for it there; if with the full address, nothing to do.
-- [ ] **Step 4:** From the app worktree: `upgrade --all-shared`, then `upgrade <client code> main --owner-password-from-env <OWNER_PW_VAR>` (Vincent supplies the owner password in `~/.quantcloud/monsoon-accounts.env` if the line is gone). Check each printed line reads `1 -> 2` or `already at 2`.
-- [ ] **Step 5:** Fetch and rebase on `origin/main`, re-run the suite, push `main`, wait for Vercel Ready.
-- [ ] **Step 6:** Live checks on Vincent's phone: To do tab lists the migrated to-dos for Traxo and Zero One; add one with and one without a contact; tick with an outcome and a next step and see both on the profile timeline; a spoken note with "by Friday" offers a dated to-do; Ask answers "what should I do today?"; Prepare me returns a brief.
-- [ ] **Step 7:** Record the session with `wrap_up` and update the `monsoon-capture-app` memory with the To do feature and the `upgrade` command.
+**Before anything**
+
+- [ ] **Step 1:** Both branches reviewed and green (core 107 tests; app full suite with `--maxWorkers=2 --minWorkers=1`, `tsc`, `next build`). The app's `testing/0002_todos.sql` matches the core file apart from its header.
+- [ ] **Step 2:** For each of Traxo and Zero One, find out how the live app signs in: a restricted login with per-table policies, or the full address. Write it down. This decides step 5c.
+- [ ] **Step 3:** Vincent has ready: the own-project client's pooler host and its owner password in an env variable in `~/.quantcloud/monsoon-accounts.env`.
+
+**Core estates, one at a time: Qforce, then Zero One, then Traxo**
+
+- [ ] **Step 4:** Merge the core branch to `master`. From then on do not run merge commands from the sibling core worktrees until they are rebased (they do not move to-dos), and migrate all three estates in the same sitting (the core's merge commands now need the `todos` table).
+- [ ] **Step 5 (per estate):**
+  - a. Check the owners table against the estate manifest (`lookup_drift`). An owner key the app added that is not in the manifest and is in use makes `migrate` refuse; add it to the manifest first.
+  - b. Record three counts from `members`: non-blank next actions (`btrim(coalesce(next_action,'')) <> ''`), next actions longer than 300 characters, and rows with a date but no text. Export `id, next_action, next_action_date` to a file. There is no down-migration: the migration cuts text over 300 characters and clears a date that has no text.
+  - c. `py -3.13 -m quantcloud.crm <estate> migrate`. If the app's login there is restricted, run the output of `todoGrantStatements(<role>, 'public')` on that database immediately afterwards, in the same sitting (the `upgrade` command refuses core-owned CRMs, so this is by hand). On a Supabase project also confirm `anon` and `authenticated` have no rights on `todos`.
+  - d. Verify: `max(version)` is 2; migrated to-dos (`source = 'migrated'`) equal the non-blank count from b; `verify` reports no drift; save a test contact from the live app and set a next action on one (the live app's old-style write must turn into a to-do).
+
+**Client CRMs**
+
+- [ ] **Step 6:** From the app worktree root on this branch, at a quiet moment (the upgrade briefly locks `members`): `upgrade --all-shared`. Every line reads `1 -> 2` or `already at 2`.
+- [ ] **Step 7:** `upgrade <client code> <pipeline> --owner-password-from-env <VAR> --pooler <host>` for the one early client on its own project.
+
+**Deploy**
+
+- [ ] **Step 8:** Fetch, rebase on `origin/main`, re-run the suite (`--maxWorkers=2 --minWorkers=1`), `tsc`, `next build`. Push `main`. Wait for Vercel Ready.
+- [ ] **Step 9:** Run `upgrade --all-shared` again: anyone who signed up between step 6 and the deploy was built at version 1 by the old app.
+- [ ] **Step 10:** Live checks on Vincent's phone: the To do tab lists the migrated to-dos for Traxo and Zero One; add one with and one without a contact; tick with an outcome and a next step and see both on the profile timeline; drop one and undo it; a spoken note with "by Friday" offers a dated to-do; Ask answers "what should I do today?"; Prepare me returns a brief.
+- [ ] **Step 11:** Record the session with `wrap_up` and update the `monsoon-capture-app` memory with the To do feature and the `upgrade` command.
 
 ---
 
