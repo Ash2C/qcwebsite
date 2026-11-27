@@ -2,7 +2,7 @@
 import React from "react";
 import "@testing-library/jest-dom/vitest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import AskWindow from "./AskWindow";
 
 afterEach(cleanup);
@@ -123,6 +123,72 @@ describe("AskWindow", () => {
     expect(idle.onClose).not.toHaveBeenCalled();
     fireEvent.keyDown(document, { key: "Escape" });
     expect(idle.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Escape in a field on the page leaves Ask and the focus alone; in the window or on nothing it closes", () => {
+    const onClose = vi.fn();
+    render(
+      <div>
+        <input aria-label="page field" />
+        <AskWindow busy={false} collapsed={false} onCollapsed={() => {}} onClose={onClose} looking={null} hasConversation={false} sound={null}>
+          <input aria-label="question" />
+        </AskWindow>
+      </div>,
+    );
+    const field = screen.getByLabelText("page field");
+    field.focus();
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(field).toHaveFocus();
+    const question = screen.getByLabelText("question");
+    question.focus();
+    fireEvent.keyDown(question, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    question.blur();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("Escape is left to a modal sheet on the page", () => {
+    const onClose = vi.fn();
+    render(
+      <div>
+        <div role="dialog" aria-modal="true" aria-label="Sheet" />
+        <AskWindow busy={false} collapsed={false} onCollapsed={() => {}} onClose={onClose} looking={null} hasConversation={false} sound={null}>
+          <p>inside</p>
+        </AskWindow>
+      </div>,
+    );
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  describe("focus on minimise", () => {
+    const Wrap = ({ collapsed }: { collapsed: boolean }) => (
+      <div>
+        <button type="button">page button</button>
+        <AskWindow busy={false} collapsed={collapsed} onCollapsed={() => {}} onClose={() => {}} looking={null} hasConversation sound={null}>
+          <input aria-label="question" />
+        </AskWindow>
+      </div>
+    );
+
+    it("focus left in the hidden conversation moves to the bar", async () => {
+      const { rerender } = render(<Wrap collapsed={false} />);
+      screen.getByLabelText("question").focus();
+      rerender(<Wrap collapsed />);
+      await waitFor(() => expect(screen.getByRole("button", { expanded: false })).toHaveFocus());
+    });
+
+    it("focus the page took itself is left where it is", async () => {
+      const { rerender } = render(<Wrap collapsed={false} />);
+      screen.getByLabelText("question").focus();
+      rerender(<Wrap collapsed />);
+      // The page moves focus to its own control before the window checks.
+      screen.getByRole("button", { name: "page button" }).focus();
+      await new Promise((r) => setTimeout(r, 10));
+      expect(screen.getByRole("button", { name: "page button" })).toHaveFocus();
+    });
   });
 
   it("sound null renders no sound button; otherwise it reflects on and toggles", () => {

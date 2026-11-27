@@ -10,6 +10,7 @@ import ImportPanel, { NEW_IMPORT_JOB, type ImportJob, type ImportJobChange } fro
 import MonsoonLoader from "./MonsoonLoader";
 import RequestsPanel from "./RequestsPanel";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
+import { useAskPage, useReportBusy } from "./askPage";
 
 /**
  * What the person has typed and not yet saved. It lives in MonsoonApp, not here, so it survives the
@@ -89,6 +90,10 @@ export default function UserPanel({
   const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [adding, setAdding] = useState(false);
+  // One write at a time with Ask: Save and Add note wait while Ask is busy, and a save or a note in
+  // flight holds Ask. Back and the other entries stay usable.
+  const { askBusy } = useAskPage();
+  useReportBusy(saving || adding);
   const [saveNote, setSaveNote] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
   const [noteError, setNoteError] = useState<string | null>(null);
   // Granola: null until its state is known. While `granolaOpen`, its screen stands in for this page;
@@ -185,7 +190,7 @@ export default function UserPanel({
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
-    if (saving || !values || !changed) return;
+    if (saving || askBusy || !values || !changed) return;
     setSaving(true);
     setSaveNote(null);
     const input: PageInput = {
@@ -219,7 +224,7 @@ export default function UserPanel({
   async function add(event: React.FormEvent) {
     event.preventDefault();
     const body = draft.note.trim();
-    if (adding || !page || body === "") return;
+    if (adding || askBusy || !page || body === "") return;
     setAdding(true);
     setNoteError(null);
     try {
@@ -361,7 +366,7 @@ export default function UserPanel({
                 {saveNote.text}
               </p>
             )}
-            <button type="submit" disabled={saving || !changed} className={primaryButton}>
+            <button type="submit" disabled={saving || askBusy || !changed} className={primaryButton}>
               {saving ? "Saving…" : "Save"}
             </button>
           </form>
@@ -386,7 +391,7 @@ export default function UserPanel({
                 className={`${fieldInput} resize-none overflow-y-auto`}
               />
               <div className="p-3">
-                <button type="submit" disabled={adding || draft.note.trim() === ""} className={secondaryButton}>
+                <button type="submit" disabled={adding || askBusy || draft.note.trim() === ""} className={secondaryButton}>
                   {adding ? "Adding…" : "Add"}
                 </button>
               </div>

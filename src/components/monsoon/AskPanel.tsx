@@ -168,7 +168,7 @@ export default function AskPanel({
   onChanged?: () => void;
   /**
    * A question to submit for the user (Prepare me), once per `id`, as soon as Ask is free. It is an
-   * ordinary turn; what is typed in the box stays. The parent drops it when the sheet closes.
+   * ordinary turn; what is typed in the box stays. The parent drops it when the window closes.
    */
   send?: { id: string; text: string };
   /**

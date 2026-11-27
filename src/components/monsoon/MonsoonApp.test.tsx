@@ -1981,8 +1981,11 @@ describe("Profile actions and links", () => {
     await tapRunResearch(user);
     await waitFor(() => expect(m.loadProfile).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
-    release({ status: 200, body: { profile: PROFILE } } as never);
-    await settle();
+    // The profile arrives while Ask is expanded over it; inside act, since it changes what is shown.
+    await act(async () => {
+      release({ status: 200, body: { profile: PROFILE } } as never);
+      await settle();
+    });
     await user.click(screen.getByRole("button", { name: "Close" }));
     await screen.findByRole("heading", { name: "Jane Tan" });
     await settle();

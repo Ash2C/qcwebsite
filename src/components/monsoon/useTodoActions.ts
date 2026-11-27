@@ -2,6 +2,7 @@
 
 import { useRef } from "react";
 import type { Todo } from "./api";
+import { usePageWrite } from "./askPage";
 import { SAVE_FAILED, succeeded, writeFailure, writeTodo } from "./todoWrites";
 
 /**
@@ -39,6 +40,8 @@ export function useTodoActions(handlers: TodoActionHandlers): { tick(t: Todo): P
   ref.current = handlers;
   // To-dos with a write on the way, so a second tap does not send it twice.
   const busyIds = useRef(new Set<string>());
+  // Each write counts as in flight for Ask (one write at a time) until it settles.
+  const track = usePageWrite();
 
   async function tick(t: Todo) {
     if (busyIds.current.has(t.id)) return;
@@ -48,7 +51,7 @@ export function useTodoActions(handlers: TodoActionHandlers): { tick(t: Todo): P
     const scope = h.scope ?? key;
     h.problem(null);
     h.ticking(t, key);
-    const res = await writeTodo(key, { action: "complete", id: t.id });
+    const res = await track(() => writeTodo(key, { action: "complete", id: t.id }));
     busyIds.current.delete(t.id);
     if (res?.status === 401) return ref.current.onUnauthorized();
     if (!ref.current.current(scope)) return;
@@ -65,7 +68,7 @@ export function useTodoActions(handlers: TodoActionHandlers): { tick(t: Todo): P
     const key = h.estateKey;
     const scope = h.scope ?? key;
     h.problem(null);
-    const res = await writeTodo(key, { action: "reopen", id: t.id });
+    const res = await track(() => writeTodo(key, { action: "reopen", id: t.id }));
     busyIds.current.delete(t.id);
     if (res?.status === 401) return ref.current.onUnauthorized();
     if (!ref.current.current(scope)) return;

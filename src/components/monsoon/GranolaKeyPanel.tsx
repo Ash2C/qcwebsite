@@ -7,6 +7,7 @@ import { Mark } from "./ClaudeChip";
 import { formatWhen } from "./ClaudeKeyPanel";
 import MonsoonLoader from "./MonsoonLoader";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
+import { useAskPage, useReportBusy } from "./askPage";
 
 type Status = GranolaKeyState["status"];
 
@@ -80,6 +81,9 @@ export default function GranolaKeyPanel({
   const [loadFailed, setLoadFailed] = useState(false);
   // The one request in flight, if any: every button is off while there is one.
   const [busy, setBusy] = useState<"save" | "test" | "disconnect" | null>(null);
+  // One write at a time with Ask: the requests wait while Ask is busy, and one in flight holds Ask.
+  const { askBusy } = useAskPage();
+  useReportBusy(busy !== null);
   const [draft, setDraft] = useState("");
   // One line under the status card (test again, disconnect) and one under the paste box (save).
   const [keyError, setKeyError] = useState<string | null>(null);
@@ -125,7 +129,7 @@ export default function GranolaKeyPanel({
 
   /** Runs one request with every button off. `failed` is told the reply when it is not a new state. */
   async function run(what: "save" | "test" | "disconnect", call: () => Promise<Reply>, done: () => void, failed: (res: Reply | null) => void) {
-    if (inFlight.current) return;
+    if (inFlight.current || askBusy) return;
     inFlight.current = true;
     setBusy(what);
     setKeyError(null);
@@ -256,10 +260,10 @@ export default function GranolaKeyPanel({
             )}
             {key.last4 !== null && (
               <div className="flex gap-3">
-                <button type="button" onClick={test} disabled={busy !== null} className={outline}>
+                <button type="button" onClick={test} disabled={busy !== null || askBusy} className={outline}>
                   {busy === "test" ? "Testing…" : "Test again"}
                 </button>
-                <button type="button" onClick={disconnect} disabled={busy !== null} className={outline}>
+                <button type="button" onClick={disconnect} disabled={busy !== null || askBusy} className={outline}>
                   {busy === "disconnect" ? "Disconnecting…" : "Disconnect"}
                 </button>
               </div>
@@ -295,7 +299,7 @@ export default function GranolaKeyPanel({
                 {saveError}
               </p>
             )}
-            <button type="submit" disabled={busy !== null || draft.trim() === ""} className={primaryButton}>
+            <button type="submit" disabled={busy !== null || askBusy || draft.trim() === ""} className={primaryButton}>
               {busy === "save" ? "Testing…" : "Test and save"}
             </button>
           </form>

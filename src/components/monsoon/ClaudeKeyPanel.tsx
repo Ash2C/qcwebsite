@@ -7,6 +7,7 @@ import { Mark } from "./ClaudeChip";
 import type { ClaudeChipStatus } from "./claudeStatus";
 import MonsoonLoader from "./MonsoonLoader";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
+import { useAskPage, useReportBusy } from "./askPage";
 
 const LOAD_FAILURE = "Could not load. Check signal.";
 const BUSY = "Claude could not be reached to test the key. Try again in a minute.";
@@ -98,6 +99,10 @@ export default function ClaudeKeyPanel({
   const [loadFailed, setLoadFailed] = useState(false);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
+  // One write at a time with Ask: Test and Save wait while Ask is busy, and a test or a save in
+  // flight holds Ask. Back and Paste stay usable.
+  const { askBusy } = useAskPage();
+  useReportBusy(testing || saving);
   const [draft, setDraft] = useState("");
   const [testNote, setTestNote] = useState<Note | null>(null);
   const [saveNote, setSaveNote] = useState<Note | null>(null);
@@ -152,7 +157,7 @@ export default function ClaudeKeyPanel({
   }, [load]);
 
   async function test() {
-    if (testing || saving) return;
+    if (testing || saving || askBusy) return;
     setTesting(true);
     setTestNote(null);
     try {
@@ -170,7 +175,7 @@ export default function ClaudeKeyPanel({
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
-    if (saving || testing || draft.trim() === "") return;
+    if (saving || testing || askBusy || draft.trim() === "") return;
     setSaving(true);
     setSaveNote(null);
     try {
@@ -278,7 +283,7 @@ export default function ClaudeKeyPanel({
               <button
                 type="button"
                 onClick={() => void test()}
-                disabled={testing || saving}
+                disabled={testing || saving || askBusy}
                 className="min-h-[46px] rounded-xl border border-current bg-transparent px-4 text-[16px] font-semibold disabled:opacity-50"
               >
                 {testing ? "Testing…" : "Test again"}
@@ -341,7 +346,7 @@ export default function ClaudeKeyPanel({
                 {HOW_TO} Monsoon tests the key with Claude before saving
                 {key.last4 === null ? "." : ", and the current key keeps working until the new one passes."}
               </p>
-              <button type="submit" disabled={saving || testing || draft.trim() === ""} className={primaryButton}>
+              <button type="submit" disabled={saving || testing || askBusy || draft.trim() === ""} className={primaryButton}>
                 {saving ? "Testing…" : "Test and save"}
               </button>
             </form>

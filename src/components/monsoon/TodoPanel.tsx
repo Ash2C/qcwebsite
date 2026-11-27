@@ -8,7 +8,7 @@ import TickSheet from "./TickSheet";
 import TodoForm from "./TodoForm";
 import TodoRowView from "./TodoRowView";
 import UndoBar, { useUndo } from "./UndoBar";
-import { useAskPage } from "./askPage";
+import { useAskPage, usePageWrite } from "./askPage";
 import { loadTodos, type EstateInfo, type Nudge, type Nudges, type Todo, type TodoContact, type TodoTarget } from "./api";
 import { card, secondaryButton } from "./styles";
 import { bucketOf, localToday, shortDate, type TodoBucket } from "./todoDates";
@@ -84,6 +84,8 @@ export default function TodoPanel({
 }) {
   // The page stays live under Ask: its writes wait while Ask is busy, and the Undo bar sits above Ask.
   const { askBusy, above } = useAskPage();
+  // Not now's write counts as in flight for Ask until it settles (tick and reopen do so in useTodoActions).
+  const track = usePageWrite();
   const [phase, setPhase] = useState<"loading" | "ready" | "failed">("loading");
   const [notice, setNotice] = useState<string | null>(null);
   // The words for the last write that failed (a tick, a reopen, a Not now).
@@ -229,7 +231,7 @@ export default function TodoPanel({
           }
         : {},
     );
-    const res = await writeTodo(key, { action: "snooze", memberId });
+    const res = await track(() => writeTodo(key, { action: "snooze", memberId }));
     if (res?.status === 401) return unauthorizedRef.current();
     if (succeeded(res) || stateRef.current.estate !== key) return;
     const put = (list: Nudge[], back: { n: Nudge; i: number }[]) => {

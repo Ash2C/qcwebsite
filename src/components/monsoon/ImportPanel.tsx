@@ -11,6 +11,7 @@ import type { SaveOutcome } from "@/lib/monsoon/import/save";
 import { checkImportRows, finishImport, mapImportColumns, saveImportRows, type EstateInfo } from "./api";
 import MonsoonLoader from "./MonsoonLoader";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
+import { useAskPage, useReportBusy } from "./askPage";
 
 /**
  * One import, from the chosen file to its result. It lives in MonsoonApp, not here, so it survives
@@ -220,6 +221,9 @@ export default function ImportPanel({
   const [stopping, setStopping] = useState(false);
   // True when the last run stopped because another import was still running.
   const [blocked, setBlocked] = useState(false);
+  // One write at a time with Ask: the steps that call the server wait while Ask is busy. Back (which
+  // is also Stop while rows are being saved) is never held, so a running import can always be stopped.
+  const { askBusy } = useAskPage();
 
   // The latest props, for the moment a request returns.
   const calls = useRef({ onChange, onUnauthorized });
@@ -348,6 +352,8 @@ export default function ImportPanel({
   // runs whenever the summary has no answer yet, which is also what happens after signing in again.
   const estateKey = estate.key;
   const checking = job.step === "summary" && job.classes === null && !checkFailed;
+  // The column guess (a model call), the check and a save run each hold Ask while they are out.
+  useReportBusy(running || checking || (job.step === "columns" && job.mapSource === "loading"));
   const contacts = job.contacts;
   useEffect(() => {
     if (!checking) return;
@@ -451,7 +457,7 @@ export default function ImportPanel({
    * pause the run stops there and says so: nothing is lost, and "Try those again" carries on.
    */
   async function run(queue: number[], from: ImportJob) {
-    if (runRef.current) return;
+    if (runRef.current || askBusy) return;
     runRef.current = true;
     stopRef.current = false;
     setRunning(true);
@@ -717,12 +723,12 @@ export default function ImportPanel({
           <p className={quiet}>The contacts go into {estate.label}. Nothing is saved until you have seen a summary and confirmed.</p>
           <label
             className={`flex min-h-[64px] cursor-pointer items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-[#0E7FA6]/50 bg-[#0E7FA6]/5 px-4 text-[19px] font-semibold text-[#0E7FA6] focus-within:ring-2 focus-within:ring-[#0E7FA6] active:bg-[#0E7FA6]/10 dark:border-[#6AE6FF]/50 dark:bg-[#6AE6FF]/10 dark:text-[#6AE6FF] dark:focus-within:ring-[#6AE6FF] ${
-              reading ? "pointer-events-none opacity-50" : ""
+              reading || askBusy ? "pointer-events-none opacity-50" : ""
             }`}
           >
             {reading && <MonsoonLoader className="h-7 w-7" />}
             <span>Choose a file</span>
-            <input type="file" accept=".csv,.xlsx,text/csv" className="sr-only" disabled={reading} onChange={onFile} />
+            <input type="file" accept=".csv,.xlsx,text/csv" className="sr-only" disabled={reading || askBusy} onChange={onFile} />
           </label>
           {reading && (
             <p role="status" className={quiet}>
@@ -777,7 +783,7 @@ export default function ImportPanel({
             })}
           </div>
           {!mappingOk && job.mapSource !== "loading" && <p className={quiet}>Choose the column that holds the name to continue.</p>}
-          <button type="button" className={primaryButton} disabled={!mappingOk} onClick={confirmColumns}>
+          <button type="button" className={primaryButton} disabled={!mappingOk || askBusy} onClick={confirmColumns}>
             Continue
           </button>
         </section>
@@ -790,7 +796,7 @@ export default function ImportPanel({
               <p role="alert" className={bad}>
                 {checkFailed === "large" ? CHECK_TOO_LARGE : CHECK_FAILURE}
               </p>
-              <button type="button" className={secondaryButton} onClick={() => setCheckFailed(null)}>
+              <button type="button" className={secondaryButton} disabled={askBusy} onClick={() => setCheckFailed(null)}>
                 Try again
               </button>
             </div>
@@ -886,7 +892,7 @@ export default function ImportPanel({
           )}
 
           <p className={`${plain} font-medium`}>{NO_UNDO}</p>
-          <button type="button" className={primaryButton} disabled={toImport === 0 || job.label.trim() === ""} onClick={startImport}>
+          <button type="button" className={primaryButton} disabled={toImport === 0 || job.label.trim() === "" || askBusy} onClick={startImport}>
             {`Import ${contactsWord(toImport)}`}
           </button>
         </section>
@@ -914,7 +920,7 @@ export default function ImportPanel({
           ) : (
             <>
               <p className={quiet}>The import paused. Nothing is lost.</p>
-              <button type="button" className={primaryButton} onClick={continueImport}>
+              <button type="button" className={primaryButton} disabled={askBusy} onClick={continueImport}>
                 Continue the import
               </button>
             </>
@@ -948,7 +954,7 @@ export default function ImportPanel({
                 <RowList job={job} label="Could not be saved" rowNumbers={failedRows} />
               </div>
               {retryRows.length > 0 && (
-                <button type="button" className={secondaryButton} onClick={retryFailed}>
+                <button type="button" className={secondaryButton} disabled={askBusy} onClick={retryFailed}>
                   Try those again
                 </button>
               )}

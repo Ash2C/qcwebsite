@@ -390,27 +390,6 @@ describe("Ask as a floating window over a live page", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
   });
 
-  it("while Ask is asking, the user's own page waits too", async () => {
-    const user = userEvent.setup();
-    let reply!: (v: never) => void;
-    m.loadEstates.mockResolvedValue({ status: 200, body: { ...ESTATES, person: { id: "p-me", name: "Dana Ray" } } } as never);
-    m.loadUserPage.mockResolvedValue({
-      status: 200,
-      body: { page: { person: { name: "Dana Ray", phone: null, email: null }, work: { company: null, website: null, roleObjectives: null }, notes: [], notesTotal: 0 } },
-    } as never);
-    m.askCrm.mockImplementation(() => new Promise((r) => (reply = r as never)));
-    await start();
-    await user.click(screen.getByRole("button", { name: "Dana Ray, your page" }));
-    const name = await screen.findByLabelText("Name");
-    expect(name).toBeEnabled();
-    await openAsk(user);
-    await ask(user, "Who?");
-    await waitFor(() => expect(name).toBeDisabled());
-    reply(answer("Nobody."));
-    await screen.findByText("Nobody.");
-    await waitFor(() => expect(name).toBeEnabled());
-  });
-
   it("the Undo bar sits above the pill row, the minimised bar or the expanded window", async () => {
     const user = userEvent.setup();
     m.loadTodos.mockResolvedValue(listed(PLAIN_ROW));
@@ -482,5 +461,242 @@ describe("Ask as a floating window over a live page", () => {
       expect(await screen.findByRole("textbox", { name: "Your question" })).toHaveFocus();
       expect(questionBox()).toHaveValue("About Anna Lee: ");
     });
+  });
+});
+
+describe("one write at a time: a page write in flight blocks Ask", () => {
+  /** Ask expanded with a change card on screen; returns its Confirm button. */
+  async function cardOnScreen(user: User) {
+    m.askCrm.mockResolvedValue(answer("Ready.", { proposals: [NOTE] }));
+    await openAsk(user);
+    await ask(user, "Add a note");
+    await screen.findByText("Ready.");
+    const confirm = within(askWindow()).getByRole("button", { name: "Confirm" });
+    expect(confirm).toBeEnabled();
+    return confirm;
+  }
+
+  it("a to-do tick in flight disables Confirm, send and the suggestions until it settles", async () => {
+    const user = userEvent.setup();
+    let settle!: (v: never) => void;
+    m.loadTodos.mockResolvedValue(listed(PLAIN_ROW));
+    m.todoAction.mockImplementation(() => new Promise((r) => (settle = r as never)));
+    await start();
+    await user.click(screen.getByRole("button", { name: "To do" }));
+    const tick = await screen.findByRole("button", { name: "Mark done: Renew domain" });
+    const confirm = await cardOnScreen(user);
+    await user.click(tick);
+    await waitFor(() => expect(confirm).toBeDisabled());
+    await user.type(screen.getByRole("textbox", { name: "Your question" }), "Next?");
+    expect(screen.getByRole("button", { name: "Send question" })).toBeDisabled();
+    settle({ status: 200, body: { status: "ok", todo: { ...PLAIN_ROW, status: "done" } } } as never);
+    await screen.findByText("Done: Renew domain");
+    await waitFor(() => expect(confirm).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Send question" })).toBeEnabled();
+  });
+
+  it("a to-do tick that fails also frees Ask", async () => {
+    const user = userEvent.setup();
+    let settle!: (v: never) => void;
+    m.loadTodos.mockResolvedValue(listed(PLAIN_ROW));
+    m.todoAction.mockImplementation(() => new Promise((r) => (settle = r as never)));
+    await start();
+    await user.click(screen.getByRole("button", { name: "To do" }));
+    const tick = await screen.findByRole("button", { name: "Mark done: Renew domain" });
+    const confirm = await cardOnScreen(user);
+    await user.click(tick);
+    await waitFor(() => expect(confirm).toBeDisabled());
+    settle({ status: 500, body: { error: "Could not save. Check signal." } } as never);
+    await waitFor(() => expect(confirm).toBeEnabled());
+  });
+
+  it("a write whose screen goes away mid-write does not leave Ask blocked", async () => {
+    const user = userEvent.setup();
+    m.loadTodos.mockResolvedValue(listed(PLAIN_ROW));
+    m.todoAction.mockImplementation(() => new Promise(() => {}));
+    await start();
+    await user.click(screen.getByRole("button", { name: "To do" }));
+    const tick = await screen.findByRole("button", { name: "Mark done: Renew domain" });
+    const confirm = await cardOnScreen(user);
+    await user.click(tick);
+    await waitFor(() => expect(confirm).toBeDisabled());
+    // The To do tab goes (its write never answers): Ask is free again.
+    await user.click(screen.getByRole("button", { name: "Capture" }));
+    await waitFor(() => expect(confirm).toBeEnabled());
+  });
+
+  it("a To do form save in flight disables Confirm until it settles", async () => {
+    const user = userEvent.setup();
+    let settle!: (v: never) => void;
+    m.loadTodos.mockResolvedValue(listed());
+    m.todoAction.mockImplementation(() => new Promise((r) => (settle = r as never)));
+    await start();
+    await user.click(screen.getByRole("button", { name: "To do" }));
+    await user.click(await screen.findByRole("button", { name: "Add" }));
+    await user.type(await screen.findByLabelText("What"), "Call back");
+    const confirm = await cardOnScreen(user);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(confirm).toBeDisabled());
+    settle({ status: 200, body: { status: "ok", todo: { ...PLAIN_ROW, id: "t9", title: "Call back" } } } as never);
+    await screen.findByText("Call back");
+    await waitFor(() => expect(confirm).toBeEnabled());
+  });
+
+  describe("the user's own page", () => {
+    const PAGE = {
+      person: { name: "Dana Ray", phone: null, email: null },
+      work: { company: null, website: null, roleObjectives: null },
+      notes: [],
+      notesTotal: 0,
+    };
+    beforeEach(() => {
+      m.loadEstates.mockResolvedValue({ status: 200, body: { ...ESTATES, person: { id: "p-me", name: "Dana Ray" } } } as never);
+      m.loadUserPage.mockResolvedValue({ status: 200, body: { page: PAGE } } as never);
+    });
+    async function openPage(user: User) {
+      await user.click(screen.getByRole("button", { name: "Dana Ray, your page" }));
+      await screen.findByLabelText("Phone");
+    }
+
+    it("a save in flight disables Confirm until it settles", async () => {
+      const user = userEvent.setup();
+      let settle!: (v: never) => void;
+      m.saveUserPage.mockImplementation(() => new Promise((r) => (settle = r as never)));
+      await start();
+      await openPage(user);
+      await user.type(screen.getByLabelText("Phone"), "123");
+      const confirm = await cardOnScreen(user);
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(confirm).toBeDisabled());
+      settle({ status: 200, body: { page: { ...PAGE, person: { ...PAGE.person, phone: "123" } } } } as never);
+      await screen.findByText("Saved.");
+      await waitFor(() => expect(confirm).toBeEnabled());
+    });
+
+    it("while a question is out, Save waits but Back stays usable", async () => {
+      const user = userEvent.setup();
+      let reply!: (v: never) => void;
+      m.askCrm.mockImplementation(() => new Promise((r) => (reply = r as never)));
+      await start();
+      await openPage(user);
+      await user.type(screen.getByLabelText("Phone"), "123");
+      await openAsk(user);
+      await ask(user, "Who?");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeDisabled());
+      expect(screen.getByRole("button", { name: "Back" })).toBeEnabled();
+      // Typing on the page still works.
+      expect(screen.getByLabelText("Phone")).toBeEnabled();
+      reply(answer("Nobody."));
+      await screen.findByText("Nobody.");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+    });
+  });
+});
+
+describe("Prepare me stands in only until the profile on screen changes", () => {
+  const COMPANY = {
+    kind: "company", personId: null, orgId: "oA", name: "Northwind", title: null, company: null,
+    email: null, phone: null, linkedin: null, country: null, website: null, notes: null,
+    member: { ...MEMBER, memberId: "mA", memberKind: "company" },
+    memberOf: "self", timelineOf: null, timeline: [], timelineTotal: 0,
+    people: [{ personId: "p2", name: "Bo Chen", title: null }],
+    stages: JANE_PROFILE.stages,
+  };
+  const BO = { ...BOB_PROFILE, orgId: "oA", company: "Northwind" };
+  const CO_HIT = {
+    kind: "company", personId: null, orgId: "oA", name: "Northwind", title: null, company: null, email: null,
+    member: { memberId: "mA", role: "lp_prospect", stage: "lead" }, memberOf: "self",
+  };
+  const ABOUT_BO = {
+    ...ROW,
+    id: "t5",
+    title: "Call Bo",
+    contact: { ...contactOf("mA", "", "Northwind", "Northwind"), memberKind: "company", personId: null, orgId: "oA", aboutPersonId: "p2", aboutName: "Bo Chen" },
+  };
+
+  beforeEach(() => {
+    m.searchContacts.mockResolvedValue({ status: 200, body: { contacts: [CO_HIT] } } as never);
+    m.loadProfile.mockImplementation(async (_e, target) => ({ status: 200, body: { profile: target.orgId === "oA" ? COMPANY : BO } }) as never);
+    m.loadTodos.mockImplementation(async (_e, opts) => (opts?.member === "mA" ? listed(ABOUT_BO) : listed()));
+    m.askCrm.mockResolvedValue(answer("Briefing."));
+  });
+
+  async function prepareOnCompany(user: User) {
+    await start();
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await user.click(await screen.findByRole("button", { name: /Northwind/ }));
+    await screen.findByRole("heading", { name: "Northwind" });
+    await user.click(await screen.findByRole("button", { name: /^Call Bo/ }));
+    await user.click(screen.getByRole("button", { name: "Prepare me" }));
+    await screen.findByText("Briefing.");
+    expect(within(askWindow()).getByText("Looking at Bo Chen · Northwind")).toBeInTheDocument();
+  }
+
+  it("A, then B, then back to A: Looking at names A, and A is what is sent", async () => {
+    const user = userEvent.setup();
+    await prepareOnCompany(user);
+    await user.click(screen.getByRole("button", { name: "Bo Chen" }));
+    await screen.findByRole("heading", { name: "Bo Chen" });
+    await user.click(screen.getByRole("button", { name: "Northwind" }));
+    await screen.findByRole("heading", { name: "Northwind" });
+    await waitFor(() => expect(within(askWindow()).getByText("Looking at Northwind")).toBeInTheDocument());
+    await ask(user, "And now?");
+    await waitFor(() => expect(m.askCrm).toHaveBeenCalledTimes(2));
+    expect(m.askCrm.mock.calls[1][0].viewing).toEqual({ orgId: "oA" });
+  });
+
+  it("A, then the To do tab, then back to A: Looking at names A", async () => {
+    const user = userEvent.setup();
+    await prepareOnCompany(user);
+    await user.click(screen.getByRole("button", { name: "To do" }));
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    await screen.findByRole("heading", { name: "Northwind" });
+    await waitFor(() => expect(within(askWindow()).getByText("Looking at Northwind")).toBeInTheDocument());
+  });
+});
+
+describe("Escape and focus on a live page", () => {
+  it("Escape in a page field leaves Ask open and the focus where it was; in the window it closes Ask", async () => {
+    const user = userEvent.setup();
+    await start();
+    await user.click(screen.getByRole("button", { name: "Contacts" }));
+    const search = await screen.findByRole("textbox", { name: "Search contacts" });
+    await openAsk(user);
+    await user.click(search);
+    await user.keyboard("{Escape}");
+    expect(askWindow()).toBeInTheDocument();
+    expect(search).toHaveFocus();
+    await user.click(screen.getByRole("textbox", { name: "Your question" }));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Ask" })).toBeNull();
+  });
+
+  it("a chip that opens a profile minimises the window and hands focus to its bar, not to the page body", async () => {
+    const user = userEvent.setup();
+    m.askCrm.mockResolvedValue(
+      answer("Anna is warm.", { refs: [{ memberId: "m1", name: "Anna Lee", company: "Northwind", kind: "person", personId: "p1" }] }),
+    );
+    await start();
+    await openAsk(user);
+    await ask(user, "Who is warm?");
+    await user.click(await within(askWindow()).findByRole("button", { name: "Anna Lee" }));
+    await screen.findByRole("heading", { name: "Anna Lee" });
+    await waitFor(() => expect(within(askWindow()).getByRole("button", { name: /Tap to return to your conversation/ })).toHaveFocus());
+  });
+
+  it("the save line opens the profile and minimises an expanded window", async () => {
+    const user = userEvent.setup();
+    m.saveCard.mockResolvedValue({
+      status: 200,
+      body: { outcome: "added", person: "p1", org: null, role: "lp_prospect", filled: [] },
+    } as never);
+    await start();
+    await user.type(screen.getByLabelText("Name"), "Anna Lee");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    const line = await screen.findByRole("button", { name: /Open contact/ });
+    await openAsk(user);
+    await user.click(line);
+    expect(await screen.findByRole("heading", { name: "Anna Lee" })).toBeInTheDocument();
+    expectMinimised();
   });
 });

@@ -5,6 +5,7 @@ import { actOnRequest, loadRequests, type RequestAction, type SignupRequest, typ
 import { formatWhen } from "./ClaudeKeyPanel";
 import MonsoonLoader from "./MonsoonLoader";
 import { card, secondaryButton } from "./styles";
+import { useAskPage, useReportBusy } from "./askPage";
 
 const LOAD_FAILURE = "Could not load. Check signal.";
 const FAILED = "Could not finish. Try again.";
@@ -61,6 +62,9 @@ export default function RequestsPanel({
   const [loadFailed, setLoadFailed] = useState(false);
   // The one action in flight, if any: every button is off while there is one.
   const [busy, setBusy] = useState<RequestAction | null>(null);
+  // One write at a time with Ask: the actions wait while Ask is busy, and one in flight holds Ask.
+  const { askBusy } = useAskPage();
+  useReportBusy(busy !== null);
   const [error, setError] = useState<string | null>(null);
 
   // The latest props, for the moment a request returns.
@@ -101,7 +105,7 @@ export default function RequestsPanel({
   }, [load]);
 
   async function run(id: string, action: RequestAction) {
-    if (inFlight.current) return;
+    if (inFlight.current || askBusy) return;
     inFlight.current = true;
     setBusy(action);
     setError(null);
@@ -133,6 +137,8 @@ export default function RequestsPanel({
   }
 
   const off = busy !== null;
+  // Approve, Decline and Reopen write; Back and Retry do not.
+  const writesOff = off || askBusy;
   const waiting = data?.requests.filter((r) => r.status === "pending") ?? [];
   const approved = data?.requests.filter((r) => r.status === "approved") ?? [];
   const declined = data?.requests.filter((r) => r.status === "declined") ?? [];
@@ -211,12 +217,12 @@ export default function RequestsPanel({
                         type="button"
                         aria-label={`Approve ${r.name}`}
                         onClick={() => void run(r.id, "approve")}
-                        disabled={off || !data.configured}
+                        disabled={writesOff || !data.configured}
                         className={approveButton}
                       >
                         Approve
                       </button>
-                      <button type="button" aria-label={`Decline ${r.name}`} onClick={() => decline(r.id)} disabled={off} className={plainButton}>
+                      <button type="button" aria-label={`Decline ${r.name}`} onClick={() => decline(r.id)} disabled={writesOff} className={plainButton}>
                         Decline
                       </button>
                     </div>
@@ -254,7 +260,7 @@ export default function RequestsPanel({
                       type="button"
                       aria-label={`Re-open ${r.name}`}
                       onClick={() => void run(r.id, "reopen")}
-                      disabled={off}
+                      disabled={writesOff}
                       className="min-h-[44px] shrink-0 rounded-xl bg-neutral-100 px-4 text-[16px] font-medium text-[#0E7FA6] active:bg-neutral-200 disabled:opacity-50 dark:bg-white/10 dark:text-[#6AE6FF] dark:active:bg-white/20"
                     >
                       Re-open

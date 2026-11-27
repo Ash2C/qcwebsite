@@ -33,6 +33,9 @@ export default function AskWindow({
   closeRef.current = onClose;
   const busyRef = useRef(busy);
   busyRef.current = busy;
+  const rootRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLButtonElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -40,11 +43,28 @@ export default function AskWindow({
       // modal sheet on the live page (the what-happened sheet): that sheet closes, Ask stays.
       if (e.key !== "Escape" || e.isComposing || busyRef.current) return;
       if (e.defaultPrevented || document.querySelector('[aria-modal="true"]')) return;
+      // Only an Escape pressed in the window, or with nothing focused: one pressed in a field on the
+      // page (the Contacts search, say) belongs to that field and leaves Ask and the focus alone.
+      const active = document.activeElement;
+      const onNothing = !active || active === document.body;
+      if (!onNothing && !rootRef.current?.contains(active)) return;
       closeRef.current();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, []);
+
+  // Minimising hides the conversation. Focus left in it (or dropped to the page body) goes to the bar,
+  // never to a hidden element. The check waits a tick, so a page that moves focus itself (a profile
+  // just opened) keeps it.
+  useEffect(() => {
+    if (!collapsed) return;
+    const timer = setTimeout(() => {
+      const active = document.activeElement;
+      if (!active || active === document.body || contentRef.current?.contains(active)) headerRef.current?.focus({ preventScroll: true });
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [collapsed]);
 
   const hint = collapsed ? (hasConversation ? "Tap to return to your conversation" : "Tap to ask a question") : looking;
 
@@ -55,6 +75,7 @@ export default function AskWindow({
       }`}
     >
       <div
+        ref={rootRef}
         role="dialog"
         aria-label="Ask"
         className={`pointer-events-auto flex w-full max-w-md flex-col rounded-2xl bg-[#f2f2f7] text-neutral-900 shadow-2xl ring-1 ring-black/10 motion-safe:animate-[ask-sheet-up_180ms_ease-out] dark:bg-[#07090C] dark:text-white dark:ring-white/15 ${
@@ -63,6 +84,7 @@ export default function AskWindow({
       >
         <div className="flex items-center gap-1 px-2 pt-1">
           <button
+            ref={headerRef}
             type="button"
             aria-expanded={!collapsed}
             onClick={() => onCollapsed(!collapsed)}
@@ -106,6 +128,7 @@ export default function AskWindow({
         </div>
         {/* Kept mounted when minimised so in-flight confirmations and dictation survive; hidden removes it from view, focus and the accessibility tree. */}
         <div
+          ref={contentRef}
           hidden={collapsed}
           className={collapsed ? "hidden" : "flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-4 pt-2"}
         >

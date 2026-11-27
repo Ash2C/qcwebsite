@@ -7,7 +7,7 @@ import DueDatePicker from "./DueDatePicker";
 import { dueFromChoice, localToday, type DateChoice } from "./todoDates";
 import { SAVE_FAILED, contactTarget, writeFailure } from "./todoWrites";
 import { primaryButton, secondaryButton } from "./styles";
-import { useAskPage } from "./askPage";
+import { useAskPage, useReportBusy } from "./askPage";
 
 const MAX_OUTCOME = 2000;
 const MAX_TITLE = 300;
@@ -38,6 +38,8 @@ export default function TickSheet({
   const [picked, setPicked] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // A save in flight: Ask starts nothing until it settles.
+  useReportBusy(busy);
   const busyRef = useRef(false);
   // True once the outcome is saved, so a retry after a failed add does not send it twice.
   const [outcomeSent, setOutcomeSent] = useState(false);

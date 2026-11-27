@@ -237,12 +237,25 @@ export default function MonsoonApp() {
   useEffect(() => {
     if (mode !== "contacts" || askExpanded) setContacts((c) => (c.autoResearch ? { ...c, autoResearch: false } : c));
   }, [mode, askExpanded]);
-  // A Prepare me contact gives way to the profile on screen once a different one is opened.
+  // A Prepare me contact gives way at the first change of what is on screen after it was tapped: another
+  // profile, no profile (another tab), or a return to the same one. Only the target counts, so a
+  // reload of the same profile keeps it.
+  const viewingKey = viewing ? targetKey(viewing.target) : null;
   useEffect(() => {
-    if (!prepared || !viewing) return;
-    const key = targetKey(viewing.target);
-    if (key !== preparedOnRef.current && key !== targetKey(prepared.target)) setPrepared(null);
-  }, [viewing, prepared]);
+    if (prepared && viewingKey !== preparedOnRef.current) setPrepared(null);
+  }, [viewingKey, prepared]);
+  // The page's own writes and model calls in flight that no other flag covers (to-do writes, the
+  // user's page, the key pages, an import), reported through AskPageContext: Ask starts nothing meanwhile.
+  const [pageWrites, setPageWrites] = useState<ReadonlySet<string>>(() => new Set());
+  const reportBusy = useCallback((id: string, busy: boolean) => {
+    setPageWrites((prev) => {
+      if (prev.has(id) === busy) return prev;
+      const next = new Set(prev);
+      if (busy) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
   // True while a profile action (proposing or confirming a change) is in flight; reported by ProfileActions.
   const [profileBusy, setProfileBusy] = useState(false);
   // Asks the Ask panel to focus its question box (see openAsk); the panel clears it once done.
@@ -834,7 +847,7 @@ export default function MonsoonApp() {
         : "text-neutral-900 dark:text-white";
 
   // The page is reading or writing: Ask starts nothing until it is done (one write at a time).
-  const askBlocked = reading || saving || tidying || batchRunning || profileBusy;
+  const askBlocked = reading || saving || tidying || batchRunning || profileBusy || pageWrites.size > 0;
   // What Ask shows at the bottom: the pill row (closed), the minimised bar above it, or the window.
   const footprint: AskFootprint = !askOpen ? "pill" : askCollapsed ? "bar" : "window";
   // The pill row shows while Ask is closed or minimised; the expanded window takes its place.
@@ -888,7 +901,7 @@ export default function MonsoonApp() {
     ) : null;
   // Every screen: Ask over the live page, which knows whether Ask is busy and what it shows at the bottom.
   const frame = (main: React.ReactNode) => (
-    <AskPageContext.Provider value={{ askBusy, above: footprint }}>
+    <AskPageContext.Provider value={{ askBusy, above: footprint, reportBusy }}>
       <Shell>
         {askWindow}
         {askButton}
@@ -896,26 +909,19 @@ export default function MonsoonApp() {
       </Shell>
     </AskPageContext.Provider>
   );
-  // A page whose controls do not check Ask themselves: all of them wait while Ask is busy.
-  const heldWhileAsking = (page: React.ReactNode) => (
-    <fieldset disabled={askBusy} className="m-0 flex min-w-0 flex-col gap-4 border-0 p-0">
-      {page}
-    </fieldset>
-  );
-
+  // The key page and the user's page check Ask themselves (through AskPageContext): their writes wait
+  // while Ask is busy; Back, and an import's Stop, never do.
   if (keyOpen) {
     return frame(
       <main className={`mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pt-[max(1rem,env(safe-area-inset-top))] ${roomForAsk}`}>
-        {heldWhileAsking(
-          <ClaudeKeyPanel
-            onBack={() => setKeyOpen(false)}
-            onUnauthorized={() => {
-              setKeyOpen(false);
-              setPhase("locked");
-            }}
-            onStatus={setClaude}
-          />,
-        )}
+        <ClaudeKeyPanel
+          onBack={() => setKeyOpen(false)}
+          onUnauthorized={() => {
+            setKeyOpen(false);
+            setPhase("locked");
+          }}
+          onStatus={setClaude}
+        />
       </main>,
     );
   }
@@ -924,18 +930,16 @@ export default function MonsoonApp() {
   if (userOpen && estate?.available) {
     return frame(
       <main className={`mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pt-[max(1rem,env(safe-area-inset-top))] ${roomForAsk}`}>
-        {heldWhileAsking(
-          <UserPanel
-            estate={estate}
-            draft={userDraft}
-            onDraft={setUserDraft}
-            importJob={importJob}
-            onImportJob={changeImportJob}
-            onBack={() => setUserOpen(false)}
-            onUnauthorized={() => setPhase("locked")}
-            onName={setPersonName}
-          />,
-        )}
+        <UserPanel
+          estate={estate}
+          draft={userDraft}
+          onDraft={setUserDraft}
+          importJob={importJob}
+          onImportJob={changeImportJob}
+          onBack={() => setUserOpen(false)}
+          onUnauthorized={() => setPhase("locked")}
+          onName={setPersonName}
+        />
       </main>,
     );
   }

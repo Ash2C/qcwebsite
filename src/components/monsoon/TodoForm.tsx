@@ -8,7 +8,7 @@ import DueDatePicker from "./DueDatePicker";
 import { addDays, dueFromChoice, localToday, type DateChoice } from "./todoDates";
 import { GONE, SAVE_FAILED, writeFailure } from "./todoWrites";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
-import { useAskPage } from "./askPage";
+import { useAskPage, useReportBusy } from "./askPage";
 
 const SEARCH_FAILED = "Could not search. Check signal.";
 const DEBOUNCE_MS = 250;
@@ -78,6 +78,8 @@ export default function TodoForm({
   const [searchFailed, setSearchFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // A save or a drop in flight: Ask starts nothing until it settles.
+  useReportBusy(busy);
   const busyRef = useRef(false);
   const whatRef = useRef<DictatedHandle | null>(null);
   const unauthorizedRef = useRef(onUnauthorized);
