@@ -45,11 +45,14 @@ export default function ChangeCard({
   onText,
   onConfirm,
   onCancel,
+  blocked = false,
 }: {
   card: AskCard;
   onText: (text: string) => void;
   onConfirm: () => void;
   onCancel: () => void;
+  /** Another write is in flight elsewhere: Confirm waits for it (one write at a time). */
+  blocked?: boolean;
 }) {
   const p = card.signed.proposal;
   const open = card.state === "open" || card.state === "working";
@@ -80,7 +83,7 @@ export default function ChangeCard({
         <button type="button" className={secondaryButton} disabled={working} onClick={onCancel}>
           Cancel
         </button>
-        <button type="button" className={secondaryButton} disabled={working || disabledConfirm} onClick={onConfirm}>
+        <button type="button" className={secondaryButton} disabled={working || blocked || disabledConfirm} onClick={onConfirm}>
           Confirm
         </button>
       </div>

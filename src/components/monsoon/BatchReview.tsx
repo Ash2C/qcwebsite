@@ -113,6 +113,7 @@ export default function BatchReview({
   onClose,
   onRunning,
   onOpenProfile,
+  held = false,
 }: {
   estate: EstateInfo;
   batch: Batch;
@@ -123,6 +124,8 @@ export default function BatchReview({
   onRunning?: (running: boolean) => void;
   // Switches to the Contacts tab on that person; the batch stays open underneath.
   onOpenProfile?: (personId: string) => void;
+  // Ask is busy over this page: saves and tidies wait (one write at a time).
+  held?: boolean;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
@@ -311,7 +314,7 @@ export default function BatchReview({
 
   // One run at a time, whether it is Save all or a single prompt answer.
   async function run(rows: BatchRow[]) {
-    if (runRef.current || rows.length === 0) return;
+    if (runRef.current || held || rows.length === 0) return;
     runRef.current = true;
     setRunning(true);
     try {
@@ -413,7 +416,7 @@ export default function BatchReview({
                 <div className="px-4 pb-3">
                   <PromptButtons
                     prompt={row.prompt}
-                    disabled={running || tidying}
+                    disabled={running || tidying || held}
                     onUseOrg={(org) =>
                       void run([{ ...row, fields: { ...row.fields, org }, newOrg: undefined }])
                     }
@@ -429,6 +432,7 @@ export default function BatchReview({
                   running={running}
                   tidying={(tidyCounts[row.id] ?? 0) > 0}
                   anyTidying={tidying}
+                  held={held}
                   canOpen={!running && !!onOpenProfile}
                   onOpenProfile={(id) => onOpenProfile?.(id)}
                   batchNote={batch.note}
@@ -466,7 +470,7 @@ export default function BatchReview({
           <button
             type="button"
             className={primaryButton}
-            disabled={eligible === 0 || running || tidying}
+            disabled={eligible === 0 || running || tidying || held}
             onClick={() => void run(batch.rows.filter(isEligible))}
           >
             {running ? "Saving…" : `Save all (${eligible})`}
@@ -487,6 +491,7 @@ function RowEditor({
   running,
   tidying,
   anyTidying,
+  held,
   canOpen,
   onOpenProfile,
   batchNote,
@@ -507,6 +512,7 @@ function RowEditor({
   running: boolean;
   tidying: boolean; // this card has a tidy request in flight
   anyTidying: boolean; // some card does
+  held: boolean; // Ask is busy: no tidy starts
   canOpen: boolean; // no batch save is running
   onOpenProfile: (personId: string) => void;
   batchNote: string;
@@ -612,7 +618,7 @@ function RowEditor({
             onApply={onApply}
             onUnauthorized={onUnauthorized}
             onBusy={onBusy}
-            disabled={running || row.status === "saving" || tidying}
+            disabled={running || row.status === "saving" || tidying || held}
           />
           {row.before && (
             <button type="button" disabled={running || tidying} className={secondaryButton} onClick={onUndo}>

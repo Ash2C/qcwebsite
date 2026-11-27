@@ -7,6 +7,7 @@ import DueDatePicker from "./DueDatePicker";
 import { dueFromChoice, localToday, type DateChoice } from "./todoDates";
 import { SAVE_FAILED, contactTarget, writeFailure } from "./todoWrites";
 import { primaryButton, secondaryButton } from "./styles";
+import { useAskPage } from "./askPage";
 
 const MAX_OUTCOME = 2000;
 const MAX_TITLE = 300;
@@ -28,6 +29,8 @@ export default function TickSheet({
   onUnauthorized?(): void;
 }) {
   const ids = useId();
+  // Save writes: it waits while Ask is busy (a tick that ends after a question was sent opens this sheet).
+  const { askBusy } = useAskPage();
   const [today] = useState(() => localToday());
   const [outcome, setOutcome] = useState("");
   const [next, setNext] = useState("");
@@ -90,7 +93,7 @@ export default function TickSheet({
 
   const nextTitle = next.trim();
   const dueDate = dueFromChoice(choice, picked, today);
-  const canSave = !busy && (nextTitle === "" || choice !== "pick" || picked !== "");
+  const canSave = !busy && !askBusy && (nextTitle === "" || choice !== "pick" || picked !== "");
 
   async function save() {
     if (busyRef.current || !canSave) return;

@@ -1510,7 +1510,9 @@ describe("MonsoonApp", () => {
       await ready();
       await typeName(user);
       await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
-      expect(screen.getByRole("dialog", { name: "Ask" })).toHaveAttribute("aria-modal", "true");
+      // A floating window, not modal: the page behind stays reachable.
+      expect(screen.getByRole("dialog", { name: "Ask" })).not.toHaveAttribute("aria-modal");
+      expect(document.querySelector("[inert]")).toBeNull();
       // The form is still mounted underneath, not replaced.
       expect(screen.getByLabelText("Name")).toHaveValue("Jane Tan");
       expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
@@ -1534,7 +1536,6 @@ describe("MonsoonApp", () => {
       await openAsk(user);
       await question(user, "Who?");
       await waitFor(() => expect(screen.getByRole("button", { name: "Close" })).toBeDisabled());
-      await user.click(screen.getByTestId("ask-backdrop"));
       await user.keyboard("{Escape}");
       expect(screen.getByRole("dialog", { name: "Ask" })).toBeInTheDocument();
       resolve(ANSWER);
@@ -2194,7 +2195,7 @@ describe("Profile actions and links", () => {
       expect(screen.queryByText(/Looking at/)).toBeNull();
     });
 
-    it("re-reads the profile underneath on Close after a change was confirmed in Ask, and not otherwise", async () => {
+    it("re-reads the profile underneath as soon as a change is confirmed in Ask, and not otherwise", async () => {
       const user = userEvent.setup();
       await openJane(user);
       expect(m.loadProfile).toHaveBeenCalledTimes(1);
@@ -2209,11 +2210,12 @@ describe("Profile actions and links", () => {
       await screen.findByText("Ready.");
       await user.click(within(screen.getByRole("dialog", { name: "Ask" })).getByRole("button", { name: "Confirm" }));
       await screen.findByText("Note added to Jane Tan.");
-      expect(m.loadProfile).toHaveBeenCalledTimes(1);
-      await user.click(screen.getByRole("button", { name: "Close" }));
+      // At once, with the window still open.
       await waitFor(() => expect(m.loadProfile).toHaveBeenCalledTimes(2));
+      expect(screen.getByRole("dialog", { name: "Ask" })).toBeInTheDocument();
       expect(screen.getByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
-      // Only once: opening and closing again does not read it a third time.
+      // Only once: closing, opening and closing again does not read it a third time.
+      await user.click(screen.getByRole("button", { name: "Close" }));
       await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
       await user.click(screen.getByRole("button", { name: "Close" }));
       expect(m.loadProfile).toHaveBeenCalledTimes(2);

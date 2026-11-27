@@ -8,6 +8,7 @@ import TickSheet from "./TickSheet";
 import TodoForm from "./TodoForm";
 import TodoRowView from "./TodoRowView";
 import UndoBar, { useUndo } from "./UndoBar";
+import { useAskPage } from "./askPage";
 import { loadTodos, type EstateInfo, type Nudge, type Nudges, type Todo, type TodoContact, type TodoTarget } from "./api";
 import { card, secondaryButton } from "./styles";
 import { bucketOf, localToday, shortDate, type TodoBucket } from "./todoDates";
@@ -69,6 +70,7 @@ export default function TodoPanel({
   onUnauthorized,
   onOpenContact,
   onPrepare,
+  reloadSignal,
 }: {
   estate: EstateInfo;
   state: TodosState;
@@ -77,7 +79,11 @@ export default function TodoPanel({
   onUnauthorized(): void;
   onOpenContact(target: ContactTarget): void;
   onPrepare(todo: Todo): void;
+  /** A change to this number reads the list again (a change confirmed in Ask). */
+  reloadSignal?: number;
 }) {
+  // The page stays live under Ask: its writes wait while Ask is busy, and the Undo bar sits above Ask.
+  const { askBusy, above } = useAskPage();
   const [phase, setPhase] = useState<"loading" | "ready" | "failed">("loading");
   const [notice, setNotice] = useState<string | null>(null);
   // The words for the last write that failed (a tick, a reopen, a Not now).
@@ -156,6 +162,16 @@ export default function TodoPanel({
     // load and clearUndo only read refs and their arguments
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [estate.key, estate.todos]);
+
+  // A change confirmed in Ask reads the list again at once; the first value is the mount, already read above.
+  const reloadRef = useRef(reloadSignal);
+  useEffect(() => {
+    if (reloadRef.current === reloadSignal) return;
+    reloadRef.current = reloadSignal;
+    if (estate.todos) void load(estate.key);
+    // load only reads refs and its arguments
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadSignal]);
 
   /** A new to-do joins the open list, and its contact's "needs a next step" row goes. */
   function addOpen(key: string, added: Todo) {
@@ -354,7 +370,10 @@ export default function TodoPanel({
                     <li key={t.id}>
                       <TodoRowView
                         todo={t}
-                        onTick={() => void tick(t)}
+                        tickDisabled={askBusy}
+                        onTick={() => {
+                          if (!askBusy) void tick(t);
+                        }}
                         onOpen={() => {
                           setNotice(null);
                           setForm({ kind: "edit", id: t.id });
@@ -378,7 +397,10 @@ export default function TodoPanel({
             setProblem(null);
             setForm({ kind: "add", contact: { target: contactTarget(c), name: c.name } });
           }}
-          onSnooze={(id) => void snooze(id)}
+          onSnooze={(id) => {
+            if (!askBusy) void snooze(id);
+          }}
+          snoozeDisabled={askBusy}
           onShowAll={() => void load(estate.key, true)}
           onOpenContact={openNudgeContact}
         />
@@ -409,7 +431,8 @@ export default function TodoPanel({
                     type="button"
                     aria-label={`Reopen: ${t.title}`}
                     onClick={() => void reopen(t)}
-                    className="min-h-[44px] shrink-0 rounded-xl px-3 text-[16px] font-medium text-[#0E7FA6] active:bg-neutral-100 dark:text-[#6AE6FF] dark:active:bg-white/10"
+                    disabled={askBusy}
+                    className="min-h-[44px] shrink-0 rounded-xl px-3 text-[16px] font-medium text-[#0E7FA6] active:bg-neutral-100 disabled:opacity-50 dark:text-[#6AE6FF] dark:active:bg-white/10"
                   >
                     Reopen
                   </button>
@@ -423,6 +446,8 @@ export default function TodoPanel({
       {undo ? (
         <UndoBar
           text={undo.text}
+          above={above}
+          disabled={askBusy}
           onUndo={() => {
             const t = undo.todo;
             clearUndo();

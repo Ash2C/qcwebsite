@@ -10,6 +10,7 @@ import ChangeCard, { DETAIL_LABELS, MAX_NOTE } from "./ChangeCard";
 import ResearchCard from "./ResearchCard";
 import { card as cardClass, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
 import { useCardConfirm, type AskCard } from "./useCardConfirm";
+import { useAskPage } from "./askPage";
 
 const FAILURE = "Could not reach the server. Check signal and try again.";
 const MAX_VALUE = 300;
@@ -157,6 +158,10 @@ export default function ProfileActions({
 
   const working = cardState?.state === "working";
   const busy = proposing || working || researching;
+  // The profile stays live under Ask: while Ask is busy nothing here may start a write or a model
+  // call (one write at a time). Not reported through onBusy: that is this view's own work.
+  const { askBusy } = useAskPage();
+  const held = busy || askBusy;
   // Research must not replace open work: an open card or an open note, stage or edit panel.
   const openWork = cardState?.state === "open" || panel !== null;
   useEffect(() => {
@@ -198,7 +203,7 @@ export default function ProfileActions({
   const offline = isCompany && p.member === null;
 
   async function propose(body: Omit<ProposeBody, "estate">) {
-    if (proposingRef.current || busy) return;
+    if (proposingRef.current || held) return;
     proposingRef.current = true;
     setProposing(true);
     setRefusal(null);
@@ -233,7 +238,7 @@ export default function ProfileActions({
   }
 
   async function research() {
-    if (researchingRef.current || busy || openWork || !p.personId) return;
+    if (researchingRef.current || held || openWork || !p.personId) return;
     researchingRef.current = true;
     setResearching(true);
     setResearchNote(null);
@@ -321,7 +326,7 @@ export default function ProfileActions({
         {refusal}
       </p>
       {refusal.includes(LOOKALIKE) && (
-        <button type="button" className={secondaryButton} disabled={busy} onClick={() => review(true)}>
+        <button type="button" className={secondaryButton} disabled={held} onClick={() => review(true)}>
           It&apos;s a different company
         </button>
       )}
@@ -350,7 +355,7 @@ export default function ProfileActions({
             </button>
           ))}
           {!isCompany && (
-            <button type="button" disabled={busy || openWork} onClick={() => void research()} className={`${secondaryButton} !px-2`}>
+            <button type="button" disabled={held || openWork} onClick={() => void research()} className={`${secondaryButton} !px-2`}>
               Research
             </button>
           )}
@@ -402,7 +407,7 @@ export default function ProfileActions({
           <button
             type="button"
             className={primaryButton}
-            disabled={busy || noteBlank || noteTooLong}
+            disabled={held || noteBlank || noteTooLong}
             onClick={() => void propose({ kind: "add_note", target: timelineTarget, text: note.trim() })}
           >
             Save note
@@ -422,7 +427,7 @@ export default function ProfileActions({
                     <button
                       key={r.key}
                       type="button"
-                      disabled={busy || openWork}
+                      disabled={held || openWork}
                       onClick={() => {
                         stagePick.close();
                         // Choosing the type it already is keeps it: nothing is sent.
@@ -451,7 +456,7 @@ export default function ProfileActions({
                     <button
                       key={c.label}
                       type="button"
-                      disabled={busy || openWork}
+                      disabled={held || openWork}
                       onClick={() => {
                         stagePick.close();
                         // Choosing the priority it already has keeps it: nothing is sent.
@@ -480,7 +485,7 @@ export default function ProfileActions({
                     <button
                       key={s.key}
                       type="button"
-                      disabled={busy || openWork || current}
+                      disabled={held || openWork || current}
                       onClick={() => {
                         stagePick.close();
                         void propose({ kind: "move_stage", target: timelineTarget, stage: s.key });
@@ -540,7 +545,7 @@ export default function ProfileActions({
             <button type="button" className={secondaryButton} disabled={busy} onClick={() => toggle("edit")}>
               Cancel
             </button>
-            <button type="button" className={secondaryButton} disabled={busy} onClick={() => review(false)}>
+            <button type="button" className={secondaryButton} disabled={held} onClick={() => review(false)}>
               Review changes
             </button>
           </div>
@@ -556,8 +561,9 @@ export default function ProfileActions({
           roleLabel={researchRoleLabel(estate, cardState.signed.proposal.addsToPipeline)}
           state={cardState.state}
           message={cardState.message}
+          blocked={askBusy}
           onSave={(ticked, summary) => {
-            if (cardRef.current?.state !== "open") return;
+            if (cardRef.current?.state !== "open" || askBusy) return;
             tickedRef.current = ticked;
             const next = { ...cardRef.current, text: summary };
             setCard(next);
@@ -573,7 +579,10 @@ export default function ProfileActions({
         <ChangeCard
           card={cardState}
           onText={(text) => patchCard(cardState.id, { text })}
-          onConfirm={() => void confirm(cardState)}
+          onConfirm={() => {
+            if (!askBusy) void confirm(cardState);
+          }}
+          blocked={askBusy}
           onCancel={() => {
             const open = cardRef.current;
             if (open?.state !== "open") return;

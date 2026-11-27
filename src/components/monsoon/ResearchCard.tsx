@@ -41,6 +41,7 @@ export default function ResearchCard({
   message,
   onSave,
   onDiscard,
+  blocked = false,
 }: {
   signed: SignedProposal;
   summary: string;
@@ -49,6 +50,8 @@ export default function ResearchCard({
   message?: string;
   onSave: (ticked: string[], summary: string) => void;
   onDiscard: () => void;
+  /** Another write is in flight elsewhere (Ask): Save waits for it. */
+  blocked?: boolean;
 }) {
   const ids = useId();
   const p = signed.proposal as Research;
@@ -154,7 +157,7 @@ export default function ResearchCard({
           <button
             type="button"
             className={primaryButton + " !min-h-[44px] !rounded-xl !text-[16px]"}
-            disabled={working || empty || tooLong}
+            disabled={working || blocked || empty || tooLong}
             onClick={() =>
               onSave(
                 p.findings.map((f) => f.id).filter((id) => ticked.includes(id)),

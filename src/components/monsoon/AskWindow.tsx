@@ -36,8 +36,11 @@ export default function AskWindow({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // Escape that ends an input-method composition is not a request to close.
-      if (e.key === "Escape" && !e.isComposing && !busyRef.current) closeRef.current();
+      // Escape that ends an input-method composition is not a request to close. Nor is one meant for a
+      // modal sheet on the live page (the what-happened sheet): that sheet closes, Ask stays.
+      if (e.key !== "Escape" || e.isComposing || busyRef.current) return;
+      if (e.defaultPrevented || document.querySelector('[aria-modal="true"]')) return;
+      closeRef.current();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);

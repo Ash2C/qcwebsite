@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import RealAskPanel, { EMPTY_ASK, prepareMessage, type AskState, type AskTurn, type AskViewing } from "./AskPanel";
+import RealAskPanel, { EMPTY_ASK, lookingLine, prepareMessage, type AskState, type AskTurn, type AskViewing } from "./AskPanel";
 import { useAsk } from "./useAsk";
 import * as api from "./api";
 
@@ -71,8 +71,10 @@ function Harness({
   viewing,
   onChanged,
   send,
+  blocked,
 }: {
   send?: { id: string; text: string };
+  blocked?: boolean;
   viewing?: AskViewing | null;
   onChanged?: () => void;
   onResearch?: (personId: string) => void;
@@ -82,7 +84,7 @@ function Harness({
   onBusy?: (b: boolean) => void;
 }) {
   const [state, setState] = useState<AskState>(initial);
-  return <AskPanel estate={estate} state={state} onChange={setState} onUnauthorized={onUnauthorized} onBusy={onBusy} onResearch={onResearch} viewing={viewing} onChanged={onChanged} send={send} />;
+  return <AskPanel estate={estate} state={state} onChange={setState} onUnauthorized={onUnauthorized} onBusy={onBusy} onResearch={onResearch} viewing={viewing} onChanged={onChanged} send={send} blocked={blocked} />;
 }
 
 async function ask(user: User, text: string) {
@@ -823,15 +825,69 @@ describe("research offer", () => {
   });
 });
 
+describe("blocked while the page behind is writing", () => {
+  const TURNS = [
+    { id: "u1", role: "user", content: "Who is warm?" },
+    {
+      id: "a1",
+      role: "assistant",
+      content: "Anna is warm.",
+      refs: [{ memberId: "m1", name: "Anna Lee", company: "Northwind", kind: "person", personId: "p1" }],
+      research: { personId: "p1", name: "Anna Lee", company: "Northwind" },
+      cards: [{ id: "c1", signed: NOTE_PROPOSAL, text: "Call went well", state: "open" }],
+    },
+  ];
+  const panel = (state: unknown, blocked: boolean) => (
+    <AskPanel
+      estate={ESTATE}
+      state={state as AskState}
+      onChange={() => {}}
+      onUnauthorized={() => {}}
+      onOpenContact={() => {}}
+      onResearch={() => {}}
+      blocked={blocked}
+    />
+  );
+
+  it("disables send, the contact chips, Run research and every card's Confirm; the box still takes typing", () => {
+    const { rerender } = render(panel({ turns: TURNS, draft: "Next?" }, true));
+    expect(screen.getByRole("button", { name: "Send question" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Anna Lee" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Run research" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    expect(screen.getByRole("textbox", { name: "Your question" })).toBeEnabled();
+    rerender(panel({ turns: TURNS, draft: "Next?" }, false));
+    expect(screen.getByRole("button", { name: "Send question" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
+  });
+
+  it("disables the suggestion buttons", () => {
+    render(panel({ turns: [], draft: "" }, true));
+    expect(screen.getByRole("button", { name: "Who should I chase this week?" })).toBeDisabled();
+  });
+
+  it("holds a Prepare me request until the page is free, then sends it once", async () => {
+    m.askCrm.mockResolvedValue(answer("Briefing."));
+    const { rerender } = render(<Harness send={{ id: "r1", text: "Prepare me" }} blocked />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(m.askCrm).not.toHaveBeenCalled();
+    rerender(<Harness send={{ id: "r1", text: "Prepare me" }} blocked={false} />);
+    expect(await screen.findByText("Briefing.")).toBeInTheDocument();
+    expect(m.askCrm).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("the profile open underneath", () => {
   const P = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const JANE: AskViewing = { target: { personId: P }, name: "Jane Tan", company: "Acme Capital" };
 
-  it("says who is being looked at, suggests them first and sends only their id", async () => {
+  it("suggests them first and sends only their id; the Looking at line is the window's, not the panel's", async () => {
     const user = userEvent.setup();
     m.askCrm.mockResolvedValueOnce(answer("She is a partner."));
     render(<Harness viewing={JANE} />);
-    expect(screen.getByText("Looking at Jane Tan · Acme Capital")).toBeInTheDocument();
+    expect(lookingLine(JANE)).toBe("Looking at Jane Tan · Acme Capital");
+    expect(screen.queryByText(/Looking at/)).toBeNull();
     const tries = screen.getAllByRole("button").map((b) => b.textContent);
     expect(tries.indexOf("Tell me about Jane Tan")).toBeGreaterThanOrEqual(0);
     expect(tries.indexOf("Tell me about Jane Tan")).toBeLessThan(tries.indexOf("Who should I chase this week?"));
@@ -841,9 +897,9 @@ describe("the profile open underneath", () => {
     expect(JSON.stringify(m.askCrm.mock.calls[0][0])).not.toContain("Acme Capital");
   });
 
-  it("leaves the company out of the line when there is none", () => {
-    render(<Harness viewing={{ ...JANE, company: null }} />);
-    expect(screen.getByText("Looking at Jane Tan")).toBeInTheDocument();
+  it("leaves the company out of the line when there is none, and has no line with nobody open", () => {
+    expect(lookingLine({ ...JANE, company: null })).toBe("Looking at Jane Tan");
+    expect(lookingLine(null)).toBeNull();
   });
 
   it("shows no line and sends no viewing key with nothing open", async () => {

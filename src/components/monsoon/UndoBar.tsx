@@ -40,18 +40,40 @@ export function useUndo(): { undo: UndoEntry | null; showUndo(todo: Todo, text: 
   return { undo, showUndo, clearUndo };
 }
 
-/** The bar itself, fixed above the floating Ask button so both stay tappable. */
-export default function UndoBar({ text, onUndo }: { text: string; onUndo(): void }) {
+/** What Ask shows at the bottom of the screen: the pill row (closed), the minimised bar, or the expanded window. */
+export type AskFootprint = "pill" | "bar" | "window";
+
+// Whole class names, so Tailwind sees each one.
+const ABOVE: Record<AskFootprint, string> = {
+  pill: "bottom-[calc(6rem+env(safe-area-inset-bottom))]",
+  bar: "bottom-[calc(10rem+env(safe-area-inset-bottom))]",
+  window: "bottom-[calc(min(62dvh,580px)+1.5rem+env(safe-area-inset-bottom))]",
+};
+
+/** The bar itself, fixed above whatever Ask shows at the bottom, so both stay tappable. */
+export default function UndoBar({
+  text,
+  onUndo,
+  above,
+  disabled = false,
+}: {
+  text: string;
+  onUndo(): void;
+  above: AskFootprint;
+  /** Undo writes: it waits while Ask is busy. */
+  disabled?: boolean;
+}) {
   return (
     <div
       role="status"
-      className="fixed inset-x-4 bottom-[calc(6rem+env(safe-area-inset-bottom))] z-10 mx-auto flex max-w-md items-center justify-between gap-3 rounded-2xl bg-neutral-900 py-1 pl-4 pr-2 text-white shadow-lg dark:bg-neutral-100 dark:text-neutral-900"
+      className={`fixed inset-x-4 ${ABOVE[above]} z-10 mx-auto flex max-w-md items-center justify-between gap-3 rounded-2xl bg-neutral-900 py-1 pl-4 pr-2 text-white shadow-lg dark:bg-neutral-100 dark:text-neutral-900`}
     >
       <span className="break-words text-[15px]">{text}</span>
       <button
         type="button"
         onClick={onUndo}
-        className="min-h-[44px] shrink-0 rounded-xl px-3 text-[16px] font-semibold text-[#6AE6FF] dark:text-[#0E7FA6]"
+        disabled={disabled}
+        className="min-h-[44px] shrink-0 rounded-xl px-3 text-[16px] font-semibold text-[#6AE6FF] disabled:opacity-50 dark:text-[#0E7FA6]"
       >
         Undo
       </button>

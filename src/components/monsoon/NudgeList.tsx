@@ -21,6 +21,7 @@ function Section({
   onSnooze,
   onShowAll,
   onOpenContact,
+  snoozeDisabled,
 }: {
   heading: string;
   rows: Nudge[];
@@ -30,6 +31,7 @@ function Section({
   onSnooze(memberId: string): void;
   onShowAll(): void;
   onOpenContact(contact: TodoContact): void;
+  snoozeDisabled: boolean;
 }) {
   if (rows.length === 0) return null;
   const more = total - rows.length;
@@ -63,7 +65,8 @@ function Section({
                 type="button"
                 aria-label={`Not now for ${n.contact.name}`}
                 onClick={() => onSnooze(n.contact.memberId)}
-                className={`${action} bg-neutral-100 text-[#0E7FA6] active:bg-neutral-200 dark:bg-white/10 dark:text-[#6AE6FF] dark:active:bg-white/20`}
+                disabled={snoozeDisabled}
+                className={`${action} disabled:opacity-50 bg-neutral-100 text-[#0E7FA6] active:bg-neutral-200 dark:bg-white/10 dark:text-[#6AE6FF] dark:active:bg-white/20`}
               >
                 Not now
               </button>
@@ -92,15 +95,18 @@ export default function NudgeList({
   onSnooze,
   onShowAll,
   onOpenContact,
+  snoozeDisabled = false,
 }: {
   nudges: Nudges;
   onAdd(contact: TodoContact): void;
   onSnooze(memberId: string): void;
   onShowAll(): void;
   onOpenContact(contact: TodoContact): void;
+  /** Not now writes: it waits while Ask is busy. */
+  snoozeDisabled?: boolean;
 }) {
   if (nudges.noNextStep.length === 0 && nudges.quiet.length === 0) return null;
-  const shared = { onAdd, onSnooze, onShowAll, onOpenContact };
+  const shared = { onAdd, onSnooze, onShowAll, onOpenContact, snoozeDisabled };
   return (
     <div className="flex flex-col gap-4">
       <Section

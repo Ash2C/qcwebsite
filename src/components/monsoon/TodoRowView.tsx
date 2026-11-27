@@ -23,6 +23,7 @@ export default function TodoRowView({
   onOpenContact,
   inProfile = false,
   aboutName,
+  tickDisabled = false,
 }: {
   todo: Todo;
   onTick(): void;
@@ -30,6 +31,8 @@ export default function TodoRowView({
   onOpenContact?(): void;
   inProfile?: boolean;
   aboutName?: string | null;
+  /** The tick writes: it waits while Ask is busy. */
+  tickDisabled?: boolean;
 }) {
   const overdue = bucketOf(todo.dueDate, localToday()) === "overdue";
   const line = inProfile ? "" : contactLine(todo);
@@ -40,7 +43,8 @@ export default function TodoRowView({
         type="button"
         aria-label={`Mark done: ${todo.title}`}
         onClick={onTick}
-        className="flex min-h-[64px] w-14 shrink-0 items-center justify-center active:bg-neutral-100 dark:active:bg-white/10"
+        disabled={tickDisabled}
+        className="flex min-h-[64px] w-14 shrink-0 items-center justify-center active:bg-neutral-100 disabled:opacity-40 dark:active:bg-white/10"
       >
         <span aria-hidden="true" className="block h-7 w-7 rounded-full border-2 border-neutral-400 dark:border-neutral-500" />
       </button>

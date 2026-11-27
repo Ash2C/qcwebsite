@@ -8,6 +8,7 @@ import DueDatePicker from "./DueDatePicker";
 import { addDays, dueFromChoice, localToday, type DateChoice } from "./todoDates";
 import { GONE, SAVE_FAILED, writeFailure } from "./todoWrites";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
+import { useAskPage } from "./askPage";
 
 const SEARCH_FAILED = "Could not search. Check signal.";
 const DEBOUNCE_MS = 250;
@@ -60,6 +61,8 @@ export default function TodoForm({
   onGone?(): void;
 }) {
   const ids = useId();
+  // Save and Drop write: they wait while Ask is busy (the page stays live under Ask).
+  const { askBusy } = useAskPage();
   const [today] = useState(() => localToday());
   const start = useState(() => startChoice(initial, today))[0];
   const [title, setTitle] = useState(initial?.title ?? "");
@@ -122,11 +125,11 @@ export default function TodoForm({
 
   const dueDate = dueFromChoice(choice, picked, today);
   const cleanTitle = title.trim();
-  const canSave = cleanTitle !== "" && !busy && (choice !== "pick" || picked !== "");
+  const canSave = cleanTitle !== "" && !busy && !askBusy && (choice !== "pick" || picked !== "");
 
   /** Sends one write; returns the to-do on success, null after showing why not. */
   async function send(body: TodoActionBody): Promise<Todo | null> {
-    if (busyRef.current) return null;
+    if (busyRef.current || askBusy) return null;
     busyRef.current = true;
     setBusy(true);
     setError(null);
@@ -269,7 +272,7 @@ export default function TodoForm({
           Save
         </button>
         {initial?.contact && onPrepare ? (
-          <button type="button" className={secondaryButton} disabled={busy} onClick={() => onPrepare(initial)}>
+          <button type="button" className={secondaryButton} disabled={busy || askBusy} onClick={() => onPrepare(initial)}>
             Prepare me
           </button>
         ) : null}
@@ -279,7 +282,7 @@ export default function TodoForm({
         {initial ? (
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || askBusy}
             onClick={() => void drop()}
             className="min-h-[44px] w-full rounded-xl px-4 text-[16px] font-medium text-red-700 active:bg-red-50 disabled:opacity-50 dark:text-red-300 dark:active:bg-white/10"
           >

@@ -17,8 +17,10 @@ import type { OfferedTodo, RefineOutput } from "@/lib/monsoon/refine";
 import { loadEstates, loadSignInOptions, readCards, saveCard, signIn, type EstateInfo, type SaveBody, type Todo } from "./api";
 import { shortDate } from "./todoDates";
 import { downsizeImage } from "./image";
-import AskPanel, { EMPTY_ASK, prepareMessage, type AskState, type AskViewing } from "./AskPanel";
-import AskSheet from "./AskSheet";
+import AskPanel, { EMPTY_ASK, lookingLine, prepareMessage, type AskState, type AskViewing } from "./AskPanel";
+import AskWindow from "./AskWindow";
+import { AskPageContext } from "./askPage";
+import type { AskFootprint } from "./UndoBar";
 import { useAsk } from "./useAsk";
 import ContactsPanel, { EMPTY_CONTACTS, withOpen, withOpenResearch, type ContactsState, type ContactTarget } from "./ContactsPanel";
 import TodoPanel, { EMPTY_TODOS, type TodosState } from "./TodoPanel";
@@ -90,6 +92,24 @@ function storeEstate(key: string) {
     // Private mode: the choice just is not remembered.
   }
 }
+
+// A touch screen: opening Ask then does not focus the question box (the keyboard would cover the page).
+function touchScreen(): boolean {
+  try {
+    return window.matchMedia?.("(pointer: coarse)").matches === true;
+  } catch {
+    return false;
+  }
+}
+
+const targetKey = (t: ContactTarget) => `${t.memberId ?? ""}|${t.personId ?? ""}|${t.orgId ?? ""}`;
+
+// Room at the bottom of the page for what Ask shows there, so the end of the page can be scrolled into view.
+const ROOM_FOR_ASK: Record<AskFootprint, string> = {
+  pill: "pb-[calc(6rem+env(safe-area-inset-bottom))]",
+  bar: "pb-[calc(10rem+env(safe-area-inset-bottom))]",
+  window: "pb-[calc(min(62dvh,580px)+1.5rem+env(safe-area-inset-bottom))]",
+};
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -164,48 +184,68 @@ export default function MonsoonApp() {
   const batchEstateRef = useRef<string | null>(null);
   // True while a batch save run is in flight (reported by BatchReview).
   const [batchRunning, setBatchRunning] = useState(false);
-  // Ask is a sheet over whatever is on screen, not a mode. Its conversation lives here so it survives
-  // closing the sheet and the passcode screen. Its request logic (useAsk) lives here too, so a question
-  // can be sent while the sheet is not on screen; askBusy is worked out here from both.
+  // Ask is a floating window over a live page, not a mode and not modal. Its conversation lives here so
+  // it survives closing the window and the passcode screen. Its request logic (useAsk) lives here too, so
+  // a question can be sent while the window is not on screen; askBusy is worked out here from both.
   const [mode, setMode] = useState<"capture" | "todo" | "contacts">("capture");
   const [askOpen, setAskOpen] = useState(false);
+  // Open and minimised: only the window's bar shows, above the pill row; the conversation is kept.
+  const [askCollapsed, setAskCollapsed] = useState(false);
   // The loaded profile underneath, reported by ContactsPanel; null whenever none is on screen.
   const [viewing, setViewing] = useState<AskViewing | null>(null);
-  // A change confirmed in Ask makes the profile underneath stale: closing the sheet re-reads it.
-  const askChangedRef = useRef(false);
+  // Bumped by a change confirmed in Ask: the open profile and the To do list are read again at once.
   const [profileReload, setProfileReload] = useState(0);
-  // Closing the sheet hands the keyboard focus back to the button that opened it.
+  // Closing the window hands the keyboard focus back to the pill that opened it.
   const askButtonRef = useRef<HTMLButtonElement>(null);
   const askWasOpenRef = useRef(false);
   useEffect(() => {
     if (askWasOpenRef.current && !askOpen) askButtonRef.current?.focus({ preventScroll: true });
     askWasOpenRef.current = askOpen;
   }, [askOpen]);
-  // Prepare me: the to-do's contact stands in for the open profile while Ask is open, and the fixed
-  // request is sent once. Both are dropped when the sheet closes, so reopening Ask sends nothing.
+  // Prepare me: the to-do's contact stands in for the open profile, and the fixed request is sent once.
+  // It stands in only until another profile is opened or the window closes, so "this person" never
+  // means someone off screen; reopening Ask sends nothing.
   const [prepared, setPrepared] = useState<AskViewing | null>(null);
+  // The profile on screen when Prepare me was tapped (none on the To do tab).
+  const preparedOnRef = useRef<string | null>(null);
   const [sendRequest, setSendRequest] = useState<{ id: string; text: string } | null>(null);
   function closeAsk() {
     setAskOpen(false);
+    setAskCollapsed(false);
     setPrepared(null);
     setSendRequest(null);
-    if (askChangedRef.current) {
-      askChangedRef.current = false;
-      setProfileReload((n) => n + 1);
-    }
+  }
+  // Opens (or expands) the window. A computer focuses the question box; a touch screen only on an
+  // explicit request to type (Ask about this contact), so the keyboard does not cover the page.
+  function openAsk(opts?: { focus?: boolean }) {
+    setAskOpen(true);
+    setAskCollapsed(false);
+    if (opts?.focus || !touchScreen()) setFocusAsk(true);
+  }
+  // Minimises an open window so the page behind can be read; a closed one stays closed.
+  function minimiseAsk() {
+    if (askOpen) setAskCollapsed(true);
   }
   // Contacts mode: search text and the open profile live here too, so they survive tab switches and the passcode screen.
   const [contacts, setContacts] = useState<ContactsState>(EMPTY_CONTACTS);
   // To do mode: the list and any open form live here too, so they survive tab switches.
   const [todos, setTodos] = useState<TodosState>(EMPTY_TODOS);
   const [ask, setAsk] = useState<AskState>(EMPTY_ASK);
-  // A "Run research" tap is only good while Contacts is showing; leaving it, or opening Ask over it, withdraws the request.
+  // A "Run research" tap is only good while Contacts is showing; leaving it, or expanding Ask over it,
+  // withdraws the request. Run research itself minimises the window, which leaves the request standing.
+  const askExpanded = askOpen && !askCollapsed;
   useEffect(() => {
-    if (mode !== "contacts" || askOpen) setContacts((c) => (c.autoResearch ? { ...c, autoResearch: false } : c));
-  }, [mode, askOpen]);
+    if (mode !== "contacts" || askExpanded) setContacts((c) => (c.autoResearch ? { ...c, autoResearch: false } : c));
+  }, [mode, askExpanded]);
+  // A Prepare me contact gives way to the profile on screen once a different one is opened.
+  useEffect(() => {
+    if (!prepared || !viewing) return;
+    const key = targetKey(viewing.target);
+    if (key !== preparedOnRef.current && key !== targetKey(prepared.target)) setPrepared(null);
+  }, [viewing, prepared]);
   // True while a profile action (proposing or confirming a change) is in flight; reported by ProfileActions.
   const [profileBusy, setProfileBusy] = useState(false);
-  // "Ask about this contact" asks the Ask panel to focus its question box once it opens.
+  // Asks the Ask panel to focus its question box (see openAsk); the panel clears it once done.
   const [focusAsk, setFocusAsk] = useState(false);
   // The Ask conversation belongs to one estate: any path that changes the estate clears it.
   const askEstateRef = useRef(estateKey);
@@ -261,6 +301,7 @@ export default function MonsoonApp() {
           // Nor their Ask conversation (its answers can restate their page), draft or open contact.
           setAsk(EMPTY_ASK);
           setAskOpen(false);
+          setAskCollapsed(false);
           setPrepared(null);
           setSendRequest(null);
           setContacts(EMPTY_CONTACTS);
@@ -414,39 +455,43 @@ export default function MonsoonApp() {
     dropMatch();
   }
 
-  // A chip in an answer: Contacts with that profile open; the Ask conversation stays as it is.
+  // Opens a profile (from a chip in an answer, a To do row, the batch review, the match line or the
+  // save line): Contacts with that profile open behind Ask, whose window is minimised so the profile
+  // can be read. The conversation stays as it is.
   function openContact(target: ContactTarget) {
     if (askBusy || profileBusy) return;
     setContacts((c) => withOpen(c, target));
     setKeyOpen(false);
     setUserOpen(false);
     setMode("contacts");
-    closeAsk();
+    minimiseAsk();
   }
 
-  // "Run research" on an offer: the person's profile opens in Contacts and research starts there.
+  // "Run research" on an offer: the person's profile opens in Contacts and research starts there; the
+  // window is minimised (not expanded over it, which would withdraw the request).
   function openAndResearch(personId: string) {
     if (askBusy || profileBusy) return;
     setContacts((c) => withOpenResearch(c, personId));
     setKeyOpen(false);
     setUserOpen(false);
     setMode("contacts");
-    closeAsk();
+    minimiseAsk();
   }
 
-  // Prepare me on a to-do with a contact: opens Ask about that contact and asks for a briefing, as if typed.
-  // A tap while an answer is on its way is ignored: that answer is never interrupted.
+  // Prepare me on a to-do with a contact: opens (or expands) Ask about that contact and asks for a
+  // briefing, as if typed. A tap while Ask or the page is busy is ignored: nothing is interrupted.
   function prepare(todo: Todo) {
     const c = todo.contact;
-    if (!c || askBusy || askBlocked || askOpen) return;
+    if (!c || askBusy || askBlocked) return;
     // The person it is about, else the contact's person, else the company, else its pipeline entry.
     const personId = c.aboutPersonId ?? c.personId;
     const target: ContactTarget = personId ? { personId } : c.orgId ? { orgId: c.orgId } : { memberId: c.memberId };
     const name = c.aboutPersonId && c.aboutName ? c.aboutName : c.name;
     const company = personId ? (c.aboutPersonId ? c.name : c.company) : null;
+    preparedOnRef.current = viewing ? targetKey(viewing.target) : null;
     setPrepared({ target, name, company });
     setSendRequest({ id: crypto.randomUUID(), text: prepareMessage(name, todo.title, todo.dueDate ? shortDate(todo.dueDate) : null) });
-    setAskOpen(true);
+    openAsk();
   }
 
   // Ask about the open profile: the draft is prefilled, never sent, and never overwrites typed text.
@@ -455,8 +500,7 @@ export default function MonsoonApp() {
     // The draft already has a line that starts with this text: leave it as it is.
     const has = (a: AskState) => a.draft.split("\n").some((l) => l.startsWith(text) || l.trimEnd() === text.trimEnd());
     setAsk((a) => (has(a) ? a : { ...a, draft: (a.draft.trim() === "" ? text : a.draft + "\n" + text).slice(0, 2000) }));
-    setFocusAsk(true);
-    setAskOpen(true);
+    openAsk({ focus: true });
   }
 
   async function onPhoto(event: React.ChangeEvent<HTMLInputElement>) {
@@ -789,15 +833,19 @@ export default function MonsoonApp() {
         ? "text-red-600 dark:text-red-400"
         : "text-neutral-900 dark:text-white";
 
+  // The page is reading or writing: Ask starts nothing until it is done (one write at a time).
   const askBlocked = reading || saving || tidying || batchRunning || profileBusy;
-  const askButton = estate ? (
+  // What Ask shows at the bottom: the pill row (closed), the minimised bar above it, or the window.
+  const footprint: AskFootprint = !askOpen ? "pill" : askCollapsed ? "bar" : "window";
+  // The pill row shows while Ask is closed or minimised; the expanded window takes its place.
+  const askButton = estate && footprint !== "window" ? (
     <div className="pointer-events-none fixed inset-x-0 bottom-0 z-10 flex justify-center px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
       <button
         type="button"
         ref={askButtonRef}
         aria-label="Ask Monsoon"
         disabled={askBlocked}
-        onClick={() => setAskOpen(true)}
+        onClick={() => openAsk()}
         className="pointer-events-auto flex min-h-[60px] w-[62%] max-w-[280px] items-center justify-center gap-2.5 rounded-full bg-[#0E7FA6] px-6 text-[19px] font-semibold text-white shadow-lg shadow-black/25 active:bg-[#0D6A8F] disabled:bg-neutral-400 disabled:text-white dark:bg-[#6AE6FF] dark:text-[#04121A] dark:active:bg-[#3FB8D4] dark:disabled:bg-neutral-700 dark:disabled:text-neutral-400"
       >
         <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
@@ -807,10 +855,18 @@ export default function MonsoonApp() {
       </button>
     </div>
   ) : null;
-  const roomForAsk = "pb-[calc(6rem+env(safe-area-inset-bottom))]";
-  const askSheet =
+  const roomForAsk = estate ? ROOM_FOR_ASK[footprint] : "pb-4";
+  const askWindow =
     askOpen && estate ? (
-      <AskSheet busy={askBusy} onClose={closeAsk}>
+      <AskWindow
+        busy={askBusy}
+        collapsed={askCollapsed}
+        onCollapsed={setAskCollapsed}
+        onClose={closeAsk}
+        looking={lookingLine(prepared ?? viewing)}
+        hasConversation={ask.turns.length > 0}
+        sound={null}
+      >
         <AskPanel
           ask={askHook}
           estate={estate}
@@ -824,18 +880,33 @@ export default function MonsoonApp() {
           suggested={message?.open && message.open.estate === estateKey ? [`Tell me about ${message.open.name}`] : []}
           viewing={prepared ?? viewing}
           send={sendRequest ?? undefined}
-          onChanged={() => {
-            askChangedRef.current = true;
-          }}
+          blocked={askBlocked}
+          // What is underneath is read again at once: the open profile and the To do list.
+          onChanged={() => setProfileReload((n) => n + 1)}
         />
-      </AskSheet>
+      </AskWindow>
     ) : null;
+  // Every screen: Ask over the live page, which knows whether Ask is busy and what it shows at the bottom.
+  const frame = (main: React.ReactNode) => (
+    <AskPageContext.Provider value={{ askBusy, above: footprint }}>
+      <Shell>
+        {askWindow}
+        {askButton}
+        {main}
+      </Shell>
+    </AskPageContext.Provider>
+  );
+  // A page whose controls do not check Ask themselves: all of them wait while Ask is busy.
+  const heldWhileAsking = (page: React.ReactNode) => (
+    <fieldset disabled={askBusy} className="m-0 flex min-w-0 flex-col gap-4 border-0 p-0">
+      {page}
+    </fieldset>
+  );
 
   if (keyOpen) {
-    return (
-      <Shell>
-        {askSheet ?? askButton}
-        <main className={`mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pt-[max(1rem,env(safe-area-inset-top))] ${askButton ? roomForAsk : "pb-4"}`}>
+    return frame(
+      <main className={`mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pt-[max(1rem,env(safe-area-inset-top))] ${roomForAsk}`}>
+        {heldWhileAsking(
           <ClaudeKeyPanel
             onBack={() => setKeyOpen(false)}
             onUnauthorized={() => {
@@ -843,18 +914,17 @@ export default function MonsoonApp() {
               setPhase("locked");
             }}
             onStatus={setClaude}
-          />
-        </main>
-      </Shell>
+          />,
+        )}
+      </main>,
     );
   }
 
   // The user's own page, for the CRM in use. A 401 keeps it open: it is there again after sign-in.
   if (userOpen && estate?.available) {
-    return (
-      <Shell>
-        {askSheet ?? askButton}
-        <main className={`mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pt-[max(1rem,env(safe-area-inset-top))] ${askButton ? roomForAsk : "pb-4"}`}>
+    return frame(
+      <main className={`mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pt-[max(1rem,env(safe-area-inset-top))] ${roomForAsk}`}>
+        {heldWhileAsking(
           <UserPanel
             estate={estate}
             draft={userDraft}
@@ -864,19 +934,15 @@ export default function MonsoonApp() {
             onBack={() => setUserOpen(false)}
             onUnauthorized={() => setPhase("locked")}
             onName={setPersonName}
-          />
-        </main>
-      </Shell>
+          />,
+        )}
+      </main>,
     );
   }
 
-  return (
-    <Shell>
-      {askSheet ?? askButton}
+  return frame(
       <main
-        className={`mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pt-[max(1rem,env(safe-area-inset-top))] ${
-          askButton ? roomForAsk : "pb-4"
-        }`}
+        className={`mx-auto flex min-h-dvh max-w-md flex-col gap-4 px-4 pt-[max(1rem,env(safe-area-inset-top))] ${roomForAsk}`}
       >
         <div className="flex items-center justify-between gap-3 pt-2">
           <MonsoonLogo className="h-8 px-1" />
@@ -978,6 +1044,7 @@ export default function MonsoonApp() {
             onUnauthorized={() => setPhase("locked")}
             onOpenContact={openContact}
             onPrepare={prepare}
+            reloadSignal={profileReload}
           />
         ) : mode === "contacts" && estate ? (
           <ContactsPanel
@@ -1000,12 +1067,13 @@ export default function MonsoonApp() {
             onClose={closeBatch}
             onRunning={setBatchRunning}
             onOpenProfile={(personId) => openContact({ personId })}
+            held={askBusy}
           />
         ) : (
           <>
             <label
               className={`flex min-h-[64px] cursor-pointer items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-[#0E7FA6]/50 bg-[#0E7FA6]/5 text-[19px] font-semibold text-[#0E7FA6] active:bg-[#0E7FA6]/10 dark:border-[#6AE6FF]/50 dark:bg-[#6AE6FF]/10 dark:text-[#6AE6FF] ${
-                busy ? "pointer-events-none opacity-50" : ""
+                busy || askBusy ? "pointer-events-none opacity-50" : ""
               }`}
             >
               {reading ? (
@@ -1026,7 +1094,7 @@ export default function MonsoonApp() {
                 </svg>
               )}
               <span>{reading ? "Reading photo…" : "Snap or choose a photo"}</span>
-              <input type="file" accept="image/*" hidden disabled={busy} onChange={onPhoto} />
+              <input type="file" accept="image/*" hidden disabled={busy || askBusy} onChange={onPhoto} />
             </label>
 
             {/* The server's same-name question is the same question as the match line: ask it once. */}
@@ -1071,7 +1139,7 @@ export default function MonsoonApp() {
                 {prompt && (
                   <PromptButtons
                     prompt={prompt}
-                    disabled={busy}
+                    disabled={busy || askBusy}
                     onUseOrg={(org) => {
                       setForm((f) => ({ ...f, org }));
                       void doSave({ org, newOrg: false });
@@ -1120,7 +1188,7 @@ export default function MonsoonApp() {
                       if (b) tidyGenRef.current = genRef.current;
                       setTidying(b);
                     }}
-                    disabled={busy}
+                    disabled={busy || askBusy}
                   />
                   {estate?.todos && (
                     <OfferedTodos key={offeredGen} todos={offered} onChange={setOffered} disabled={busy} />
@@ -1141,7 +1209,7 @@ export default function MonsoonApp() {
               <button
                 type="button"
                 className={primaryButton}
-                disabled={busy || !form.name.trim() || waitingForChoice}
+                disabled={busy || askBusy || !form.name.trim() || waitingForChoice}
                 onClick={() => void doSave()}
               >
                 {saving ? "Saving…" : "Save"}
@@ -1149,7 +1217,6 @@ export default function MonsoonApp() {
             </div>
           </>
         )}
-      </main>
-    </Shell>
+      </main>,
   );
 }

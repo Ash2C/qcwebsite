@@ -6,6 +6,7 @@ import TickSheet from "./TickSheet";
 import TodoForm from "./TodoForm";
 import TodoRowView from "./TodoRowView";
 import UndoBar, { useUndo } from "./UndoBar";
+import { useAskPage } from "./askPage";
 import { loadTodos, type EstateInfo, type Todo, type TodoTarget } from "./api";
 import { card, secondaryButton } from "./styles";
 import { shortDate } from "./todoDates";
@@ -48,6 +49,8 @@ export default function ProfileTodos({
   /** A change to this number reads the to-dos again. */
   reloadSignal?: number;
 }) {
+  // The page stays live under Ask: its writes wait while Ask is busy, and the Undo bar sits above Ask.
+  const { askBusy, above } = useAskPage();
   const [phase, setPhase] = useState<Phase>("loading");
   const [open, setOpen] = useState<Todo[]>([]);
   const [done, setDone] = useState<Todo[]>([]);
@@ -219,7 +222,10 @@ export default function ProfileTodos({
                 todo={t}
                 inProfile
                 aboutName={aboutOther(t)}
-                onTick={() => void tickOff(t)}
+                tickDisabled={askBusy}
+                onTick={() => {
+                  if (!askBusy) void tickOff(t);
+                }}
                 onOpen={() => {
                   setNotice(null);
                   setForm({ kind: "edit", id: t.id });
@@ -253,7 +259,8 @@ export default function ProfileTodos({
                     type="button"
                     aria-label={`Reopen: ${t.title}`}
                     onClick={() => void reopen(t)}
-                    className="min-h-[44px] shrink-0 rounded-xl px-3 text-[16px] font-medium text-[#0E7FA6] active:bg-neutral-100 dark:text-[#6AE6FF] dark:active:bg-white/10"
+                    disabled={askBusy}
+                    className="min-h-[44px] shrink-0 rounded-xl px-3 text-[16px] font-medium text-[#0E7FA6] active:bg-neutral-100 disabled:opacity-50 dark:text-[#6AE6FF] dark:active:bg-white/10"
                   >
                     Reopen
                   </button>
@@ -267,6 +274,8 @@ export default function ProfileTodos({
       {undo ? (
         <UndoBar
           text={undo.text}
+          above={above}
+          disabled={askBusy}
           onUndo={() => {
             const t = undo.todo;
             clearUndo();

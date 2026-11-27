@@ -31,6 +31,12 @@ export type AskViewing = { target: ContactTarget; name: string; company: string 
 export type AskState = { turns: AskTurn[]; draft: string };
 export const EMPTY_ASK: AskState = { turns: [], draft: "" };
 
+/** The "Looking at <name> · <company>" line for the contact Ask is about; null when there is none. */
+export function lookingLine(viewing: AskViewing | null | undefined): string | null {
+  if (!viewing) return null;
+  return viewing.company ? `Looking at ${viewing.name} · ${viewing.company}` : `Looking at ${viewing.name}`;
+}
+
 const MAX_CHIPS = 5;
 const SUGGESTIONS = ["Who should I chase this week?", "Who did I add most recently?", "Summarise the pipeline", "Tell me about "];
 const SPEAK_HINT = "Tap the microphone on the keyboard and talk, then press Ask.";
@@ -103,6 +109,7 @@ export default function AskPanel({
   viewing,
   onChanged,
   send: sendRequest,
+  blocked = false,
 }: {
   /** The request logic, owned by the parent; built from the same estate, state and viewing. */
   ask: ReturnType<typeof useAsk>;
@@ -128,6 +135,11 @@ export default function AskPanel({
    * ordinary turn; what is typed in the box stays. The parent drops it when the sheet closes.
    */
   send?: { id: string; text: string };
+  /**
+   * The page behind is writing or reading (one write at a time): nothing here may start a question or
+   * a change until it is done. Typing and dictation still work.
+   */
+  blocked?: boolean;
 }) {
   // The microphone uses the browser's speech recognition, which hands over text only. Where the
   // browser has none, the hint points at the keyboard's own dictation.
@@ -153,14 +165,16 @@ export default function AskPanel({
   // The failure line belongs to this screen: closing it drops the line, as it did when the panel owned it.
   useEffect(() => clearFailure, [clearFailure]);
 
+  // On opening, and again whenever the parent asks (the panel stays mounted while the window is
+  // minimised, so expanding it to type is not a new mount). The request is consumed by onFocused.
   useEffect(() => {
     if (!focusOnOpen) return;
     const el = inputRef.current;
     el?.focus();
     el?.setSelectionRange?.(el.value.length, el.value.length);
     onFocused?.();
-    // Only on opening: the request is consumed by onFocused.
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusOnOpen]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ block: "end" });
@@ -202,18 +216,18 @@ export default function AskPanel({
   // The id of the request already sent, so a re-render (or a second effect run) never sends it twice.
   const sentRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!sendRequest || busy || sentRef.current === sendRequest.id) return;
+    if (!sendRequest || busy || blocked || sentRef.current === sendRequest.id) return;
     sentRef.current = sendRequest.id;
     void send(sendRequest.text);
     // send reads the latest render; only a new request or Ask becoming free should run this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sendRequest?.id, busy]);
+  }, [sendRequest?.id, busy, blocked]);
 
   // Sends `text` as the question, or the draft in the box when none is given. Listening stops first,
   // so words still arriving cannot write into the emptied box.
   function send(text?: string) {
     const question = text ?? state.draft;
-    if (busy || question.trim() === "" || question.length > MAX_DRAFT) return;
+    if (busy || blocked || question.trim() === "" || question.length > MAX_DRAFT) return;
     dictation.cancel();
     void ask.send(text);
   }
@@ -280,6 +294,7 @@ export default function AskPanel({
                 key={s}
                 type="button"
                 className={secondaryButton}
+                disabled={blocked}
                 onClick={() => {
                   setDraft(s);
                   inputRef.current?.focus();
@@ -302,7 +317,7 @@ export default function AskPanel({
               {t.content}
             </div>
             {t.role === "assistant" && t.refs && t.refs.length > 0 && onOpenContact ? (
-              <RefChips refs={t.refs} disabled={busy} onOpen={onOpenContact} />
+              <RefChips refs={t.refs} disabled={busy || blocked} onOpen={onOpenContact} />
             ) : null}
             {t.research && onResearch ? (
               <div className={`${cardClass} flex min-w-0 flex-col gap-3 p-4`}>
@@ -312,7 +327,7 @@ export default function AskPanel({
                 ) : null}
                 <button
                   type="button"
-                  disabled={busy || t.researchUsed === true}
+                  disabled={busy || blocked || t.researchUsed === true}
                   className={primaryButton}
                   onClick={() => tapOffer(t.id, t.research!.personId)}
                 >
@@ -325,8 +340,11 @@ export default function AskPanel({
                 key={c.id}
                 card={c}
                 onText={(text) => patchCard(c.id, { text })}
-                onConfirm={() => void confirm(c)}
+                onConfirm={() => {
+                  if (!blocked) void confirm(c);
+                }}
                 onCancel={() => cancel(c)}
+                blocked={blocked}
               />
             ))}
           </div>
@@ -346,11 +364,7 @@ export default function AskPanel({
       </div>
 
       <div className="sticky bottom-0 -mx-4 mt-auto flex flex-col gap-2 bg-[#f2f2f7]/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur dark:bg-[#07090C]/90">
-        {viewing ? (
-          <p className="break-words px-1 text-[13px] text-neutral-500 dark:text-neutral-400">
-            {viewing.company ? `Looking at ${viewing.name} · ${viewing.company}` : `Looking at ${viewing.name}`}
-          </p>
-        ) : null}
+        {/* The "Looking at" line is the window's (its header), built with lookingLine. */}
         {dictation.listening ? (
           <p role="status" className="px-1 text-[15px] font-medium text-red-600 dark:text-red-400">
             Listening... Tap the microphone to stop.
@@ -414,7 +428,7 @@ export default function AskPanel({
           type="button"
           className={`${primaryButton} !min-h-[44px] !w-auto shrink-0 !px-5`}
           aria-label="Send question"
-          disabled={busy || state.draft.trim() === ""}
+          disabled={busy || blocked || state.draft.trim() === ""}
           onClick={() => void send()}
         >
           Ask
