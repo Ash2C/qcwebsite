@@ -101,7 +101,14 @@ export default function AskWindow({
             Close
           </button>
         </div>
-        {collapsed ? <div className="h-1" /> : <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-4 pt-2">{children}</div>}
+        {/* Kept mounted when minimised so in-flight confirmations and dictation survive; hidden removes it from view, focus and the accessibility tree. */}
+        <div
+          hidden={collapsed}
+          className={collapsed ? "hidden" : "flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-4 pt-2"}
+        >
+          {children}
+        </div>
+        {collapsed ? <div className="h-1" /> : null}
       </div>
     </div>
   );

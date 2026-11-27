@@ -72,9 +72,26 @@ describe("AskWindow", () => {
     expect(onCollapsed).toHaveBeenCalledTimes(2);
   });
 
-  it("collapsed renders no children and offers to return or to ask", () => {
+  it("collapsed keeps children mounted but hidden, and their state survives collapse and expand", () => {
+    const Wrap = ({ collapsed }: { collapsed: boolean }) => (
+      <AskWindow busy={false} collapsed={collapsed} onCollapsed={() => {}} onClose={() => {}} looking={null} hasConversation sound={null}>
+        <input aria-label="draft" />
+      </AskWindow>
+    );
+    const { rerender } = render(<Wrap collapsed={false} />);
+    fireEvent.change(screen.getByLabelText("draft"), { target: { value: "typed text" } });
+    rerender(<Wrap collapsed />);
+    const input = screen.getByLabelText("draft", { selector: "input" });
+    expect(input).toBeInTheDocument();
+    expect(input).not.toBeVisible();
+    rerender(<Wrap collapsed={false} />);
+    expect(screen.getByLabelText("draft")).toBeVisible();
+    expect(screen.getByLabelText("draft")).toHaveValue("typed text");
+  });
+
+  it("collapsed shows only the header and offers to return or to ask", () => {
     const { onCollapsed, unmount } = setup({ collapsed: true, hasConversation: true, looking: "Looking at Anna Lee" });
-    expect(screen.queryByText("inside")).toBeNull();
+    expect(screen.getByText("inside")).not.toBeVisible();
     expect(screen.getByText("Tap to return to your conversation")).toBeInTheDocument();
     expect(screen.queryByText(/Looking at/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { expanded: false }));
