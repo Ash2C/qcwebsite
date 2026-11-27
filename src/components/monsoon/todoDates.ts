@@ -68,3 +68,12 @@ export function dueFromChoice(choice: DateChoice, picked: string, today: string)
   if (choice === "pick") return picked || null;
   return null;
 }
+
+/** The date choices, in the order they are shown. */
+export const CHOICES: { key: DateChoice; label: string }[] = [
+  { key: "today", label: "Today" },
+  { key: "tomorrow", label: "Tomorrow" },
+  { key: "week", label: "Next week" },
+  { key: "pick", label: "Pick a date" },
+  { key: "none", label: "No date" },
+];

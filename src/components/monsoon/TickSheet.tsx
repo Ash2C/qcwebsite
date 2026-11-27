@@ -2,100 +2,16 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { todoAction, type EstateInfo, type Todo, type TodoActionBody } from "./api";
-import { CHOICES, contactTarget, writeFailure } from "./TodoForm";
+import DictatedField from "./DictatedField";
+import DueDatePicker from "./DueDatePicker";
 import { dueFromChoice, localToday, type DateChoice } from "./todoDates";
-import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
-import { useDictation } from "./useDictation";
+import { SAVE_FAILED, contactTarget, writeFailure } from "./todoWrites";
+import { primaryButton, secondaryButton } from "./styles";
 
 const MAX_OUTCOME = 2000;
 const MAX_TITLE = 300;
-const SAVE_FAILED = "Could not save. Check signal.";
-const MIC_DENIED = "The microphone is blocked. Allow it in Settings, or use the microphone on the keyboard.";
-const MIC_FAILED = "Could not listen. Try again, or use the microphone on the keyboard.";
-const KEYBOARD_HINT = "This browser cannot listen. Use the microphone on the keyboard.";
 
 export type TickResult = { outcome: boolean; next: Todo | null };
-
-/** A text box with a microphone: what is spoken is added after what is already typed. */
-function DictatedBox({
-  label,
-  value,
-  max,
-  readOnly,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  max: number;
-  readOnly?: boolean;
-  onChange(next: string): void;
-}) {
-  const id = useId();
-  const [hint, setHint] = useState(false);
-  const baseRef = useRef("");
-  const boxRef = useRef<HTMLTextAreaElement>(null);
-  const dictation = useDictation((spoken) => {
-    const base = baseRef.current.trim() === "" ? "" : `${baseRef.current.trimEnd()} `;
-    onChange(`${base}${spoken.trimStart()}`.slice(0, max));
-  });
-  const heard = dictation.listening;
-  return (
-    <div>
-      <div className={card}>
-        <label htmlFor={id} className={fieldLabel}>
-          {label}
-        </label>
-        <div className="flex items-start gap-1 pr-2">
-          <textarea
-            id={id}
-            ref={boxRef}
-            rows={2}
-            maxLength={max}
-            value={value}
-            readOnly={readOnly}
-            onChange={(e) => {
-              dictation.cancel();
-              onChange(e.target.value);
-            }}
-            className={`${fieldInput} resize-none`}
-          />
-          <button
-            type="button"
-            aria-label={heard ? `Stop listening: ${label}` : `Speak: ${label}`}
-            aria-pressed={heard}
-            disabled={readOnly}
-            onClick={() => {
-              if (heard) return dictation.stop();
-              baseRef.current = value;
-              if (dictation.start()) return setHint(false);
-              setHint(true);
-              boxRef.current?.focus();
-            }}
-            className={`mt-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full disabled:opacity-40 ${
-              heard ? "bg-red-600 text-white active:bg-red-700" : "text-[#0E7FA6] active:bg-neutral-100 dark:text-[#6AE6FF] dark:active:bg-white/10"
-            }`}
-          >
-            <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="9" y="3" width="6" height="11" rx="3" />
-              <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" />
-            </svg>
-          </button>
-        </div>
-      </div>
-      {heard ? (
-        <p role="status" className="px-1 pt-1 text-[15px] font-medium text-red-600 dark:text-red-400">
-          Listening... Tap the microphone to stop.
-        </p>
-      ) : dictation.error ? (
-        <p role="alert" className="px-1 pt-1 text-[15px] font-medium text-red-600 dark:text-red-400">
-          {dictation.error === "denied" ? MIC_DENIED : MIC_FAILED}
-        </p>
-      ) : hint ? (
-        <p className="px-1 pt-1 text-[15px] text-neutral-600 dark:text-neutral-300">{KEYBOARD_HINT}</p>
-      ) : null}
-    </div>
-  );
-}
 
 // The small sheet after a to-do with a contact is ticked off. The tick is already saved: what is
 // typed here is added to it (what happened, and a next to-do for the same contact). Leaving any
@@ -216,39 +132,10 @@ export default function TickSheet({
         <h2 id={`${ids}-title`} className="break-words px-1 text-[19px] font-semibold">
           {heading}
         </h2>
-        <DictatedBox label="What happened?" value={outcome} max={MAX_OUTCOME} readOnly={outcomeSent} onChange={setOutcome} />
-        <DictatedBox label="What's next?" value={next} max={MAX_TITLE} onChange={setNext} />
+        <DictatedField label="What happened?" value={outcome} max={MAX_OUTCOME} readOnly={outcomeSent} onChange={setOutcome} />
+        <DictatedField label="What's next?" value={next} max={MAX_TITLE} onChange={setNext} />
 
-        <div className="flex flex-col gap-2">
-          <span id={`${ids}-when`} className="px-1 text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-            When
-          </span>
-          <div role="group" aria-labelledby={`${ids}-when`} className="grid grid-cols-2 gap-2">
-            {CHOICES.map((c) => (
-              <button
-                key={c.key}
-                type="button"
-                aria-pressed={choice === c.key}
-                onClick={() => setChoice(c.key)}
-                className={`min-h-[44px] rounded-xl px-3 text-[16px] font-semibold ${
-                  choice === c.key
-                    ? "bg-[#0E7FA6] text-white dark:bg-[#6AE6FF] dark:text-[#04121A]"
-                    : "bg-neutral-200/80 text-neutral-700 dark:bg-white/10 dark:text-neutral-200"
-                }`}
-              >
-                {c.label}
-              </button>
-            ))}
-          </div>
-          {choice === "pick" ? (
-            <div className={card}>
-              <label htmlFor={`${ids}-date`} className={fieldLabel}>
-                Date
-              </label>
-              <input id={`${ids}-date`} type="date" value={picked} onChange={(e) => setPicked(e.target.value)} className={fieldInput} />
-            </div>
-          ) : null}
-        </div>
+        <DueDatePicker choice={choice} picked={picked} onChoice={setChoice} onPicked={setPicked} />
 
         {error ? (
           <p role="alert" className="px-1 text-[15px] font-medium text-red-700 dark:text-red-300">

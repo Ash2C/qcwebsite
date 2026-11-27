@@ -2,28 +2,18 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import type { SiftHit } from "@/lib/monsoon/sift";
-import { searchContacts, todoAction, type EstateInfo, type Todo, type TodoActionBody, type TodoContact, type TodoTarget } from "./api";
+import { searchContacts, todoAction, type EstateInfo, type Todo, type TodoActionBody, type TodoTarget } from "./api";
+import DictatedField, { type DictatedHandle } from "./DictatedField";
+import DueDatePicker from "./DueDatePicker";
 import { addDays, dueFromChoice, localToday, type DateChoice } from "./todoDates";
+import { GONE, SAVE_FAILED, writeFailure } from "./todoWrites";
 import { card, fieldInput, fieldLabel, primaryButton, secondaryButton } from "./styles";
-import { useDictation } from "./useDictation";
 
-export const GONE = "That to-do is no longer there.";
-const SAVE_FAILED = "Could not save. Check signal.";
 const SEARCH_FAILED = "Could not search. Check signal.";
-const MIC_DENIED = "The microphone is blocked. Allow it in Settings, or use the microphone on the keyboard.";
-const MIC_FAILED = "Could not listen. Try again, or use the microphone on the keyboard.";
-const KEYBOARD_HINT = "This browser cannot listen. Use the microphone on the keyboard.";
 const DEBOUNCE_MS = 250;
 const MAX_TITLE = 300;
 
 type Choice = DateChoice;
-export const CHOICES: { key: Choice; label: string }[] = [
-  { key: "today", label: "Today" },
-  { key: "tomorrow", label: "Tomorrow" },
-  { key: "week", label: "Next week" },
-  { key: "pick", label: "Pick a date" },
-  { key: "none", label: "No date" },
-];
 
 type Chip = { name: string; target?: TodoTarget };
 
@@ -31,20 +21,6 @@ type Chip = { name: string; target?: TodoTarget };
 function targetOfHit(hit: SiftHit): TodoTarget | null {
   if (hit.kind === "person") return hit.personId ? { personId: hit.personId } : null;
   return hit.member ? { memberId: hit.member.memberId } : null;
-}
-
-/** The target a new to-do for this contact is sent with: the person it is about, else the contact's person, else the pipeline entry. */
-export function contactTarget(c: TodoContact): TodoTarget {
-  const personId = c.aboutPersonId ?? c.personId;
-  return personId ? { personId } : { memberId: c.memberId };
-}
-
-/** The words for a write that did not succeed; "" when the reply was not a failure (so the caller carries on). */
-export function writeFailure(status: number, body: unknown): string {
-  if (status === 404) return GONE;
-  const error = body && typeof body === "object" ? (body as { error?: unknown }).error : undefined;
-  if (typeof error === "string" && error.trim() !== "") return error;
-  return SAVE_FAILED;
 }
 
 function startChoice(initial: Todo | undefined, today: string): { choice: Choice; picked: string } {
@@ -96,16 +72,9 @@ export default function TodoForm({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
-  const [speakHint, setSpeakHint] = useState(false);
-  const spokenBaseRef = useRef("");
-  const titleRef = useRef<HTMLTextAreaElement>(null);
+  const whatRef = useRef<DictatedHandle | null>(null);
   const unauthorizedRef = useRef(onUnauthorized);
   unauthorizedRef.current = onUnauthorized;
-
-  const dictation = useDictation((spoken) => {
-    const base = spokenBaseRef.current.trim() === "" ? "" : `${spokenBaseRef.current.trimEnd()} `;
-    setTitle(`${base}${spoken.trimStart()}`.slice(0, MAX_TITLE));
-  });
 
   // The contact search, as Contacts does it: after a short pause, and only for two letters or more.
   const q = query.trim();
@@ -178,7 +147,7 @@ export default function TodoForm({
 
   async function save() {
     if (!canSave) return;
-    dictation.cancel();
+    whatRef.current?.cancel();
     if (!initial) {
       const saved = await send({
         action: "add",
@@ -204,92 +173,20 @@ export default function TodoForm({
     if (dropped) (onDropped ?? onDone)(dropped);
   }
 
-  const heard = dictation.listening;
   return (
     <div className="flex flex-col gap-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-      <div className={card}>
-        <label htmlFor={`${ids}-what`} className={fieldLabel}>
-          What
-        </label>
-        <div className="flex items-start gap-1 pr-2">
-          <textarea
-            id={`${ids}-what`}
-            ref={titleRef}
-            rows={2}
-            maxLength={MAX_TITLE}
-            value={title}
-            autoFocus={!initial}
-            onChange={(e) => {
-              // Typing takes over from speaking, so the next words heard cannot overwrite the edit.
-              dictation.cancel();
-              setTitle(e.target.value);
-            }}
-            className={`${fieldInput} resize-none`}
-          />
-          <button
-            type="button"
-            aria-label={heard ? "Stop listening" : "Speak the to-do"}
-            aria-pressed={heard}
-            onClick={() => {
-              if (heard) return dictation.stop();
-              spokenBaseRef.current = title;
-              if (dictation.start()) return setSpeakHint(false);
-              setSpeakHint(true);
-              titleRef.current?.focus();
-            }}
-            className={`mt-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${
-              heard ? "bg-red-600 text-white active:bg-red-700" : "text-[#0E7FA6] active:bg-neutral-100 dark:text-[#6AE6FF] dark:active:bg-white/10"
-            }`}
-          >
-            <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="9" y="3" width="6" height="11" rx="3" />
-              <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" />
-            </svg>
-          </button>
-        </div>
-      </div>
-      {heard ? (
-        <p role="status" className="px-1 text-[15px] font-medium text-red-600 dark:text-red-400">
-          Listening... Tap the microphone to stop.
-        </p>
-      ) : dictation.error ? (
-        <p role="alert" className="px-1 text-[15px] font-medium text-red-600 dark:text-red-400">
-          {dictation.error === "denied" ? MIC_DENIED : MIC_FAILED}
-        </p>
-      ) : speakHint ? (
-        <p className="px-1 text-[15px] text-neutral-600 dark:text-neutral-300">{KEYBOARD_HINT}</p>
-      ) : null}
+      <DictatedField
+        label="What"
+        value={title}
+        max={MAX_TITLE}
+        onChange={setTitle}
+        autoFocus={!initial}
+        speakLabel="Speak the to-do"
+        stopLabel="Stop listening"
+        handleRef={whatRef}
+      />
 
-      <div className="flex flex-col gap-2">
-        <span id={`${ids}-when`} className="px-1 text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-          When
-        </span>
-        <div role="group" aria-labelledby={`${ids}-when`} className="grid grid-cols-2 gap-2">
-          {CHOICES.map((c) => (
-            <button
-              key={c.key}
-              type="button"
-              aria-pressed={choice === c.key}
-              onClick={() => setChoice(c.key)}
-              className={`min-h-[44px] rounded-xl px-3 text-[16px] font-semibold ${
-                choice === c.key
-                  ? "bg-[#0E7FA6] text-white dark:bg-[#6AE6FF] dark:text-[#04121A]"
-                  : "bg-neutral-200/80 text-neutral-700 dark:bg-white/10 dark:text-neutral-200"
-              }`}
-            >
-              {c.label}
-            </button>
-          ))}
-        </div>
-        {choice === "pick" ? (
-          <div className={card}>
-            <label htmlFor={`${ids}-date`} className={fieldLabel}>
-              Date
-            </label>
-            <input id={`${ids}-date`} type="date" value={picked} onChange={(e) => setPicked(e.target.value)} className={fieldInput} />
-          </div>
-        ) : null}
-      </div>
+      <DueDatePicker choice={choice} picked={picked} onChoice={setChoice} onPicked={setPicked} />
 
       <div className={card}>
         {chip ? (

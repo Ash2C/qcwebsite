@@ -5,11 +5,12 @@ import type { ContactTarget } from "./ContactsPanel";
 import MonsoonLoader from "./MonsoonLoader";
 import NudgeList from "./NudgeList";
 import TickSheet from "./TickSheet";
-import TodoForm, { GONE, contactTarget, writeFailure } from "./TodoForm";
+import TodoForm from "./TodoForm";
 import TodoRowView from "./TodoRowView";
 import { loadTodos, todoAction, type EstateInfo, type Nudge, type Nudges, type Todo, type TodoContact, type TodoTarget } from "./api";
 import { card, secondaryButton } from "./styles";
 import { bucketOf, localToday, shortDate, type TodoBucket } from "./todoDates";
+import { GONE, contactTarget, writeFailure } from "./todoWrites";
 
 /** Which form is open: held here so it survives a tab switch. An add can start with a contact filled in. */
 type FormState = { kind: "add"; contact?: { target: TodoTarget; name: string } } | { kind: "edit"; id: string };
