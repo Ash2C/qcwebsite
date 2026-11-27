@@ -123,6 +123,7 @@ export default function AskPanel({
   suggested,
   viewing,
   onChanged,
+  send: sendRequest,
 }: {
   estate: EstateInfo;
   state: AskState;
@@ -141,6 +142,11 @@ export default function AskPanel({
   viewing?: AskViewing | null;
   /** A change card was confirmed: what is underneath may be out of date. */
   onChanged?: () => void;
+  /**
+   * A question to submit for the user (Prepare me), once per `id`, as soon as Ask is free. It is an
+   * ordinary turn; what is typed in the box stays. The parent drops it when the sheet closes.
+   */
+  send?: { id: string; text: string };
 }) {
   // The microphone uses the browser's speech recognition, which hands over text only. Where the
   // browser has none, the hint points at the keyboard's own dictation.
@@ -220,8 +226,19 @@ export default function AskPanel({
     }));
   }
 
-  async function send() {
-    const question = state.draft;
+  // The id of the request already sent, so a re-render (or a second effect run) never sends it twice.
+  const sentRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!sendRequest || busy || sentRef.current === sendRequest.id) return;
+    sentRef.current = sendRequest.id;
+    void send(sendRequest.text);
+    // send reads the latest render; only a new request or Ask becoming free should run this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sendRequest?.id, busy]);
+
+  // Sends `text` as the question, or the draft in the box when none is given.
+  async function send(text?: string) {
+    const question = text ?? state.draft;
     if (askRef.current || busy || question.trim() === "" || question.length > MAX_DRAFT) return;
     dictation.cancel();
     askRef.current = true;
@@ -230,7 +247,7 @@ export default function AskPanel({
     const gen = genRef.current;
     const turn: AskTurn = { id: crypto.randomUUID(), role: "user", content: question.trim() };
     const messages = toMessages([...state.turns, turn]);
-    onChange((prev) => ({ turns: [...prev.turns, turn], draft: "" }));
+    onChange((prev) => ({ turns: [...prev.turns, turn], draft: text === undefined ? "" : prev.draft }));
     // Text typed while waiting is kept: the failed question goes back above it, clipped to the draft limit.
     const restore = () =>
       onChange((prev) => ({

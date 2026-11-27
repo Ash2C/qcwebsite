@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import type { Profile } from "@/lib/monsoon/contacts";
 import { actionLabel } from "@/lib/monsoon/rules";
 import MonsoonLoader from "./MonsoonLoader";
-import { loadProfile, type EstateInfo } from "./api";
+import { loadProfile, type EstateInfo, type Todo } from "./api";
+import ProfileTodos from "./ProfileTodos";
 import { localDate } from "./AskPanel";
 import type { ContactTarget } from "./ContactsPanel";
 import { stageLabel } from "./labels";
@@ -186,7 +187,7 @@ function ExternalLink({ value }: { value: string }) {
 
 /** Which chooser is open (the type bubble's or the stage bubble's) and where it is drawn: right under the bubbles. */
 export type StagePick = { open: Picking; slot: HTMLElement | null; close: () => void };
-type Picking = "role" | "stage" | "priority" | "next" | null;
+type Picking = "role" | "stage" | "priority" | null;
 
 /** "High priority", "Medium priority", "Low priority" or "No priority". */
 export function priorityLabel(priority: string | null | undefined): string {
@@ -203,6 +204,7 @@ export default function ProfileView({
   actions,
   onLoaded,
   reloadSignal,
+  onPrepare,
 }: {
   estate: EstateInfo;
   target: ContactTarget;
@@ -217,6 +219,8 @@ export default function ProfileView({
   onLoaded?: (profile: Profile | null) => void;
   /** A change to this number re-reads the profile. */
   reloadSignal?: number;
+  /** Prepare me on one of this contact's to-dos. */
+  onPrepare?: (todo: Todo) => void;
 }) {
   // The stage bubble under the name opens the stage chooser right there. The chooser itself is drawn
   // by the actions (they own the change), into `stageSlot`.
@@ -446,35 +450,22 @@ export default function ProfileView({
             <span className="text-[15px] text-neutral-600 dark:text-neutral-300">Not on the pipeline</span>
           )}
         </div>
-        {/* The next action: always shown for a contact on the pipeline, and tapped to set or change it. */}
-        {actions && member ? (
-          <button
-            type="button"
-            aria-expanded={picking === "next"}
-            aria-label={
-              member.nextAction
-                ? `Next action: ${member.nextAction}${member.nextActionDate ? `, due ${formatDate(member.nextActionDate)}` : ""}. Change next action`
-                : "Next action: none set. Set next action"
-            }
-            disabled={actionBusy}
-            onClick={() => setPicking((o) => (o === "next" ? null : "next"))}
-            className={`${card} flex min-h-[52px] w-full items-center justify-between gap-3 px-4 py-2 text-left ring-1 ring-[#0E7FA6]/50 disabled:opacity-50 dark:ring-[#6AE6FF]/50`}
-          >
-            <span className="flex min-w-0 flex-col">
-              <span className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">Next action</span>
-              <span className={`break-words text-[17px] ${member.nextAction ? "text-neutral-900 dark:text-white" : "text-neutral-500 dark:text-neutral-400"}`}>
-                {member.nextAction
-                  ? `${member.nextAction}${member.nextActionDate ? ` · due ${formatDate(member.nextActionDate)}` : ""}`
-                  : "None set. Tap to add one."}
-              </span>
-            </span>
-            <svg aria-hidden="true" className="shrink-0 text-[#0E7FA6] dark:text-[#6AE6FF]" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d={picking === "next" ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6"} />
-            </svg>
-          </button>
-        ) : null}
         <div ref={setStageSlot} />
       </header>
+
+      {/* The contact's to-dos take the place of the old single next action line. */}
+      {estate.todos && member ? (
+        <ProfileTodos
+          key={`${estate.key}|${member.memberId}|${personId ?? ""}`}
+          estate={estate}
+          memberId={member.memberId}
+          target={p.kind === "person" && p.personId ? { personId: p.personId } : { memberId: member.memberId }}
+          name={p.name}
+          onPrepare={onPrepare}
+          onUnauthorized={onUnauthorized}
+          reloadSignal={(reloadSignal ?? 0) + tick}
+        />
+      ) : null}
 
       <dl className={`${card} divide-y divide-black/5 dark:divide-white/10`}>
         <Detail label="Email">
@@ -510,7 +501,7 @@ export default function ProfileView({
         <Detail label="LinkedIn">{p.linkedin ? <ExternalLink value={p.linkedin} /> : "(none)"}</Detail>
         <Detail label="Country">{p.country || "(none)"}</Detail>
         <Detail label="Website">{p.website ? <ExternalLink value={p.website} /> : "(none)"}</Detail>
-        {member?.nextAction && !actions ? (
+        {member?.nextAction && !estate.todos ? (
           <Detail label="Next">
             {`${member.nextAction}${member.nextActionDate ? ` · due ${formatDate(member.nextActionDate)}` : ""}`}
           </Detail>

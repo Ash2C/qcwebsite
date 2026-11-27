@@ -72,7 +72,7 @@ function view(profile: object = PERSON, props: Props = {}) {
 const click = (user: User, name: string | RegExp) => user.click(screen.getByRole("button", { name }));
 const failed = { status: 500, body: { error: "x" } } as never;
 /** What the profile hands the actions when a bubble under the name is open: the chooser is drawn into the slot. */
-function picking(open: "role" | "stage" | "priority" | "next") {
+function picking(open: "role" | "stage" | "priority") {
   const slot = document.createElement("div");
   document.body.appendChild(slot);
   return { stagePick: { open, slot, close: vi.fn() } };

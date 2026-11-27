@@ -57,7 +57,9 @@ function Harness({
   onResearch,
   viewing,
   onChanged,
+  send,
 }: {
+  send?: { id: string; text: string };
   viewing?: AskViewing | null;
   onChanged?: () => void;
   onResearch?: (personId: string) => void;
@@ -67,7 +69,7 @@ function Harness({
   onBusy?: (b: boolean) => void;
 }) {
   const [state, setState] = useState<AskState>(initial);
-  return <AskPanel estate={estate} state={state} onChange={setState} onUnauthorized={onUnauthorized} onBusy={onBusy} onResearch={onResearch} viewing={viewing} onChanged={onChanged} />;
+  return <AskPanel estate={estate} state={state} onChange={setState} onUnauthorized={onUnauthorized} onBusy={onBusy} onResearch={onResearch} viewing={viewing} onChanged={onChanged} send={send} />;
 }
 
 async function ask(user: User, text: string) {
@@ -996,5 +998,44 @@ describe("speaking a question", () => {
     await user.click(screen.getByRole("button", { name: "Speak your question" }));
     expect(screen.getByText("Tap the microphone on the keyboard and talk, then press Ask.")).toBeInTheDocument();
     expect(box()).toHaveFocus();
+  });
+
+  describe("a request sent for the user (send)", () => {
+    it("submits the text once as an ordinary question, and shows it as the user's turn", async () => {
+      m.askCrm.mockResolvedValue(answer("Here you go."));
+      render(<Harness send={{ id: "s1", text: 'Prepare me for this to-do with Jane Tan: "Send deck".' }} viewing={{ target: { personId: "p1" }, name: "Jane Tan", company: "Acme" }} />);
+      expect(await screen.findByText("Here you go.")).toBeInTheDocument();
+      expect(screen.getByText('Prepare me for this to-do with Jane Tan: "Send deck".')).toBeInTheDocument();
+      expect(m.askCrm).toHaveBeenCalledTimes(1);
+      const body = m.askCrm.mock.calls[0][0];
+      expect(body.messages.at(-1)).toEqual({ role: "user", content: 'Prepare me for this to-do with Jane Tan: "Send deck".' });
+      expect(body.viewing).toEqual({ personId: "p1" });
+    });
+
+    it("does not send again on a re-render with the same id, but does for a new id", async () => {
+      m.askCrm.mockResolvedValue(answer("One."));
+      const props = { estate: ESTATE, state: EMPTY_ASK, onChange: () => {}, onUnauthorized: () => {} };
+      function Wrap({ send }: { send: { id: string; text: string } }) {
+        const [state, setState] = useState<AskState>(EMPTY_ASK);
+        return <AskPanel {...props} state={state} onChange={setState} send={send} />;
+      }
+      const { rerender } = render(<Wrap send={{ id: "s1", text: "First" }} />);
+      await screen.findByText("One.");
+      rerender(<Wrap send={{ id: "s1", text: "First" }} />);
+      rerender(<Wrap send={{ id: "s1", text: "First" }} />);
+      await act(async () => {});
+      expect(m.askCrm).toHaveBeenCalledTimes(1);
+      m.askCrm.mockResolvedValue(answer("Two."));
+      rerender(<Wrap send={{ id: "s2", text: "Second" }} />);
+      await screen.findByText("Two.");
+      expect(m.askCrm).toHaveBeenCalledTimes(2);
+    });
+
+    it("leaves what the user had typed in the box", async () => {
+      m.askCrm.mockResolvedValue(answer("Done."));
+      render(<Harness initial={{ turns: [], draft: "half a thought" }} send={{ id: "s1", text: "Prepare" }} />);
+      await screen.findByText("Done.");
+      expect(screen.getByRole("textbox", { name: "Your question" })).toHaveValue("half a thought");
+    });
   });
 });

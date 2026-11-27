@@ -75,7 +75,7 @@ export default function ProfileActions({
   stagePick,
 }: {
   /** The stage chooser, opened by the stage bubble under the name and drawn into its slot there. */
-  stagePick?: { open: "role" | "stage" | "priority" | "next" | null; slot: HTMLElement | null; close: () => void };
+  stagePick?: { open: "role" | "stage" | "priority" | null; slot: HTMLElement | null; close: () => void };
   estate: EstateInfo;
   profile: Profile;
   reload: () => void;

@@ -124,6 +124,8 @@ beforeEach(() => {
   localStorage.setItem("monsoon.code", "acme");
   vi.resetAllMocks();
   vi.mocked(downsizeImage).mockResolvedValue(new Blob(["x"], { type: "image/jpeg" }));
+  // A profile on a to-do CRM reads its contact's to-dos; most tests have none.
+  m.loadTodos.mockResolvedValue({ status: 200, body: { ready: true, open: [], done: [] } } as never);
 });
 
 afterEach(() => {
@@ -1734,6 +1736,102 @@ describe("Profile actions and links", () => {
       expect(await screen.findByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Contacts" })).toHaveAttribute("aria-pressed", "true");
       expect(m.loadProfile).toHaveBeenCalledWith("traxo", { memberId: undefined, personId: "p1", orgId: undefined }, expect.any(String));
+    });
+
+    const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const TODAY_LABEL = `${new Date().getDate()} ${MONTHS[new Date().getMonth()]}`;
+    const MESSAGE = `Prepare me for this to-do with Jane Tan: "Send deck", due ${TODAY_LABEL}.`;
+
+    async function prepareFromTab(user: User, row: unknown = ROW) {
+      signedIn();
+      m.loadTodos.mockResolvedValue(listed(row));
+      m.askCrm.mockResolvedValue({ status: 200, body: { answer: "Where things stand.", refs: [], proposals: [] } } as never);
+      render(<MonsoonApp />);
+      await ready();
+      await user.click(screen.getByRole("button", { name: "To do" }));
+      await user.click(await screen.findByRole("button", { name: /^Send deck/ }));
+      await user.click(screen.getByRole("button", { name: "Prepare me" }));
+    }
+
+    it("Prepare me opens Ask over the to-do and sends the fixed request once, viewing that contact", async () => {
+      const user = userEvent.setup();
+      await prepareFromTab(user);
+      const sheet = within(await screen.findByRole("dialog", { name: "Ask" }));
+      expect(await sheet.findByText("Where things stand.")).toBeInTheDocument();
+      expect(sheet.getByText(MESSAGE)).toBeInTheDocument();
+      expect(m.askCrm).toHaveBeenCalledTimes(1);
+      const body = m.askCrm.mock.calls[0][0];
+      expect(body.messages.at(-1)).toEqual({ role: "user", content: MESSAGE });
+      expect(body.viewing).toEqual({ personId: "p1" });
+      expect(sheet.getByText("Looking at Jane Tan · Acme Capital")).toBeInTheDocument();
+    });
+
+    it("closing and reopening the sheet does not send it again, and the contact is no longer being viewed", async () => {
+      const user = userEvent.setup();
+      await prepareFromTab(user);
+      await screen.findByText("Where things stand.");
+      await user.click(screen.getByRole("button", { name: "Close" }));
+      await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
+      expect(m.askCrm).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText(/Looking at/)).toBeNull();
+      // The conversation is still there.
+      expect(screen.getByText("Where things stand.")).toBeInTheDocument();
+    });
+
+    it("a to-do about a person under a company asks about the person; an undated one has no due part", async () => {
+      const user = userEvent.setup();
+      await prepareFromTab(user, {
+        ...ROW,
+        dueDate: null,
+        due: "undated",
+        contact: { ...ROW.contact, name: "Acme Capital", personId: null, aboutPersonId: "p9", aboutName: "Bob Lee" },
+      });
+      await screen.findByText("Where things stand.");
+      const body = m.askCrm.mock.calls[0][0];
+      expect(body.messages.at(-1)?.content).toBe('Prepare me for this to-do with Bob Lee: "Send deck".');
+      expect(body.viewing).toEqual({ personId: "p9" });
+    });
+
+    it("a profile shows its contact's to-dos, and Prepare me there asks about the same contact", async () => {
+      const user = userEvent.setup();
+      signedIn();
+      m.loadTodos.mockResolvedValue(listed(ROW));
+      m.searchContacts.mockResolvedValue({ status: 200, body: { contacts: [JANE] } } as never);
+      m.loadProfile.mockResolvedValue({ status: 200, body: { profile: PROFILE } } as never);
+      m.askCrm.mockResolvedValue({ status: 200, body: { answer: "Where things stand.", refs: [], proposals: [] } } as never);
+      render(<MonsoonApp />);
+      await ready();
+      await user.click(screen.getByRole("button", { name: "Contacts" }));
+      await user.click(await screen.findByRole("button", { name: /Jane Tan/ }));
+      expect(await screen.findByRole("heading", { name: "To do" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Next action/ })).toBeNull();
+      expect(m.loadTodos).toHaveBeenCalledWith("traxo", { member: "m1" });
+      await user.click(await screen.findByRole("button", { name: /^Send deck/ }));
+      await user.click(screen.getByRole("button", { name: "Prepare me" }));
+      await screen.findByText("Where things stand.");
+      expect(m.askCrm).toHaveBeenCalledTimes(1);
+      expect(m.askCrm.mock.calls[0][0].messages.at(-1)?.content).toBe(MESSAGE);
+    });
+
+    it("a change made on a profile shows on the To do tab the next time it opens", async () => {
+      const user = userEvent.setup();
+      signedIn();
+      m.loadTodos.mockImplementation(async (_estate, opts) =>
+        (opts?.member ? listed(ROW) : { status: 200, body: { ready: true, open: [], done: [] } }) as never,
+      );
+      m.todoAction.mockResolvedValue({ status: 200, body: { status: "ok", todo: { ...ROW, status: "done" } } } as never);
+      m.searchContacts.mockResolvedValue({ status: 200, body: { contacts: [JANE] } } as never);
+      m.loadProfile.mockResolvedValue({ status: 200, body: { profile: PROFILE } } as never);
+      render(<MonsoonApp />);
+      await ready();
+      await user.click(screen.getByRole("button", { name: "Contacts" }));
+      await user.click(await screen.findByRole("button", { name: /Jane Tan/ }));
+      await user.click(await screen.findByRole("button", { name: "Mark done: Send deck" }));
+      expect(await screen.findByRole("dialog", { name: "Done: Send deck" })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Skip" }));
+      m.loadTodos.mockClear();
+      await user.click(screen.getByRole("button", { name: "To do" }));
+      await waitFor(() => expect(m.loadTodos).toHaveBeenCalledWith("traxo"));
     });
 
     it("a 401 from the list goes back to the passcode screen", async () => {

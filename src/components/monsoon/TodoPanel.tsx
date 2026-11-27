@@ -7,10 +7,11 @@ import NudgeList from "./NudgeList";
 import TickSheet from "./TickSheet";
 import TodoForm from "./TodoForm";
 import TodoRowView from "./TodoRowView";
-import { loadTodos, todoAction, type EstateInfo, type Nudge, type Nudges, type Todo, type TodoContact, type TodoTarget } from "./api";
+import { loadTodos, type EstateInfo, type Nudge, type Nudges, type Todo, type TodoContact, type TodoTarget } from "./api";
 import { card, secondaryButton } from "./styles";
 import { bucketOf, localToday, shortDate, type TodoBucket } from "./todoDates";
-import { GONE, contactTarget, writeFailure } from "./todoWrites";
+import { useTodoActions } from "./useTodoActions";
+import { GONE, SAVE_FAILED, contactTarget, succeeded, writeFailure, writeTodo } from "./todoWrites";
 
 /** Which form is open: held here so it survives a tab switch. An add can start with a contact filled in. */
 type FormState = { kind: "add"; contact?: { target: TodoTarget; name: string } } | { kind: "edit"; id: string };
@@ -32,7 +33,6 @@ export const EMPTY_TODOS: TodosState = { estate: null, ready: null, open: [], do
 const NOT_READY = "To do is being set up for this CRM.";
 const EMPTY = "Nothing to do yet. Add your first to-do.";
 const LOAD_FAILED = "Could not load to-dos. Check signal.";
-const WRITE_FAILED = "Could not save. Check signal.";
 const UNDO_MS = 6000;
 
 const GROUPS: { bucket: TodoBucket; heading: string }[] = [
@@ -62,13 +62,6 @@ function withoutNoNextStep(nudges: Nudges | undefined, memberId: string | undefi
   return gone === 0 ? nudges : { ...nudges, noNextStep: rows, noNextStepTotal: Math.max(0, nudges.noNextStepTotal - gone) };
 }
 
-type Reply = Awaited<ReturnType<typeof todoAction>> | null;
-
-/** True for a write reply that succeeded (a 200 that is not an error body). */
-function succeeded(res: Reply): boolean {
-  return !!res && res.status === 200 && !!res.body && !("error" in res.body);
-}
-
 export default function TodoPanel({
   estate,
   state,
@@ -94,8 +87,6 @@ export default function TodoPanel({
   const [undo, setUndo] = useState<Todo | null>(null);
   const [doneOpen, setDoneOpen] = useState(false);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // To-dos with a write on the way, so a second tap does not send it twice.
-  const busyIds = useRef(new Set<string>());
   // The latest props, so a reply that arrives later builds on what is on screen now.
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -187,61 +178,31 @@ export default function TodoPanel({
     }));
   }
 
-  /** One write for a to-do; null when the call itself failed. */
-  async function write(key: string, body: Parameters<typeof todoAction>[1]): Promise<Reply> {
-    try {
-      return await todoAction(key, body);
-    } catch {
-      return null;
-    }
-  }
-
-  /** Ticks a to-do off at once; the row goes back, with the reason, if the server does not agree. */
-  async function tick(t: Todo) {
-    if (busyIds.current.has(t.id)) return;
-    busyIds.current.add(t.id);
-    const key = estate.key;
-    clearUndo();
-    setNotice(null);
-    setProblem(null);
-    change(key, (s) => ({ open: s.open.filter((x) => x.id !== t.id), done: [{ ...t, status: "done" }, ...s.done.filter((x) => x.id !== t.id)] }));
-    const res = await write(key, { action: "complete", id: t.id });
-    busyIds.current.delete(t.id);
-    if (res?.status === 401) return unauthorizedRef.current();
-    if (stateRef.current.estate !== key) return;
-    if (res && succeeded(res) && res.body && "todo" in res.body) {
-      const saved = res.body.todo;
-      change(key, (s) => ({ done: s.done.map((x) => (x.id === t.id ? saved : x)) }));
+  // Tick and reopen are shared with a contact's profile.
+  const { tick, reopen } = useTodoActions({
+    estateKey: estate.key,
+    onUnauthorized: () => unauthorizedRef.current(),
+    current: () => stateRef.current.estate === estate.key,
+    problem: setProblem,
+    reload: () => void load(estate.key),
+    ticking: (t) => {
+      clearUndo();
+      setNotice(null);
+      change(estate.key, (s) => ({ open: s.open.filter((x) => x.id !== t.id), done: [{ ...t, status: "done" }, ...s.done.filter((x) => x.id !== t.id)] }));
+    },
+    ticked: (saved, t) => {
+      change(estate.key, (s) => ({ done: s.done.map((x) => (x.id === t.id ? saved : x)) }));
       if (t.contact) setSheet(saved);
       else showUndo(saved);
-      return;
-    }
-    change(key, (s) => ({
-      done: s.done.filter((x) => x.id !== t.id),
-      open: s.open.some((x) => x.id === t.id) ? s.open : [...s.open, t],
-    }));
-    setProblem(res ? writeFailure(res.status, res.body) : WRITE_FAILED);
-    if (res?.status === 404) void load(key);
-  }
-
-  /** Reopens a done to-do (Undo, or Reopen in the Done list). Nothing moves until the server agrees. */
-  async function reopen(t: Todo) {
-    if (busyIds.current.has(t.id)) return;
-    busyIds.current.add(t.id);
-    const key = estate.key;
-    setProblem(null);
-    const res = await write(key, { action: "reopen", id: t.id });
-    busyIds.current.delete(t.id);
-    if (res?.status === 401) return unauthorizedRef.current();
-    if (stateRef.current.estate !== key) return;
-    if (res && succeeded(res) && res.body && "todo" in res.body) {
-      const back = res.body.todo;
-      change(key, (s) => ({ done: s.done.filter((x) => x.id !== t.id), open: [...s.open.filter((x) => x.id !== t.id), back] }));
-      return;
-    }
-    setProblem(res ? writeFailure(res.status, res.body) : WRITE_FAILED);
-    if (res?.status === 404) void load(key);
-  }
+    },
+    tickFailed: (t) =>
+      change(estate.key, (s) => ({
+        done: s.done.filter((x) => x.id !== t.id),
+        open: s.open.some((x) => x.id === t.id) ? s.open : [...s.open, t],
+      })),
+    reopened: (back, t) =>
+      change(estate.key, (s) => ({ done: s.done.filter((x) => x.id !== t.id), open: [...s.open.filter((x) => x.id !== t.id), back] })),
+  });
 
   /** Not now: the row goes at once and comes back, with the reason, if the call fails. */
   async function snooze(memberId: string) {
@@ -264,7 +225,7 @@ export default function TodoPanel({
           }
         : {},
     );
-    const res = await write(key, { action: "snooze", memberId });
+    const res = await writeTodo(key, { action: "snooze", memberId });
     if (res?.status === 401) return unauthorizedRef.current();
     if (succeeded(res) || stateRef.current.estate !== key) return;
     const put = (list: Nudge[], back: { n: Nudge; i: number }[]) => {
@@ -284,7 +245,7 @@ export default function TodoPanel({
           }
         : {},
     );
-    setProblem(res ? writeFailure(res.status, res.body) : WRITE_FAILED);
+    setProblem(res ? writeFailure(res.status, res.body) : SAVE_FAILED);
   }
 
   /** A nudge's contact opens its profile, as a row's contact does. */

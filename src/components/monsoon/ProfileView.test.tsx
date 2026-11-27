@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProfileView, { phoneSegments } from "./ProfileView";
 import * as api from "./api";
 
-vi.mock("./api", () => ({ searchContacts: vi.fn(), loadProfile: vi.fn() }));
+vi.mock("./api", () => ({ searchContacts: vi.fn(), loadProfile: vi.fn(), loadTodos: vi.fn(), todoAction: vi.fn() }));
 const m = vi.mocked(api);
 
 const ESTATE = {
@@ -55,7 +55,10 @@ async function flush() {
   });
 }
 
-beforeEach(() => vi.resetAllMocks());
+beforeEach(() => {
+  vi.resetAllMocks();
+  m.loadTodos.mockResolvedValue({ status: 200, body: { ready: true, open: [], done: [] } } as never);
+});
 afterEach(cleanup);
 
 describe("ProfileView", () => {
@@ -83,21 +86,56 @@ describe("ProfileView", () => {
     expect(acts).toHaveTextContent("null");
   });
 
-  it("the next action is a row to tap: it shows what is set, or that none is, and opens its form there", async () => {
+  it("with to-dos on, the Next action row is gone and the contact's to-dos are shown instead", async () => {
     m.loadProfile.mockResolvedValue(profile({ member: MEMBER, memberOf: "self" }));
-    const first = view({ actions: (_p, _r, _b, pick) => <div data-testid="acts">{`${String(pick.open)}${pick.slot ? " with slot" : ""}`}</div> });
+    m.loadTodos.mockResolvedValue({ status: 200, body: { ready: true, open: [], done: [] } } as never);
+    view({ actions: () => null });
     await flush();
-    const row = screen.getByRole("button", { name: "Next action: Send deck, due 20 Nov 2026. Change next action" });
-    expect(row).toHaveTextContent("Send deck · due 20 Nov 2026");
-    fireEvent.click(row);
-    expect(screen.getByTestId("acts")).toHaveTextContent("next with slot");
-    expect(first.onBack).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /Next action/ })).toBeNull();
+    expect(screen.queryByText("Next action")).toBeNull();
+    expect(screen.queryByText("Next")).toBeNull();
+    expect(screen.getByRole("heading", { name: "To do" })).toBeInTheDocument();
+    expect(m.loadTodos).toHaveBeenCalledWith("traxo", { member: "m1" });
+  });
+
+  it("a person with no pipeline entry has no to-do section", async () => {
+    m.loadProfile.mockResolvedValue(profile());
+    view({ actions: () => null });
+    await flush();
+    expect(screen.queryByRole("heading", { name: "To do" })).toBeNull();
+    expect(m.loadTodos).not.toHaveBeenCalled();
+  });
+
+  it("without to-dos the next action is a plain line with nothing to tap, and only when there is one", async () => {
+    const old = { ...ESTATE, todos: false };
+    m.loadProfile.mockResolvedValue(profile({ member: MEMBER, memberOf: "self" }));
+    view({ estate: old, actions: () => null });
+    await flush();
+    expect(screen.getByText("Send deck · due 20 Nov 2026")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Next action/ })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "To do" })).toBeNull();
+    expect(m.loadTodos).not.toHaveBeenCalled();
     cleanup();
 
     m.loadProfile.mockResolvedValue(profile({ member: { ...MEMBER, nextAction: null, nextActionDate: null }, memberOf: "self" }));
-    view({ actions: () => null });
+    view({ estate: old, actions: () => null });
     await flush();
-    expect(screen.getByRole("button", { name: "Next action: none set. Set next action" })).toHaveTextContent("None set. Tap to add one.");
+    expect(screen.queryByText("Next")).toBeNull();
+    expect(screen.queryByText(/None set/)).toBeNull();
+  });
+
+  it("passes Prepare me from a profile to-do up", async () => {
+    m.loadProfile.mockResolvedValue(profile({ member: MEMBER, memberOf: "self" }));
+    const t = { id: "t1", title: "Send deck", dueDate: null, firstDueDate: null, movedCount: 0, status: "open", outcome: null, closedAt: null, owner: null, mine: true, due: "undated",
+      contact: { memberId: "m1", memberKind: "person", name: "Jane Tan", company: "Acme", personId: "p1", orgId: "o1", aboutPersonId: null, aboutName: null, stage: "in_talks", stageLabel: "In talks", priority: null, lastAction: null } };
+    m.loadTodos.mockResolvedValue({ status: 200, body: { ready: true, open: [t], done: [] } } as never);
+    const onPrepare = vi.fn();
+    view({ actions: () => null, onPrepare });
+    await flush();
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Send deck" }));
+    fireEvent.click(screen.getByRole("button", { name: "Prepare me" }));
+    expect(onPrepare).toHaveBeenCalledWith(t);
   });
 
   it("an estate with one contact type shows the type as plain text; the priority bubble names the priority", async () => {
@@ -111,7 +149,7 @@ describe("ProfileView", () => {
 
   it("shows Loading first, then a person on the pipeline", async () => {
     m.loadProfile.mockResolvedValue(profile({ member: MEMBER, memberOf: "self" }));
-    view();
+    view({ estate: { ...ESTATE, todos: false } });
     expect(screen.getByText("Loading…")).toBeInTheDocument();
     await flush();
     expect(screen.getByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();

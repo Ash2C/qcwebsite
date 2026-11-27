@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ContactsPanel, { EMPTY_CONTACTS, type ContactsState } from "./ContactsPanel";
 import * as api from "./api";
 
-vi.mock("./api", () => ({ searchContacts: vi.fn(), loadProfile: vi.fn(), loadImports: vi.fn(), loadImportContacts: vi.fn() }));
+vi.mock("./api", () => ({ searchContacts: vi.fn(), loadProfile: vi.fn(), loadImports: vi.fn(), loadImportContacts: vi.fn(), loadTodos: vi.fn(), todoAction: vi.fn() }));
 const m = vi.mocked(api);
 
 const ESTATE = {
@@ -68,6 +68,7 @@ function type(text: string) {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.resetAllMocks();
+  m.loadTodos.mockResolvedValue({ status: 200, body: { ready: true, open: [], done: [] } } as never);
 });
 afterEach(() => {
   cleanup();

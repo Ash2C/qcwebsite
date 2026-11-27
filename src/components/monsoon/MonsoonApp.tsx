@@ -14,7 +14,8 @@ import type { CardFields, CardKind } from "@/lib/monsoon/extract";
 import type { CardMatch } from "@/lib/monsoon/match";
 import type { CaptureResult } from "@/lib/monsoon/capture";
 import type { RefineOutput } from "@/lib/monsoon/refine";
-import { loadEstates, loadSignInOptions, readCards, saveCard, signIn, type EstateInfo, type SaveBody } from "./api";
+import { loadEstates, loadSignInOptions, readCards, saveCard, signIn, type EstateInfo, type SaveBody, type Todo } from "./api";
+import { shortDate } from "./todoDates";
 import { downsizeImage } from "./image";
 import AskPanel, { EMPTY_ASK, type AskState, type AskViewing } from "./AskPanel";
 import AskSheet from "./AskSheet";
@@ -171,8 +172,14 @@ export default function MonsoonApp() {
     if (askWasOpenRef.current && !askOpen) askButtonRef.current?.focus({ preventScroll: true });
     askWasOpenRef.current = askOpen;
   }, [askOpen]);
+  // Prepare me: the to-do's contact stands in for the open profile while Ask is open, and the fixed
+  // request is sent once. Both are dropped when the sheet closes, so reopening Ask sends nothing.
+  const [prepared, setPrepared] = useState<AskViewing | null>(null);
+  const [sendRequest, setSendRequest] = useState<{ id: string; text: string } | null>(null);
   function closeAsk() {
     setAskOpen(false);
+    setPrepared(null);
+    setSendRequest(null);
     if (askChangedRef.current) {
       askChangedRef.current = false;
       setProfileReload((n) => n + 1);
@@ -198,6 +205,8 @@ export default function MonsoonApp() {
     if (askEstateRef.current !== estateKey) {
       askEstateRef.current = estateKey;
       setAsk(EMPTY_ASK);
+      setPrepared(null);
+      setSendRequest(null);
       setContacts(EMPTY_CONTACTS);
       setTodos(EMPTY_TODOS);
       // The user's page is about one CRM too: its work fields and notes do not carry over.
@@ -235,6 +244,8 @@ export default function MonsoonApp() {
           // Nor their Ask conversation (its answers can restate their page), draft or open contact.
           setAsk(EMPTY_ASK);
           setAskOpen(false);
+          setPrepared(null);
+          setSendRequest(null);
           setContacts(EMPTY_CONTACTS);
           setTodos(EMPTY_TODOS);
           setMode("capture");
@@ -399,6 +410,21 @@ export default function MonsoonApp() {
     setUserOpen(false);
     setMode("contacts");
     closeAsk();
+  }
+
+  // Prepare me on a to-do with a contact: opens Ask about that contact and asks for a briefing, as if typed.
+  // A tap while an answer is on its way is ignored: that answer is never interrupted.
+  function prepare(todo: Todo) {
+    const c = todo.contact;
+    if (!c || askBusy || askBlocked || askOpen) return;
+    // The person it is about, else the contact's person, else the company, else its pipeline entry.
+    const personId = c.aboutPersonId ?? c.personId;
+    const target: ContactTarget = personId ? { personId } : c.orgId ? { orgId: c.orgId } : { memberId: c.memberId };
+    const name = c.aboutPersonId && c.aboutName ? c.aboutName : c.name;
+    const company = personId ? (c.aboutPersonId ? c.name : c.company) : null;
+    setPrepared({ target, name, company });
+    setSendRequest({ id: crypto.randomUUID(), text: `Prepare me for this to-do with ${name}: "${todo.title}"${todo.dueDate ? `, due ${shortDate(todo.dueDate)}` : ""}.` });
+    setAskOpen(true);
   }
 
   // Ask about the open profile: the draft is prefilled, never sent, and never overwrites typed text.
@@ -773,7 +799,8 @@ export default function MonsoonApp() {
           focusOnOpen={focusAsk}
           onFocused={() => setFocusAsk(false)}
           suggested={message?.open && message.open.estate === estateKey ? [`Tell me about ${message.open.name}`] : []}
-          viewing={viewing}
+          viewing={prepared ?? viewing}
+          send={sendRequest ?? undefined}
           onChanged={() => {
             askChangedRef.current = true;
           }}
@@ -927,8 +954,7 @@ export default function MonsoonApp() {
             onState={setTodos}
             onUnauthorized={() => setPhase("locked")}
             onOpenContact={openContact}
-            // Prepare me opens Ask with the to-do's contact; that arrives with the profile to-dos.
-            onPrepare={() => {}}
+            onPrepare={prepare}
           />
         ) : mode === "contacts" && estate ? (
           <ContactsPanel
@@ -939,6 +965,7 @@ export default function MonsoonApp() {
             onBusy={setProfileBusy}
             onAsk={askAbout}
             onViewing={setViewing}
+            onPrepare={prepare}
             reloadSignal={profileReload}
           />
         ) : batch && estate ? (

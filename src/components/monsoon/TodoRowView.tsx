@@ -13,19 +13,27 @@ function contactLine(todo: Todo): string {
 
 // One to-do. The circle ticks it off (wired by the panel), the title opens it for editing, and the
 // contact's name opens that contact. All three are real buttons of at least 44px.
+// On a contact's own profile (`inProfile`) the contact is already known, so its name and line are left
+// out; the person it is about (`aboutName`, when that is someone else) and another person's owner key
+// are shown instead.
 export default function TodoRowView({
   todo,
   onTick,
   onOpen,
   onOpenContact,
+  inProfile = false,
+  aboutName,
 }: {
   todo: Todo;
   onTick(): void;
   onOpen(): void;
   onOpenContact?(): void;
+  inProfile?: boolean;
+  aboutName?: string | null;
 }) {
   const overdue = bucketOf(todo.dueDate, localToday()) === "overdue";
-  const line = contactLine(todo);
+  const line = inProfile ? "" : contactLine(todo);
+  const others = inProfile && !todo.mine && todo.owner ? todo.owner : null;
   return (
     <div className="flex items-stretch">
       <button
@@ -42,7 +50,10 @@ export default function TodoRowView({
           onClick={onOpen}
           className="flex min-h-[44px] w-full items-center justify-between gap-3 rounded-lg text-left active:bg-neutral-100 dark:active:bg-white/10"
         >
-          <span className="break-words text-[17px] font-semibold text-neutral-900 dark:text-white">{todo.title}</span>
+          <span className="min-w-0 break-words text-[17px] font-semibold text-neutral-900 dark:text-white">
+            {todo.title}
+            {others ? <span className="ml-2 text-[13px] font-normal text-neutral-500 dark:text-neutral-400">{others}</span> : null}
+          </span>
           {todo.dueDate ? (
             <span
               className={`shrink-0 text-[14px] ${overdue ? "font-semibold text-red-700 dark:text-red-300" : "text-neutral-500 dark:text-neutral-400"}`}
@@ -52,7 +63,9 @@ export default function TodoRowView({
           ) : null}
         </button>
         <div className="flex flex-wrap items-center gap-x-2 text-[14px] text-neutral-500 dark:text-neutral-400">
-          {todo.contact && onOpenContact ? (
+          {inProfile ? (
+            aboutName ? <span className="break-words font-medium">{aboutName}</span> : null
+          ) : todo.contact && onOpenContact ? (
             <button
               type="button"
               onClick={onOpenContact}
