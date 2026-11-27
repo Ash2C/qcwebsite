@@ -83,4 +83,18 @@ describe("POST /api/monsoon/ask/feedback", () => {
     expect(await res.text()).toBe("");
     expect(account.feedback).toHaveBeenCalledWith({ pipelineKey: "traxo", kind: "up", mode: "voice", detail: null });
   });
+
+  it("still answers 204 when the write fails, logging the error name only", async () => {
+    const err = Object.assign(new Error('relation "ask_feedback" does not exist at host db.internal'), { code: "42P01" });
+    vi.mocked(account.feedback).mockRejectedValueOnce(err);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await POST(post(valid({ kind: "no_speech", detail: "heard nothing at all" })));
+    expect(res.status).toBe(204);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0]).toEqual(["monsoon: ask feedback failed", "Error"]);
+    const logged = JSON.stringify(log.mock.calls);
+    expect(logged).not.toContain("heard nothing");
+    expect(logged).not.toContain("db.internal");
+    log.mockRestore();
+  });
 });

@@ -35,6 +35,11 @@ export async function POST(request: Request) {
   if (b.mode !== "voice" && b.mode !== "typed") return bad("Unknown mode");
 
   const detail = DETAIL_KINDS.includes(kind) && typeof b.detail === "string" ? b.detail.replace(CONTROL_CHARS, "").slice(0, MAX_DETAIL) : null;
-  await account.feedback({ pipelineKey: estate.key, kind, mode: b.mode, detail });
+  try {
+    await account.feedback({ pipelineKey: estate.key, kind, mode: b.mode, detail });
+  } catch (err) {
+    // Name only: a database error can carry connection details. The phone ignores the answer, so a lost row is not an error to it.
+    console.error("monsoon: ask feedback failed", err instanceof Error ? err.name : "error");
+  }
   return new NextResponse(null, { status: 204 });
 }

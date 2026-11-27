@@ -660,6 +660,21 @@ describe("POST /api/monsoon/ask: to-do tools", () => {
 
 describe("POST /api/monsoon/ask: spoken answers", () => {
   const spokenBody = (over: Record<string, unknown> = {}) => valid({ spoken: true, ...over });
+  beforeEach(() => {
+    vi.stubEnv("ELEVENLABS_API_KEY", "test-key");
+    vi.stubEnv("MONSOON_VOICE_ID", "voice123");
+  });
+
+  it.each([["ELEVENLABS_API_KEY"], ["MONSOON_VOICE_ID"]])("without %s: captions only, nothing reserved and no synthesis", async (name) => {
+    vi.stubEnv(name, "");
+    const res = await POST(post(spokenBody()));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(account.reserveSpeak).not.toHaveBeenCalled();
+    expect(speak).not.toHaveBeenCalled();
+    expect(body.audio).toBeNull();
+    expect(body.captions).toEqual([{ text: "Hi.", start: 0, end: expect.any(Number) }]);
+  });
 
   it("returns audio and captions, reserves a speak slot first, and tells the loop it is spoken", async () => {
     const res = await POST(post(spokenBody()));

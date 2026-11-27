@@ -147,6 +147,7 @@ export default function AskPanel({
   send: sendRequest,
   blocked = false,
   speakHint: showSpeakHint = false,
+  minimised = false,
 }: {
   /** The request logic, owned by the parent; built from the same estate, state and viewing. */
   ask: ReturnType<typeof useAsk>;
@@ -179,6 +180,8 @@ export default function AskPanel({
   blocked?: boolean;
   /** The voice pill found no speech recognition here: show the keyboard-microphone hint. */
   speakHint?: boolean;
+  /** The window is minimised: the panel stays mounted but hidden, so dictation into the box stops. */
+  minimised?: boolean;
 }) {
   // The microphone uses the browser's speech recognition, which hands over text only. Where the
   // browser has none, the hint points at the keyboard's own dictation.
@@ -192,6 +195,11 @@ export default function AskPanel({
     const base = spokenBaseRef.current.trim() === "" ? "" : `${spokenBaseRef.current.trimEnd()} `;
     onChange((prev) => ({ ...prev, draft: `${base}${spoken.trimStart()}`.slice(0, MAX_DRAFT) }));
   });
+  useEffect(() => {
+    if (minimised) dictation.cancel();
+    // cancel only drops the session and sets state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [minimised]);
   const { asking, failure, clearFailure } = ask;
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);

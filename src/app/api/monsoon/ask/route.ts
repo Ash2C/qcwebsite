@@ -7,7 +7,7 @@ import { loadAskContext, type AskContext, type UserPage, type Who } from "@/lib/
 import { readGranolaKeyForAsk, recordGranolaStatus } from "@/lib/monsoon/accounts/granola-key";
 import { getProfile } from "@/lib/monsoon/contacts";
 import type { Ref } from "@/lib/monsoon/ask/tools";
-import { captionsFor, speak, type Caption } from "@/lib/monsoon/ask/speech";
+import { captionsFor, speak, speechConfigured, type Caption } from "@/lib/monsoon/ask/speech";
 import { readJson } from "@/lib/monsoon/body";
 import { resolveToday } from "@/lib/monsoon/today";
 import { todosReady } from "@/lib/monsoon/todos";
@@ -182,7 +182,8 @@ function aboutOf(page: UserPage): AboutUser {
 /** Audio when allowed and available, else captions timed by length. Never throws, never logs the answer. */
 async function spokenReply(account: Account, estateKey: string, answer: string, sound: boolean): Promise<{ audio: string | null; captions: Caption[] }> {
   const captionsOnly = () => ({ audio: null, captions: captionsFor(answer, null) });
-  if (!sound || answer.length > MAX_SPOKEN_CHARS) return captionsOnly();
+  // Without the voice settings no synthesis is attempted, so no slot is spent.
+  if (!sound || answer.length > MAX_SPOKEN_CHARS || !speechConfigured(process.env)) return captionsOnly();
   try {
     // Reserved before speaking and never given back: a failed synthesis still spends one of the day's slots.
     if (!(await account.reserveSpeak(estateKey, SPOKEN_DAILY_LIMIT))) return captionsOnly();

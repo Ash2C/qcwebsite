@@ -453,10 +453,10 @@ describe("Ask as a floating window over a live page", () => {
       expect(screen.getByRole("button", { name: "Ask Monsoon" })).toHaveFocus();
     });
 
-    // On a phone the window opening by itself (a spoken answer with a card) leaves the box unfocused:
-    // see MonsoonApp.voice.test.tsx. The Ask button, shown only where the device is not a phone, always
-    // focuses it, and so does Ask about this contact on a touch screen.
-    it("on a touch screen, the Ask button and Ask about this contact both focus the question box", async () => {
+    // Where the voice pill shows (useIsPhone) the window opening by itself (a spoken answer with a card)
+    // leaves the box unfocused: see MonsoonApp.voice.test.tsx. Where the Ask button shows instead, a coarse
+    // pointer changes nothing: the Ask button and Ask about this contact both focus the box.
+    it("with the Ask button shown, a coarse pointer still focuses the question box from the button and Ask about this contact", async () => {
       pointer(true);
       const user = userEvent.setup();
       await start();

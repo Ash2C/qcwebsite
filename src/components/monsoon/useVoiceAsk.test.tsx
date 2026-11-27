@@ -6,8 +6,10 @@ import type { AskOutcome } from "./useAsk";
 import type { Caption } from "@/lib/monsoon/ask/speech";
 import {
   CAPTION_LINGER_MS,
+  DECODE_TIMEOUT_MS,
   MAX_LISTEN_SECONDS,
   NO_SPEECH_MS,
+  NOTICE_MS,
   PAUSE_MS,
   REPLAY_WINDOW_MS,
   STOP_FALLBACK_MS,
@@ -76,6 +78,7 @@ class FakeSource {
 class FakeAudioContext {
   static instances: FakeAudioContext[] = [];
   static decodeFails = false;
+  static decodeHangs = false;
   currentTime = 0;
   destination = {};
   sources: FakeSource[] = [];
@@ -101,6 +104,7 @@ class FakeAudioContext {
   }
   decodeAudioData() {
     this.decoded += 1;
+    if (FakeAudioContext.decodeHangs) return new Promise(() => {});
     return FakeAudioContext.decodeFails ? Promise.reject(new Error("bad audio")) : Promise.resolve({ duration: 3 });
   }
   /** The answer's source: the last one that is not the silent unlock sample. */
@@ -145,6 +149,13 @@ function advance(ms: number) {
   });
 }
 
+function setVisibility(state: "hidden" | "visible") {
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+  act(() => {
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+}
+
 /** Tap, say something, pause: the question goes out and the answer comes back. */
 async function askAndAnswer(h: ReturnType<typeof setup>, text = "where does Anna work") {
   act(() => h.result.current.onPill());
@@ -160,6 +171,7 @@ beforeEach(() => {
   FakeRecognition.startThrows = false;
   FakeAudioContext.instances = [];
   FakeAudioContext.decodeFails = false;
+  FakeAudioContext.decodeHangs = false;
   vi.stubGlobal("SpeechRecognition", FakeRecognition);
   vi.stubGlobal("AudioContext", FakeAudioContext);
   vi.stubGlobal("requestAnimationFrame", (cb: (t: number) => void) => setTimeout(() => cb(Date.now()), 16) as unknown as number);
@@ -181,6 +193,8 @@ describe("constants", () => {
     expect(REPLAY_WINDOW_MS).toBe(12_000);
     expect(CAPTION_LINGER_MS).toBe(1500);
     expect(STOP_FALLBACK_MS).toBe(2000);
+    expect(DECODE_TIMEOUT_MS).toBe(5000);
+    expect(NOTICE_MS).toBe(6000);
   });
 });
 
@@ -247,33 +261,79 @@ describe("robustness", () => {
     expect(h.result.current.phase).toBe("idle");
     expect(h.result.current.notice).toBe("not_heard");
     expect(h.onEvent).toHaveBeenCalledWith("no_speech", expect.stringMatching(/^start-failed; /));
+    // Only the notice's own clearing timer is left.
+    expect(vi.getTimerCount()).toBe(1);
+    advance(NOTICE_MS);
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("hidden during thinking: the answer is delivered without audio, idle with replay offered, replay then plays", async () => {
+  it("hidden during thinking: the answer waits silently, and replay is offered only once the page is back", async () => {
     let resolve!: (o: AskOutcome) => void;
     const h = setup({ outcome: new Promise<AskOutcome>((r) => (resolve = r)) });
     act(() => h.result.current.onPill());
     act(() => rec().say("who is Anna"));
     advance(PAUSE_MS);
     expect(h.result.current.phase).toBe("thinking");
-    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
-    act(() => {
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
+    setVisibility("hidden");
     expect(h.result.current.phase).toBe("thinking");
     resolve(okOutcome());
     await flush();
     expect(h.onAnswer).toHaveBeenCalledWith(TURN);
     expect(ctx().sources.filter((s) => s.started && (s.buffer as { silent?: boolean }).silent !== true)).toHaveLength(0);
     expect(h.result.current.phase).toBe("idle");
-    expect(h.result.current.canReplay).toBe(true);
+    expect(h.result.current.canReplay).toBe(false);
     expect(h.result.current.lastTurn).toEqual(TURN);
 
-    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    setVisibility("visible");
+    expect(h.result.current.canReplay).toBe(true);
     act(() => h.result.current.replay());
     expect(h.result.current.phase).toBe("speaking");
     expect(ctx().answerSource()!.started).toBe(true);
+  });
+
+  it("hidden then visible again while thinking: the answer plays normally", async () => {
+    let resolve!: (o: AskOutcome) => void;
+    const h = setup({ outcome: new Promise<AskOutcome>((r) => (resolve = r)) });
+    act(() => h.result.current.onPill());
+    act(() => rec().say("who is Anna"));
+    advance(PAUSE_MS);
+    setVisibility("hidden");
+    setVisibility("visible");
+    expect(h.result.current.phase).toBe("thinking");
+    resolve(okOutcome());
+    await flush();
+    expect(h.result.current.phase).toBe("speaking");
+    expect(h.result.current.caption).toBe("Anna Lee is at Northwind.");
+    expect(ctx().answerSource()!.started).toBe(true);
+  });
+
+  it("an answer that arrived while hidden shows its captions on the timer on return, with the replay window from then", async () => {
+    let resolve!: (o: AskOutcome) => void;
+    const h = setup({ outcome: new Promise<AskOutcome>((r) => (resolve = r)) });
+    act(() => h.result.current.onPill());
+    act(() => rec().say("who is Anna"));
+    advance(PAUSE_MS);
+    setVisibility("hidden");
+    resolve(okOutcome());
+    await flush();
+    expect(h.result.current.caption).toBe("");
+    // A long time away: the replay window has not started while hidden.
+    advance(REPLAY_WINDOW_MS + 5000);
+    expect(h.result.current.canReplay).toBe(false);
+
+    const sourcesBefore = ctx().sources.length;
+    setVisibility("visible");
+    expect(h.result.current.caption).toBe("Anna Lee is at Northwind.");
+    expect(h.result.current.canReplay).toBe(true);
+    expect(h.result.current.phase).toBe("idle");
+    expect(ctx().sources.length).toBe(sourcesBefore); // no audio without a tap
+    advance(1600);
+    expect(h.result.current.caption).toBe("She leads sales.");
+    advance(REPLAY_WINDOW_MS - 1600 - 1);
+    expect(h.result.current.canReplay).toBe(true);
+    advance(1);
+    expect(h.result.current.canReplay).toBe(false);
+    expect(h.result.current.caption).toBe("");
   });
 
   it("a send that rejects after a long delay (the request layer's 70 s timeout) returns idle and opens the window", async () => {
@@ -732,6 +792,56 @@ describe("review fixes", () => {
     expect(h.onHeld).toHaveBeenCalledWith("where does Anna work");
     expect(h.result.current.phase).toBe("idle");
     expect(h.result.current.heard).toBe("");
+  });
+
+  it("a decode that never settles falls back to captions on the timer after DECODE_TIMEOUT_MS", async () => {
+    FakeAudioContext.decodeHangs = true;
+    const h = setup();
+    await askAndAnswer(h);
+    expect(h.result.current.phase).toBe("thinking");
+    advance(DECODE_TIMEOUT_MS - 1);
+    await flush();
+    expect(h.result.current.phase).toBe("thinking");
+    advance(1);
+    await flush();
+    expect(h.result.current.phase).toBe("speaking");
+    expect(h.result.current.caption).toBe("Anna Lee is at Northwind.");
+    expect(ctx().answerSource()).toBeUndefined();
+    advance(3200);
+    expect(h.result.current.phase).toBe("idle");
+    expect(h.result.current.canReplay).toBe(true);
+  });
+
+  it("the not-heard notice clears itself after NOTICE_MS", () => {
+    const h = setup();
+    act(() => h.result.current.onPill());
+    advance(NO_SPEECH_MS);
+    expect(h.result.current.notice).toBe("not_heard");
+    advance(NOTICE_MS - 1);
+    expect(h.result.current.notice).toBe("not_heard");
+    advance(1);
+    expect(h.result.current.notice).toBeNull();
+  });
+
+  it("the not-heard notice clears on the next tap, and its timer goes with it", () => {
+    const h = setup();
+    act(() => h.result.current.onPill());
+    advance(NO_SPEECH_MS);
+    expect(h.result.current.notice).toBe("not_heard");
+    // A tap while the page is busy starts nothing, but still dismisses the notice.
+    h.rerender({ sound: true, disabled: true });
+    act(() => h.result.current.onPill());
+    expect(h.result.current.notice).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("unmount with a notice showing leaves no timer", () => {
+    const h = setup();
+    act(() => h.result.current.onPill());
+    advance(NO_SPEECH_MS);
+    expect(h.result.current.notice).toBe("not_heard");
+    h.unmount();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("clearNotice() drops a showing notice", () => {

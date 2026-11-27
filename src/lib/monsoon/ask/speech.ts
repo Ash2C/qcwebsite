@@ -76,6 +76,13 @@ class HttpError extends Error {
   }
 }
 
+/** True only with both ELEVENLABS_API_KEY and MONSOON_VOICE_ID set: without either, answers are captions only. */
+export function speechConfigured(
+  env: Record<string, string | undefined>,
+): env is Record<string, string | undefined> & { ELEVENLABS_API_KEY: string; MONSOON_VOICE_ID: string } {
+  return Boolean(env.ELEVENLABS_API_KEY && env.MONSOON_VOICE_ID);
+}
+
 /** Never throws. audio is null without both env values, on any failure, or on timeout. */
 export async function speak(
   answer: string,
@@ -87,9 +94,10 @@ export async function speak(
   } catch {
     // keep the raw answer
   }
-  const key = deps.env.ELEVENLABS_API_KEY;
-  const voice = deps.env.MONSOON_VOICE_ID;
-  if (!key || !voice || !text) return { audio: null, captions: safeCaptions(text, null) };
+  const env = deps.env;
+  if (!speechConfigured(env) || !text) return { audio: null, captions: safeCaptions(text, null) };
+  const key = env.ELEVENLABS_API_KEY;
+  const voice = env.MONSOON_VOICE_ID;
 
   const fetchFn = deps.fetchFn ?? fetch;
   const timeoutMs = deps.timeoutMs ?? SPEECH_TIMEOUT_MS;

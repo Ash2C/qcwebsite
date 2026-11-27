@@ -265,5 +265,7 @@ CREATE TABLE IF NOT EXISTS ask_feedback (
 );
 CREATE INDEX IF NOT EXISTS ask_feedback_customer_at ON ask_feedback (customer_id, at);
 ALTER TABLE ask_feedback ENABLE ROW LEVEL SECURITY;
+-- The spoken-answer cap counts one person's 'speak' rows over the last day on every spoken answer.
+CREATE INDEX IF NOT EXISTS activity_person_action_at ON activity (person_id, action, at);
 
 INSERT INTO accounts_migrations (version) VALUES (8) ON CONFLICT DO NOTHING;

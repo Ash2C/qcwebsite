@@ -420,6 +420,12 @@ describe.skipIf(!db.available)("accounts schema", () => {
     expect(ix.rows.some((x) => /\(customer_id, at\)/.test(x.indexdef))).toBe(true);
   });
 
+  it("version 8: activity is indexed on person, action and time for the spoken-answer count", async () => {
+    const ix = await client.query("SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'activity'");
+    const def = ix.rows.find((x) => x.indexname === "activity_person_action_at")?.indexdef ?? "";
+    expect(def).toContain("(person_id, action, at)");
+  });
+
   it("version 2: a project ref can be recorded on only one pipeline", async () => {
     const id = await customer();
     const ins = (k: string, ref: string | null) =>

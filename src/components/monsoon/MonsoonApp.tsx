@@ -95,15 +95,6 @@ function storeEstate(key: string) {
   }
 }
 
-// A touch screen: opening Ask then does not focus the question box (the keyboard would cover the page).
-function touchScreen(): boolean {
-  try {
-    return window.matchMedia?.("(pointer: coarse)").matches === true;
-  } catch {
-    return false;
-  }
-}
-
 const targetKey = (t: ContactTarget) => `${t.memberId ?? ""}|${t.personId ?? ""}|${t.orgId ?? ""}`;
 
 // Room at the bottom of the page for what Ask shows there, so the end of the page can be scrolled into view.
@@ -218,12 +209,14 @@ export default function MonsoonApp() {
     setSendRequest(null);
     setSpeakHint(false);
   }
-  // Opens (or expands) the window. A computer focuses the question box; a touch screen only on an
-  // explicit request to type (Ask about this contact), so the keyboard does not cover the page.
+  // Opens (or expands) the window. A computer focuses the question box; a phone (wherever the voice
+  // pill shows, by the same useIsPhone test) only on an explicit request to type, so the keyboard
+  // does not cover the page. Read through a ref: the device is known only once the voice wiring runs.
+  const phoneRef = useRef<boolean | null>(null);
   function openAsk(opts?: { focus?: boolean }) {
     setAskOpen(true);
     setAskCollapsed(false);
-    if (opts?.focus || !touchScreen()) setFocusAsk(true);
+    if (opts?.focus || phoneRef.current === false) setFocusAsk(true);
   }
   // Minimises an open window so the page behind can be read; a closed one stays closed.
   function minimiseAsk() {
@@ -310,6 +303,7 @@ export default function MonsoonApp() {
     onSpeakHint: () => setSpeakHint(true),
     windowOpen: askOpen,
   });
+  phoneRef.current = voice.phone;
   const batchStarted = batch?.rows.some((r) => r.status === "saved") ?? false;
 
   const load = useCallback(async () => {
@@ -921,6 +915,7 @@ export default function MonsoonApp() {
           onOpenContact={openContact}
           onResearch={openAndResearch}
           focusOnOpen={focusAsk}
+          minimised={askCollapsed}
           onFocused={() => setFocusAsk(false)}
           suggested={message?.open && message.open.estate === estateKey ? [`Tell me about ${message.open.name}`] : []}
           viewing={prepared ?? viewing}

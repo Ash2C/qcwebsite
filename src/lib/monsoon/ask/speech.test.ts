@@ -5,6 +5,7 @@ import {
   captionsFor,
   cleanForSpeech,
   speak,
+  speechConfigured,
   splitSentences,
   spokenText,
   type Alignment,
@@ -67,6 +68,15 @@ describe("speech helpers", () => {
     const t = spokenText("Who is next?");
     expect(t.startsWith("Who is next?\n\n(")).toBe(true);
     expect(t.endsWith(`(${SPOKEN_REPLY_INSTRUCTION})`)).toBe(true);
+  });
+});
+
+describe("speechConfigured", () => {
+  it("is true only with both env values", () => {
+    expect(speechConfigured(ENV)).toBe(true);
+    for (const env of [{}, { ELEVENLABS_API_KEY: "k" }, { MONSOON_VOICE_ID: "v" }, { ELEVENLABS_API_KEY: "", MONSOON_VOICE_ID: "v" }]) {
+      expect(speechConfigured(env)).toBe(false);
+    }
   });
 });
 

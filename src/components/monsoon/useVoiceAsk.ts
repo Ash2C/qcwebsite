@@ -22,6 +22,10 @@ export const REPLAY_WINDOW_MS = 12_000;
 export const CAPTION_LINGER_MS = 1500;
 /** After the hook calls stop(), listening is ended by hand if the browser sends no onend by then. */
 export const STOP_FALLBACK_MS = 2000;
+/** The answer's audio must decode by then, or the captions run on their own timing. */
+export const DECODE_TIMEOUT_MS = 5000;
+/** A "not heard" or "microphone blocked" notice goes after this long, or at the next tap. */
+export const NOTICE_MS = 6000;
 /** Captions without audio step on this timer, from their own times. */
 const CAPTION_TICK_MS = 150;
 
@@ -111,8 +115,10 @@ export function useVoiceAsk(args: VoiceAskArgs) {
   const canReplayRef = useRef(false);
   /** Bumped whenever a question is abandoned (hidden page, unmount); late answers are dropped. */
   const runRef = useRef(0);
-  /** The run whose page was hidden while thinking: its answer arrives silently, for a replay tap. */
+  /** The run whose page was hidden while thinking; cleared if the page comes back before the answer. */
   const hiddenRunRef = useRef<number | null>(null);
+  /** The run whose answer arrived while the page was hidden: shown when the page comes back. */
+  const waitingRunRef = useRef<number | null>(null);
   /** A listen started in this tick; a second tap in the same tick is its echo, not a stop. */
   const justStartedRef = useRef(false);
   const justStartedTimer = useRef<number | null>(null);
@@ -133,6 +139,7 @@ export function useVoiceAsk(args: VoiceAskArgs) {
   const captionsRef = useRef<Caption[]>([]);
   const lingerTimer = useRef<number | null>(null);
   const replayTimer = useRef<number | null>(null);
+  const noticeTimer = useRef<number | null>(null);
 
   function setPhase(p: VoicePhase) {
     phaseRef.current = p;
@@ -149,6 +156,17 @@ export function useVoiceAsk(args: VoiceAskArgs) {
       window.clearInterval(ref.current);
       ref.current = null;
     }
+  }
+
+  /** Show a notice for NOTICE_MS, or clear it (null) at once. */
+  function showNotice(n: VoiceNotice) {
+    clearTimer(noticeTimer);
+    setNotice(n);
+    if (n === null) return;
+    noticeTimer.current = window.setTimeout(() => {
+      noticeTimer.current = null;
+      setNotice(null);
+    }, NOTICE_MS);
   }
 
   function clearListenTimers() {
@@ -238,9 +256,11 @@ export function useVoiceAsk(args: VoiceAskArgs) {
       a.onNeedsWindow("unsupported");
       return;
     }
-    setNotice(null);
+    showNotice(null);
     setCanReplay(false);
     clearAfterTimers();
+    stopPlayback();
+    waitingRunRef.current = null;
     setCaption("");
     // Read once, at the tap: the unlock and the request agree even if sound is toggled mid-question.
     const sound = a.sound;
@@ -284,7 +304,7 @@ export function useVoiceAsk(args: VoiceAskArgs) {
           // Already ended.
         }
         setHeard("");
-        setNotice("mic_blocked");
+        showNotice("mic_blocked");
         setPhase("idle");
         argsRef.current.onEvent("mic_blocked", eventDetail(code));
         argsRef.current.onNeedsWindow("mic_blocked");
@@ -308,7 +328,7 @@ export function useVoiceAsk(args: VoiceAskArgs) {
         return;
       }
       setHeard("");
-      setNotice("not_heard");
+      showNotice("not_heard");
       setPhase("idle");
       argsRef.current.onEvent("no_speech", eventDetail(lastErrorRef.current || "ended"));
     };
@@ -335,7 +355,7 @@ export function useVoiceAsk(args: VoiceAskArgs) {
       clearListenTimers();
       clearTimer(justStartedTimer);
       justStartedRef.current = false;
-      setNotice("not_heard");
+      showNotice("not_heard");
       setPhase("idle");
       argsRef.current.onEvent("no_speech", eventDetail("start-failed"));
     }
@@ -370,20 +390,70 @@ export function useVoiceAsk(args: VoiceAskArgs) {
     setLastTurn(outcome.turn);
     const ctx = ctxRef.current;
     if (sound && outcome.audio && ctx) {
-      try {
-        bufferRef.current = await ctx.decodeAudioData(decodeBase64(outcome.audio));
-      } catch {
-        bufferRef.current = null;
-      }
+      bufferRef.current = await decodeWithin(ctx, outcome.audio);
       if (run !== runRef.current) return;
     }
     if (hiddenRunRef.current === run) {
-      // The phone was locked while thinking: audio cannot start outside a tap on iOS, so the
-      // answer waits silently with replay offered; the replay tap plays it.
-      finish();
+      // The phone is still locked or switched away: audio cannot start outside a tap on iOS, so the
+      // answer waits; when the page comes back its captions run silently and replay is offered.
+      hiddenRunRef.current = null;
+      waitingRunRef.current = run;
+      setPhase("idle");
+      setHeard("");
       return;
     }
     play();
+  }
+
+  /** The decoded audio, or null if it fails or takes longer than DECODE_TIMEOUT_MS. */
+  function decodeWithin(ctx: AudioContext, audio: string): Promise<AudioBuffer | null> {
+    return new Promise((resolve) => {
+      const timer = window.setTimeout(() => resolve(null), DECODE_TIMEOUT_MS);
+      const done = (b: AudioBuffer | null) => {
+        window.clearTimeout(timer);
+        resolve(b);
+      };
+      Promise.resolve()
+        .then(() => ctx.decodeAudioData(decodeBase64(audio)))
+        .then(done, () => done(null));
+    });
+  }
+
+  /** Start offering "hear it again" for REPLAY_WINDOW_MS from now. */
+  function offerReplay() {
+    clearTimer(replayTimer);
+    setCanReplay(true);
+    replayTimer.current = window.setTimeout(() => {
+      replayTimer.current = null;
+      setCanReplay(false);
+    }, REPLAY_WINDOW_MS);
+  }
+
+  /** Captions step on their own times; done runs once the last one has had its time. */
+  function runCaptionClock(caps: Caption[], done: () => void) {
+    const started = Date.now();
+    const total = caps.length ? caps[caps.length - 1].end : 0;
+    captionTimer.current = window.setInterval(() => {
+      const t = (Date.now() - started) / 1000;
+      setCaption(captionAt(caps, t));
+      if (t >= total) done();
+    }, CAPTION_TICK_MS);
+  }
+
+  /** The page is back after an answer arrived unseen: its captions run silently (no tap, so no audio) and replay is offered from now. */
+  function showWaitingAnswer() {
+    const caps = captionsRef.current;
+    stopPlayback();
+    clearAfterTimers();
+    setCaption(caps[0]?.text ?? "");
+    offerReplay();
+    runCaptionClock(caps, () => {
+      clearTimer(captionTimer);
+      lingerTimer.current = window.setTimeout(() => {
+        lingerTimer.current = null;
+        setCaption("");
+      }, CAPTION_LINGER_MS);
+    });
   }
 
   function finish() {
@@ -395,11 +465,7 @@ export function useVoiceAsk(args: VoiceAskArgs) {
       lingerTimer.current = null;
       setCaption("");
     }, CAPTION_LINGER_MS);
-    setCanReplay(true);
-    replayTimer.current = window.setTimeout(() => {
-      replayTimer.current = null;
-      setCanReplay(false);
-    }, REPLAY_WINDOW_MS);
+    offerReplay();
   }
 
   function play() {
@@ -413,14 +479,8 @@ export function useVoiceAsk(args: VoiceAskArgs) {
     const buffer = bufferRef.current;
 
     if (!ctx || !buffer || !argsRef.current.sound) {
-      // No audio (none sent, sound off, or it would not decode): captions on their own timing.
-      const started = Date.now();
-      const total = caps.length ? caps[caps.length - 1].end : 0;
-      captionTimer.current = window.setInterval(() => {
-        const t = (Date.now() - started) / 1000;
-        setCaption(captionAt(caps, t));
-        if (t >= total) finish();
-      }, CAPTION_TICK_MS);
+      // No audio (none sent, sound off, or it would not decode in time): captions on their own timing.
+      runCaptionClock(caps, finish);
       return;
     }
 
@@ -465,6 +525,7 @@ export function useVoiceAsk(args: VoiceAskArgs) {
   }
 
   function onPill() {
+    showNotice(null);
     const p = phaseRef.current;
     if (p === "idle") {
       if (argsRef.current.disabled) return;
@@ -485,14 +546,14 @@ export function useVoiceAsk(args: VoiceAskArgs) {
   }
 
   function clearNotice() {
-    setNotice(null);
+    showNotice(null);
   }
 
   function replay() {
     if (argsRef.current.disabled || phaseRef.current !== "idle" || !canReplayRef.current) return;
     if (captionsRef.current.length === 0) return;
     argsRef.current.onEvent("replay");
-    setNotice(null);
+    showNotice(null);
     setCanReplay(false);
     if (argsRef.current.sound) unlockAudio();
     play();
@@ -501,7 +562,16 @@ export function useVoiceAsk(args: VoiceAskArgs) {
   // A phone locked or switched away: stop listening (never send half a question) or speaking.
   useEffect(() => {
     function onVisibility() {
-      if (document.visibilityState !== "hidden") return;
+      if (document.visibilityState !== "hidden") {
+        // Back before the answer: it plays as usual. Back after it: show it now.
+        if (hiddenRunRef.current === runRef.current) hiddenRunRef.current = null;
+        if (waitingRunRef.current !== null) {
+          const waiting = waitingRunRef.current === runRef.current;
+          waitingRunRef.current = null;
+          if (waiting && phaseRef.current === "idle") showWaitingAnswer();
+        }
+        return;
+      }
       if (phaseRef.current === "listening") abandonListening();
       else if (phaseRef.current === "speaking") stopSpeaking(false);
       else if (phaseRef.current === "thinking") hiddenRunRef.current = runRef.current;
@@ -524,6 +594,7 @@ export function useVoiceAsk(args: VoiceAskArgs) {
       }
       clearListenTimers();
       clearTimer(justStartedTimer);
+      clearTimer(noticeTimer);
       stopPlayback();
       clearAfterTimers();
       const ctx = ctxRef.current;

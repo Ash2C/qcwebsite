@@ -149,10 +149,11 @@ function memoryStorage() {
   };
 }
 
-/** A phone (no fine pointer, a coarse one) or a computer with a mouse. */
-function device(kind: "phone" | "computer") {
+/** A phone (no fine pointer, a coarse one), a fine pointer that cannot hover (a stylus), or a computer with a mouse. */
+function device(kind: "phone" | "stylus" | "computer") {
   vi.stubGlobal("matchMedia", (query: string) => ({
-    matches: kind === "phone" ? query === "(pointer: coarse)" : query === "(hover: hover) and (pointer: fine)",
+    matches:
+      kind === "phone" ? query === "(pointer: coarse)" : kind === "stylus" ? query === "(pointer: fine)" : query === "(hover: hover) and (pointer: fine)",
     media: query,
     addEventListener() {},
     removeEventListener() {},
@@ -421,6 +422,54 @@ describe("voice Ask review fixes", () => {
     await user.click(screen.getByRole("button", { name: "Type a question instead" }));
     await user.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByText("I did not catch that. Tap and try again.")).toBeNull();
+  });
+});
+
+describe("voice Ask final review fixes", () => {
+  it("dictation into the box stops when the window is minimised", async () => {
+    const user = userEvent.setup();
+    await start();
+    await user.click(screen.getByRole("button", { name: "Type a question instead" }));
+    await user.click(screen.getByRole("button", { name: "Speak your question" }));
+    const dictation = rec();
+    expect(dictation.ended).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Minimise Ask and keep reading" }));
+    expect(dictation.ended).toBe(true);
+    // Late words from the dropped session go nowhere.
+    act(() => dictation.onresult?.({ results: [[{ transcript: "late words" }]] }));
+    await user.click(screen.getByRole("button", { name: "Expand Ask" }));
+    expect(questionBox()).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Speak your question" })).toBeInTheDocument();
+  });
+
+  it("dictation into the box stops when the window is closed", async () => {
+    const user = userEvent.setup();
+    await start();
+    await user.click(screen.getByRole("button", { name: "Type a question instead" }));
+    await user.click(screen.getByRole("button", { name: "Speak your question" }));
+    const dictation = rec();
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(dictation.ended).toBe(true);
+  });
+
+  it("a fine pointer that cannot hover gets the voice pill, and a spoken answer that opens the window leaves the box unfocused", async () => {
+    device("stylus");
+    const user = userEvent.setup();
+    m.askCrm.mockResolvedValue(spoken("A note is waiting for you to confirm.", { proposals: [NOTE] }));
+    await start();
+    expect(screen.queryByRole("button", { name: "Ask Monsoon" })).toBeNull();
+    await speak(user, "Add a note to Anna");
+    const win = await screen.findByRole("dialog", { name: "Ask" });
+    expect(await within(win).findByRole("button", { name: "Confirm" })).toBeEnabled();
+    expect(questionBox()).not.toHaveFocus();
+  });
+
+  it("a fine pointer that cannot hover: the keyboard button still opens the window focused", async () => {
+    device("stylus");
+    const user = userEvent.setup();
+    await start();
+    await user.click(screen.getByRole("button", { name: "Type a question instead" }));
+    expect(await screen.findByRole("textbox", { name: "Your question" })).toHaveFocus();
   });
 });
 
