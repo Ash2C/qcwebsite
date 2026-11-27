@@ -24,6 +24,8 @@ export type EstateInfo = {
   defaultRole: string;
   available: boolean;
   roles: { key: string; label: string }[];
+  /** True when the CRM is at schema version 2 or more, so it has to-dos. */
+  todos: boolean;
 };
 
 export type SaveBody = {

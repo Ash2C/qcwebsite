@@ -1,7 +1,7 @@
 // Builds the SQL a customer runs once in their own Supabase SQL editor: the CRM tables, their
 // vocabulary, and a restricted login that can read, insert and update but never remove rows or
 // change structure.
-import { CRM_SCHEMA_SQL } from "./crm-schema.generated";
+import { CRM_LATEST_VERSION, CRM_SCHEMA_SQL } from "./crm-schema.generated";
 
 export type SetupVocabulary = {
   stages: { key: string; ord: number; label: string; terminal: boolean }[];
@@ -26,9 +26,15 @@ export const MONSOON_TABLES: readonly string[] = [
   "schema_migrations", "stages", "roles", "owners", "orgs", "people",
   "members", "touches", "tags", "member_tags", "captures",
 ];
-const ALL_TABLES = MONSOON_TABLES;
-const INSERT_TABLES = ["orgs", "people", "members", "touches", "captures", "owners"];
-const UPDATE_TABLES = ["orgs", "people", "members", "touches"];
+/** The to-do table, added at schema version 2. */
+export const TODO_TABLE = "todos";
+/** The eleven tables plus the to-do table: what a version 2 CRM holds. */
+export const MONSOON_TABLES_V2: readonly string[] = [...MONSOON_TABLES, TODO_TABLE];
+const ALL_TABLES = MONSOON_TABLES_V2;
+// The triggers on members and todos run as the invoking login, so it needs to read, insert and
+// update todos (and be let through by row security) for a direct next_action write to work.
+const INSERT_TABLES = ["orgs", "people", "members", "touches", "captures", "owners", TODO_TABLE];
+const UPDATE_TABLES = ["orgs", "people", "members", "touches", TODO_TABLE];
 
 const lit = (v: string) => `'${v.replace(/'/g, "''")}'`;
 
@@ -47,7 +53,7 @@ export function checkSchemaName(name: string): string {
 
 // `passwordSql`, when given, is a fixed SQL expression the block reads the password from, in place
 // of the quoted password: the password itself is then nowhere in the script.
-function loginPart(role: string, password: string = PASSWORD_PLACEHOLDER, schema: string = DEFAULT_SCHEMA, passwordSql?: string): string {
+function policyStatements(role: string, tables: readonly string[], insertTables: readonly string[], updateTables: readonly string[]): string[] {
   const policies: string[] = [];
   const policy = (table: string, action: "select" | "insert" | "update") => {
     const name = `${role}_${action}`;
@@ -57,9 +63,14 @@ function loginPart(role: string, password: string = PASSWORD_PLACEHOLDER, schema
       : "FOR UPDATE" + ` TO ${role} USING (true) WITH CHECK (true)`;
     policies.push(`DROP POLICY IF EXISTS ${name} ON ${table};`, `CREATE POLICY ${name} ON ${table} ${clause};`);
   };
-  for (const t of ALL_TABLES) policy(t, "select");
-  for (const t of INSERT_TABLES) policy(t, "insert");
-  for (const t of UPDATE_TABLES) policy(t, "update");
+  for (const t of tables) policy(t, "select");
+  for (const t of insertTables) policy(t, "insert");
+  for (const t of updateTables) policy(t, "update");
+  return policies;
+}
+
+function loginPart(role: string, password: string = PASSWORD_PLACEHOLDER, schema: string = DEFAULT_SCHEMA, passwordSql?: string): string {
+  const policies = policyStatements(role, ALL_TABLES, INSERT_TABLES, UPDATE_TABLES);
 
   return `DO $$
 DECLARE
@@ -109,6 +120,38 @@ ${policies.join("\n")}
 `;
 }
 
+/**
+ * Grants and row-security policies on the to-do table for a login that already exists, such as
+ * a client whose CRM was just upgraded to version 2. Safe to repeat.
+ */
+export function todoGrantStatements(roleName: string, schema: string): string {
+  const role = checkRole(roleName);
+  const sch = checkSchemaName(schema);
+  return `DO $$
+DECLARE
+  r text;
+BEGIN
+  FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+      EXECUTE format('REVOKE ALL ON ${TODO_TABLE} FROM %I', r);
+    END IF;
+  END LOOP;
+END
+$$;
+
+GRANT USAGE ON SCHEMA ${sch} TO ${role};
+REVOKE ALL ON ${TODO_TABLE} FROM ${role};
+GRANT SELECT, INSERT, UPDATE ON ${TODO_TABLE} TO ${role};
+
+${policyStatements(role, [TODO_TABLE], [TODO_TABLE], [TODO_TABLE]).join("\n")}
+`;
+}
+
+/** Records every schema version up to the latest this app carries. */
+const MIGRATION_ROWS = Array.from({ length: CRM_LATEST_VERSION }, (_, i) => i + 1)
+  .map((v) => `INSERT INTO schema_migrations (version) VALUES (${v}) ON CONFLICT DO NOTHING;`)
+  .join("\n");
+
 /** Only the role, grants and policies, for a database that already holds the Monsoon tables. */
 export function loginAndPoliciesScript(roleName: string = DEFAULT_ROLE, schema: string = DEFAULT_SCHEMA): string {
   return `BEGIN;\n\n${loginPart(checkRole(roleName), undefined, checkSchemaName(schema))}\nCOMMIT;\n`;
@@ -123,7 +166,7 @@ export function generateSetupScript(v: SetupVocabulary): string {
  * shared database's rows are added with parameterised queries, never as quoted text.
  */
 export function schemaStatements(): string {
-  return [CRM_SCHEMA_SQL, "INSERT INTO schema_migrations (version) VALUES (1) ON CONFLICT DO NOTHING;"].join("\n\n");
+  return [CRM_SCHEMA_SQL, MIGRATION_ROWS].join("\n\n");
 }
 
 /** The setting the shared database's login script reads the new password from. Set it for the transaction only. */
@@ -147,7 +190,7 @@ export function setupStatements(v: SetupVocabulary): string {
   const rows = (items: string[]) => items.join(",\n  ");
   const parts = [
     CRM_SCHEMA_SQL,
-    "INSERT INTO schema_migrations (version) VALUES (1) ON CONFLICT DO NOTHING;",
+    MIGRATION_ROWS,
   ];
   if (v.stages.length > 0) {
     const values = v.stages.map((s) => `(${lit(s.key)}, ${Math.trunc(s.ord)}, ${lit(s.label)}, ${s.terminal ? "true" : "false"})`);

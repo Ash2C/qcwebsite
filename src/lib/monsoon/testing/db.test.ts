@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { makeAccountsTestDb, makeTestDb, testDb, testRoleName } from "./db";
+import { makeAccountsTestDb, makeTestDb, makeV1TestDb, testDb, testRoleName } from "./db";
 
 const POOL = /^\d+$/.test(process.env.VITEST_POOL_ID ?? "") ? process.env.VITEST_POOL_ID : "0";
 const dbName = (url: string) => new URL(url).pathname.slice(1);
@@ -20,13 +20,28 @@ describe("test harness", () => {
     expect(() => makeTestDb("bad name;")).toThrow();
   });
 
-  it.skipIf(!testDb.available)("reset() records schema version 1", async () => {
+  it.skipIf(!testDb.available)("reset() records every schema version, up to 2, and builds the to-do table", async () => {
     const db = makeTestDb("crm");
     await db.reset();
     const client = await db.connect();
     try {
-      const res = await client.query("SELECT max(version) AS v FROM schema_migrations");
-      expect(Number(res.rows[0].v)).toBe(1);
+      const res = await client.query("SELECT version FROM schema_migrations ORDER BY version");
+      expect(res.rows.map((r) => Number(r.version))).toEqual([1, 2]);
+      expect((await client.query("SELECT to_regclass('todos') AS t")).rows[0].t).toBe("todos");
+    } finally {
+      await client.end();
+    }
+  });
+
+  it.skipIf(!testDb.available)("makeV1TestDb builds a CRM at schema version 1, with no to-do table", async () => {
+    const db = makeV1TestDb("crm_v1");
+    await db.reset();
+    const client = await db.connect();
+    try {
+      const res = await client.query("SELECT version FROM schema_migrations ORDER BY version");
+      expect(res.rows.map((r) => Number(r.version))).toEqual([1]);
+      expect((await client.query("SELECT to_regclass('todos') AS t")).rows[0].t).toBeNull();
+      expect((await client.query("SELECT count(*)::int AS n FROM stages")).rows[0].n).toBe(5);
     } finally {
       await client.end();
     }

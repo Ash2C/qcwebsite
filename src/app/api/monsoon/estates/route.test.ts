@@ -62,8 +62,19 @@ describe("GET /api/monsoon/estates", () => {
       defaultRole: "lp_prospect",
       available: true,
       roles: ROLES,
+      todos: false,
     });
     expect(body.estates.map((e: { key: string }) => e.key)).toEqual(["a", "b"]);
+  });
+
+  it("says a pipeline has to-dos only when its CRM is at schema version 2 or more", async () => {
+    for (const [version, todos] of [[1, false], [2, true], [3, true]] as const) {
+      signInAs(fakeAccount({ pipelines: PIPELINES, db: dbWith(version) }));
+      const body = await (await GET(request())).json();
+      expect(body.estates[0], `version ${version}`).toMatchObject({ available: true, todos });
+    }
+    signInAs(fakeAccount({ pipelines: [{ ...PIPELINES[0], connected: false }, PIPELINES[1]], db: dbWith(2) }));
+    expect((await (await GET(request())).json()).estates[0]).toMatchObject({ available: false, todos: false });
   });
 
   it("reports not_connected for a pipeline with no database, without connecting", async () => {

@@ -54,6 +54,7 @@ const ESTATES = {
       label: "Traxo",
       defaultRole: "lp_prospect",
       available: true,
+      todos: true,
       roles: [
         { key: "lp_prospect", label: "LP prospect" },
         { key: "introducer", label: "Introducer" },
@@ -64,6 +65,7 @@ const ESTATES = {
       label: "Zero One",
       defaultRole: "investor",
       available: true,
+      todos: true,
       roles: [
         { key: "investor", label: "investor" },
         { key: "reader", label: "Reader" },

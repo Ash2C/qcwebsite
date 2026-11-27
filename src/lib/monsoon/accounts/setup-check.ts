@@ -4,7 +4,7 @@
 import type { Client } from "pg";
 import { parseAllowedDbUrl } from "./address";
 import { withPipelineDb } from "../db";
-import { MONSOON_TABLES, checkSchemaName } from "./setup-script";
+import { MONSOON_TABLES, MONSOON_TABLES_V2, checkSchemaName } from "./setup-script";
 
 export type SetupFailure =
   | "address"
@@ -54,8 +54,6 @@ async function step<T>(failure: SetupFailure, run: () => Promise<T>): Promise<T>
   }
 }
 
-const TABLES = [...MONSOON_TABLES];
-
 // The statements below are written for `public`, exactly as they were before a schema could be
 // named, and are sent unchanged for it. For a client's schema in the shared database the two places
 // that name `public` are rewritten. `schema` is a checked identifier (checkSchemaName).
@@ -65,6 +63,16 @@ function inSchema(sql: string, schema: string): string {
 }
 
 async function checkDatabase(db: Client, roleName: string, defaultRole: string, schema: string): Promise<SetupFailure | null> {
+  // The version says which tables to expect: the eleven at version 1, plus todos from version 2.
+  // A database with no schema_migrations table yet reads as no version, and fails on its tables.
+  let latest = 0;
+  try {
+    latest = Number((await db.query("SELECT max(version) AS v FROM schema_migrations")).rows[0].v);
+  } catch {
+    latest = 0;
+  }
+  const TABLES = latest >= 2 ? [...MONSOON_TABLES_V2] : [...MONSOON_TABLES];
+
   const present = await step("tables", () =>
     db.query(inSchema("SELECT count(*)::int AS n FROM unnest($1::text[]) AS t(name) WHERE to_regclass('public.' || t.name) IS NOT NULL", schema), [
       TABLES,
@@ -72,8 +80,7 @@ async function checkDatabase(db: Client, roleName: string, defaultRole: string, 
   );
   if (present.rows[0].n !== TABLES.length) return "tables";
 
-  const version = await step("version", () => db.query("SELECT max(version) AS v FROM schema_migrations"));
-  if (!(Number(version.rows[0].v) >= 1)) return "version";
+  if (!(latest >= 1)) return "version";
 
   // A contact needs a stage to start in, and new contacts get the pipeline's default role.
   const vocab = await step("vocabulary", () =>

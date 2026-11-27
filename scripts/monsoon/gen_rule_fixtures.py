@@ -1,5 +1,6 @@
 """Generate parity fixtures for src/lib/monsoon/rules.ts from the Python CRM rules."""
 import json
+import re
 from datetime import date
 from difflib import SequenceMatcher
 from importlib import resources
@@ -130,7 +131,10 @@ fixtures = {
     json.dumps(fixtures, ensure_ascii=False, indent=2, default=_iso) + "\n", encoding="utf-8", newline="\n"
 )
 
-schema = resources.files("quantcloud.crm").joinpath("schema", "0001_init.sql").read_text(encoding="utf-8")
 header = "-- Copied from quantcloud core by scripts/monsoon/gen_rule_fixtures.py. Do not edit.\n"
-(OUT / "testing" / "0001_init.sql").write_text(header + schema, encoding="utf-8", newline="\n")
+schema_dir = resources.files("quantcloud.crm").joinpath("schema")
+for entry in sorted(schema_dir.iterdir(), key=lambda e: e.name):
+    if re.fullmatch(r"\d{4}_.*\.sql", entry.name):
+        text = entry.read_text(encoding="utf-8")
+        (OUT / "testing" / entry.name).write_text(header + text, encoding="utf-8", newline="\n")
 print("wrote fixtures and schema")

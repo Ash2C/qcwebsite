@@ -116,7 +116,7 @@ describe.skipIf(!accounts.available)("two customers stay apart (real routes, rea
     sdk.apiKeys.length = 0;
     sdk.replies.length = 0;
     await admin.query("TRUNCATE activity, setup_links, pipelines, people, customers, sign_in_attempts CASCADE");
-    for (const db of [dbA, dbB]) await db.query("TRUNCATE orgs, people, members, touches, captures CASCADE");
+    for (const db of [dbA, dbB]) await db.query("TRUNCATE orgs, people, members, touches, captures, todos CASCADE");
     A = await addCustomer("customer-a", "AN", crmA.url(), KEY_A);
     B = await addCustomer("customer-b", "BO", crmB.url(), KEY_B, "bonly");
     // B has a contact with the same name A will save, so a leak would show up in A's results.
@@ -135,6 +135,15 @@ describe.skipIf(!accounts.available)("two customers stay apart (real routes, rea
     expect((await res.json()).outcome).toBe("added");
     expect(await counts(dbB)).toEqual(before);
     expect((await dbA.query("SELECT owner FROM members")).rows).toEqual([{ owner: "AN" }]);
+  });
+
+  it("a to-do in B's database is not in A's: each customer's to-dos live in their own database", async () => {
+    await dbB.query("INSERT INTO todos (title, member_id, source) VALUES ('B only follow-up', $1, 'app')", [memberB]);
+    expect((await dbB.query("SELECT count(*)::int AS n FROM todos WHERE title = 'B only follow-up'")).rows[0].n).toBe(1);
+    expect((await dbA.query("SELECT count(*)::int AS n FROM todos")).rows[0].n).toBe(0);
+    // A saves a contact with the same name: B's to-do does not attach to it.
+    expect((await saveAs(A, "Ada Lovelace")).status).toBe(200);
+    expect((await dbA.query("SELECT count(*)::int AS n FROM todos")).rows[0].n).toBe(0);
   });
 
   it("contacts as A lists only A's contacts", async () => {

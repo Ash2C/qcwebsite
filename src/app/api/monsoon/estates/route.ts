@@ -17,7 +17,7 @@ export async function GET(request: Request) {
   const estates = await Promise.all(
     account.pipelines.map(async (pipeline) => {
       const base = { key: pipeline.key, label: pipeline.label, defaultRole: pipeline.defaultRole };
-      const down = (reason: Reason) => ({ ...base, available: false, reason, roles: [] as Role[] });
+      const down = (reason: Reason) => ({ ...base, available: false, reason, roles: [] as Role[], todos: false });
       if (!pipeline.connected) return down("not_connected");
       try {
         const { roles, version } = await account.withDb(pipeline.key, async (db) => {
@@ -26,7 +26,7 @@ export async function GET(request: Request) {
           return { roles: r.rows as Role[], version: Number(v.rows[0]?.max ?? 0) };
         });
         if (!(version >= CRM_SCHEMA_VERSION)) return down("needs_update");
-        return { ...base, available: true, roles };
+        return { ...base, available: true, roles, todos: version >= 2 };
       } catch (err) {
         // Name and code only: the message can carry connection details.
         console.error(

@@ -10,7 +10,7 @@ import * as api from "./api";
 vi.mock("./api", () => ({ askCrm: vi.fn(), actOnCrm: vi.fn() }));
 const m = vi.mocked(api);
 
-const ESTATE = { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", available: true, roles: [] };
+const ESTATE = { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", available: true, todos: true, roles: [] };
 
 type User = ReturnType<typeof userEvent.setup>;
 

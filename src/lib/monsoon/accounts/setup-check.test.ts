@@ -45,14 +45,14 @@ describe("the setup checks for existing callers do not change", () => {
     });
     expect(result).toEqual({ ok: true });
     expect(sent.queries.length).toBe(9);
-    expect(sha(sent.queries)).toMatchInlineSnapshot(`"4bd79936885076180320ce9df5a7214bc8da8b582f3bfa531dedaccc67c05ffe"`);
+    expect(sha(sent.queries)).toMatchInlineSnapshot(`"da4d494a1b98c7a72f66fac5359571020f3b0730ba85fffae56012c7d358ebc2"`);
     // No schema is handed to the connection for an existing caller.
     expect(sent.args).toEqual([[]]);
   });
 
   it("naming the schema public sends the same statements", async () => {
     await runSetupChecks({ dbUrl: URL_OK, claudeKey: null, roleName: "monsoon_app", defaultRole: "investor", schema: "public", tryClaude: async () => true });
-    expect(sha(sent.queries)).toBe("4bd79936885076180320ce9df5a7214bc8da8b582f3bfa531dedaccc67c05ffe");
+    expect(sha(sent.queries)).toBe("da4d494a1b98c7a72f66fac5359571020f3b0730ba85fffae56012c7d358ebc2");
     expect(sent.args).toEqual([[]]);
   });
 });

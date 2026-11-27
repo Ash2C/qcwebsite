@@ -630,7 +630,7 @@ describe.skipIf(!db.available)("monsoon admin", () => {
       const c = await crm.connect();
       try {
         const t = await c.query("SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = 'public'");
-        expect(t.rows[0].n).toBe(11);
+        expect(t.rows[0].n).toBe(12);
         expect((await c.query("SELECT key FROM stages ORDER BY ord")).rows.map((r) => r.key)).toEqual(["new", "won"]);
         expect((await c.query("SELECT key FROM roles")).rows.map((r) => r.key)).toEqual(["investor"]);
         expect((await c.query("SELECT key, display_name FROM owners ORDER BY key")).rows).toEqual([

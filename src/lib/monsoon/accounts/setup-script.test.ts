@@ -22,16 +22,16 @@ const PASSWORD = "fixed-test-password-0123456789";
 
 describe("the setup script for existing callers does not change by a byte", () => {
   it("generateSetupScript with the default login", () => {
-    expect(sha(generateSetupScript(vocabulary))).toMatchInlineSnapshot(`"99f5cacebf679fbdc480d4e23901f0b963c81a8a8c95e918b665c3dec454039c"`);
+    expect(sha(generateSetupScript(vocabulary))).toMatchInlineSnapshot(`"489bcda929217822f8c76d75b781a02b8cb8eaed7a9537eaa6cc1924b4ea4d5e"`);
   });
 
   it("generateSetupScript with a named login and a password (the host command)", () => {
-    expect(sha(generateSetupScript({ ...vocabulary, roleName: "monsoon_app", password: PASSWORD }))).toMatchInlineSnapshot(`"68c0615b284bb794b59d933fda5f8e6dbe35ce86011620814fa7387d2b8064ad"`);
-    expect(sha(generateSetupScript({ ...vocabulary, roleName: "monsoon_app_w3", password: PASSWORD }))).toMatchInlineSnapshot(`"a8bd1a1ab27ff344107423e864c475bcba8f8c294ad6ea80cdc79774944dec5d"`);
+    expect(sha(generateSetupScript({ ...vocabulary, roleName: "monsoon_app", password: PASSWORD }))).toMatchInlineSnapshot(`"bc481b7ac753a517513c369ca9aaba8042d579716f2d653822176a1f16fdf57b"`);
+    expect(sha(generateSetupScript({ ...vocabulary, roleName: "monsoon_app_w3", password: PASSWORD }))).toMatchInlineSnapshot(`"3bb522705e9c0a261c5ff66eba05d2b1c0f75a5762a653ae18e18b6f8f32b65d"`);
   });
 
   it("generateSetupScript with an empty vocabulary", () => {
-    expect(sha(generateSetupScript({ stages: [], roles: [], owners: [] }))).toMatchInlineSnapshot(`"a770c7937ed81f4a40da1f80b73b4b2f7cf2c2b97aa46420a68792621a448d90"`);
+    expect(sha(generateSetupScript({ stages: [], roles: [], owners: [] }))).toMatchInlineSnapshot(`"f26c7fda1c71968fa9c219bdff20ec421d33f38fb6ad4d686e0de60e8275f284"`);
   });
 
   it("naming the schema public is the same as not naming one", () => {
@@ -40,8 +40,8 @@ describe("the setup script for existing callers does not change by a byte", () =
   });
 
   it("loginAndPoliciesScript", () => {
-    expect(sha(loginAndPoliciesScript())).toMatchInlineSnapshot(`"5e9b627108e141524f9b95c715344627ffdbf619bf6632e6354bb0a15e4c91a8"`);
-    expect(sha(loginAndPoliciesScript("monsoon_app_w3"))).toMatchInlineSnapshot(`"2da055b5f245661c1dec66c76a966cdb9af5e50fcf0dc96947a29ec98aab0ffd"`);
+    expect(sha(loginAndPoliciesScript())).toMatchInlineSnapshot(`"40cf293ee23e2474ded85c36c916acef552ed227dabc04853ea647c01b7e2d22"`);
+    expect(sha(loginAndPoliciesScript("monsoon_app_w3"))).toMatchInlineSnapshot(`"b0a147edd1dbe46d73de50b4f7eba2ca9ae2853bbd4e0e8999f1818551666562"`);
   });
 });
 

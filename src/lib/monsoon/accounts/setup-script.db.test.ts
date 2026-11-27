@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -10,8 +10,8 @@ import { capture } from "../capture";
 import { ensureOwner } from "../owners";
 import { applyResearch } from "../research-apply";
 import { makeTestDb, testDb, testRoleName } from "../testing/db";
-import { CRM_SCHEMA_SQL } from "./crm-schema.generated";
-import { generateSetupScript, loginAndPoliciesScript } from "./setup-script";
+import { CRM_LATEST_VERSION, CRM_SCHEMA_SQL } from "./crm-schema.generated";
+import { MONSOON_TABLES_V2, generateSetupScript, loginAndPoliciesScript, todoGrantStatements } from "./setup-script";
 
 const PLACEHOLDER = "REPLACE-WITH-A-PASSWORD-OF-AT-LEAST-16-CHARACTERS";
 const CUSTOMER = "c0000000-0000-4000-8000-00000000000a";
@@ -34,9 +34,17 @@ type Details = Extract<Proposal, { kind: "update_details" }>;
 type Research = Extract<Proposal, { kind: "apply_research" }>;
 
 describe("generated schema", () => {
-  it("equals testing/0001_init.sql", () => {
-    const file = readFileSync(join(__dirname, "..", "testing", "0001_init.sql"), "utf8");
-    expect(norm(CRM_SCHEMA_SQL)).toBe(norm(file));
+  const dir = join(__dirname, "..", "testing");
+  const files = readdirSync(dir).filter((f) => /^\d{4}_.*\.sql$/.test(f)).sort();
+
+  it("equals every testing/NNNN_*.sql joined in order", () => {
+    const joined = files.map((f) => norm(readFileSync(join(dir, f), "utf8")).replace(/\n+$/, "")).join("\n\n") + "\n";
+    expect(norm(CRM_SCHEMA_SQL)).toBe(joined);
+  });
+
+  it("carries the latest version, 2, and both schema files", () => {
+    expect(files).toEqual(["0001_init.sql", "0002_todos.sql"]);
+    expect(CRM_LATEST_VERSION).toBe(2);
   });
 });
 
@@ -118,7 +126,8 @@ describe.skipIf(!testDb.available)("Setup script and restricted login (real Post
     expect((await admin.query("SELECT label FROM roles WHERE key = 'desk'")).rows[0].label).toBe("O'Brien Desk");
     expect((await admin.query("SELECT display_name FROM owners WHERE key = 'VF'")).rows[0].display_name).toBe("Pat O'Brien");
     expect((await admin.query("SELECT count(*)::int AS n FROM stages")).rows[0].n).toBe(3);
-    expect((await admin.query("SELECT version FROM schema_migrations")).rows).toEqual([{ version: 1 }]);
+    expect((await admin.query("SELECT version FROM schema_migrations ORDER BY version")).rows).toEqual([{ version: 1 }, { version: 2 }]);
+    expect((await admin.query("SELECT to_regclass('todos') AS t")).rows[0].t).toBe("todos");
     const role = (
       await admin.query(
         "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolbypassrls, rolinherit FROM pg_roles WHERE rolname = $1",
@@ -219,6 +228,63 @@ describe.skipIf(!testDb.available)("Setup script and restricted login (real Post
     }
   });
 
+  it("the restricted login can add and change a to-do but not remove one", async () => {
+    await admin.query(withPassword(generateSetupScript({ ...vocabulary, roleName: roleA })));
+    const c = await asRole(setupDb, roleA);
+    try {
+      const id = (await c.query("INSERT INTO todos (title, source) VALUES ('Send deck', 'app') RETURNING id")).rows[0].id;
+      expect((await c.query("UPDATE todos SET status = 'done' WHERE id = $1", [id])).rowCount).toBe(1);
+      expect((await c.query("SELECT status FROM todos WHERE id = $1", [id])).rows).toEqual([{ status: "done" }]);
+      expect(await code(c, "DELETE FROM todos")).toBe("42501");
+      expect(await code(c, "TRUNCATE todos")).toBe("42501");
+    } finally {
+      await c.end();
+    }
+  });
+
+  it("a direct write to members.next_action by the restricted login makes a to-do, through row security", async () => {
+    await admin.query(withPassword(generateSetupScript({ ...vocabulary, roleName: roleA })));
+    const c = await asRole(setupDb, roleA);
+    try {
+      await ensureOwner(c, "AB", "Alex B");
+      const person = (await c.query("INSERT INTO people (name, name_key, source) VALUES ('Jane', 'jane', 'test') RETURNING id")).rows[0].id;
+      const member = (
+        await c.query("INSERT INTO members (person_id, role, stage, owner, source) VALUES ($1, 'investor', 'uncontacted', 'AB', 'test') RETURNING id", [person])
+      ).rows[0].id;
+      await c.query("UPDATE members SET next_action = 'Call Jane', next_action_date = '2026-12-01' WHERE id = $1", [member]);
+      expect((await c.query("SELECT title, due_date::text AS due, status, source, owner FROM todos WHERE member_id = $1", [member])).rows).toEqual([
+        { title: "Call Jane", due: "2026-12-01", status: "open", source: "core", owner: "AB" },
+      ]);
+      // Clearing it drops the to-do again, and the mirror stays empty.
+      await c.query("UPDATE members SET next_action = NULL, next_action_date = NULL WHERE id = $1", [member]);
+      expect((await c.query("SELECT status FROM todos WHERE member_id = $1", [member])).rows).toEqual([{ status: "dropped" }]);
+      expect((await c.query("SELECT next_action FROM members WHERE id = $1", [member])).rows).toEqual([{ next_action: null }]);
+    } finally {
+      await c.end();
+    }
+  });
+
+  it("todoGrantStatements gives an existing login its to-do rights, and is safe to repeat", async () => {
+    await admin.query(withPassword(generateSetupScript({ ...vocabulary, roleName: roleA })));
+    await admin.query(`REVOKE ALL ON todos FROM ${roleA}`);
+    await admin.query(`DROP POLICY ${roleA}_select ON todos`);
+    await admin.query(`DROP POLICY ${roleA}_insert ON todos`);
+    await admin.query(`DROP POLICY ${roleA}_update ON todos`);
+    const c = await asRole(setupDb, roleA);
+    try {
+      expect(await code(c, "SELECT 1 FROM todos")).toBe("42501");
+      await admin.query(todoGrantStatements(roleA, "public"));
+      await admin.query(todoGrantStatements(roleA, "public"));
+      expect(await code(c, "INSERT INTO todos (title, source) VALUES ('x', 'app')")).toBeUndefined();
+      expect((await c.query("SELECT count(*)::int AS n FROM todos")).rows[0].n).toBe(1);
+      expect(await code(c, "DELETE FROM todos")).toBe("42501");
+    } finally {
+      await c.end();
+    }
+    expect(() => todoGrantStatements("Bad Role", "public")).toThrow("invalid role name");
+    expect(() => todoGrantStatements(roleA, "pg_catalog")).toThrow("invalid schema name");
+  });
+
   // A role shaped like Supabase's `postgres`: not a superuser, but may create roles and bypass RLS.
   async function makeOwner(db: typeof setupDb, ownTables: boolean): Promise<Client> {
     const a = await db.connect();
@@ -284,7 +350,7 @@ describe.skipIf(!testDb.available)("Setup script and restricted login (real Post
         `SELECT r.role || ':' || t.name AS g
            FROM unnest($1::text[]) AS r(role), unnest($2::text[]) AS t(name)
           WHERE has_table_privilege(r.role, 'public.' || t.name, $3)`,
-        [PUBLIC_ROLES, ["schema_migrations", "stages", "roles", "owners", "orgs", "people", "members", "touches", "tags", "member_tags", "captures"], ALL_PRIVS],
+        [PUBLIC_ROLES, [...MONSOON_TABLES_V2], ALL_PRIVS],
       );
       return r.rows.map((x) => x.g);
     }
@@ -392,7 +458,7 @@ describe.skipIf(!testDb.available)("Setup script and restricted login (real Post
         ).rows;
       expect(await privs(other, roleB)).toEqual(await privs(admin, roleA));
       expect(await pols(other, roleB)).toEqual(await pols(admin, roleA));
-      expect((await privs(other, roleB)).length).toBe(11 + 6 + 4);
+      expect((await privs(other, roleB)).length).toBe(12 + 7 + 5);
       const c = await asRole(testDb, roleB);
       try {
         expect(await code(c, "DELETE FROM touches")).toBe("42501");

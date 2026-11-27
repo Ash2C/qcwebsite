@@ -1,12 +1,21 @@
 import { randomBytes } from "node:crypto";
 import { Client } from "pg";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { ensureAnonRole, makeTestDb, testRoleName } from "../testing/db";
+import { ensureAnonRole, makeTestDb, makeV1TestDb, testRoleName } from "../testing/db";
 import { SETUP_MESSAGES, runSetupChecks, type SetupFailure } from "./setup-check";
 import { loginAndPoliciesScript } from "./setup-script";
 
 const PLACEHOLDER = "REPLACE-WITH-A-PASSWORD-OF-AT-LEAST-16-CHARACTERS";
 const db = makeTestDb("setupcheck");
+
+// The login script as it was before to-dos: the eleven tables only, for a database still at version 1.
+function loginAndPoliciesScriptV1(): string {
+  return loginAndPoliciesScript(ROLE)
+    .replace(/, todos/g, "")
+    .split("\n")
+    .filter((l) => !/ ON todos[ ;]/.test(l))
+    .join("\n");
+}
 const ROLE = `${testRoleName()}_chk`;
 
 describe.skipIf(!db.available)("runSetupChecks (real Postgres)", { timeout: 20_000 }, () => {
@@ -55,6 +64,34 @@ describe.skipIf(!db.available)("runSetupChecks (real Postgres)", { timeout: 20_0
     const tryClaude = vi.fn(async () => true);
     expect(await check({ tryClaude })).toEqual({ ok: true });
     expect(tryClaude).toHaveBeenCalledWith("sk-ant-test-key");
+  });
+
+  it("passes a version 2 database that has the to-do table", async () => {
+    expect((await admin.query("SELECT max(version)::int AS v FROM schema_migrations")).rows[0].v).toBe(2);
+    expect(await check({ claudeKey: null })).toEqual({ ok: true });
+  });
+
+  it("still passes a database built from 0001_init.sql alone, at version 1", async () => {
+    const v1 = makeV1TestDb("setupcheck_v1");
+    await v1.reset();
+    const a = await v1.connect();
+    try {
+      // The login already exists (roles are cluster-wide); the script gives it rights in this database too.
+      await a.query(`DROP OWNED BY ${ROLE}`);
+      await a.query(loginAndPoliciesScriptV1().replace(PLACEHOLDER, password));
+      const u = new URL(v1.url());
+      const dbUrl = `postgresql://${ROLE}:${encodeURIComponent(password)}@${u.hostname}:${u.port}${u.pathname}`;
+      expect(await check({ claudeKey: null, dbUrl })).toEqual({ ok: true });
+    } finally {
+      // Leave no rights behind here, so the next test can drop the login.
+      await a.query(`DROP OWNED BY ${ROLE}`);
+      await a.end();
+    }
+  });
+
+  it("tables: the database says version 2 but has no todos table", async () => {
+    await admin.query("DROP TABLE todos CASCADE");
+    expect(await check()).toEqual(failure("tables"));
   });
 
   it("skips the Claude key when none is given", async () => {

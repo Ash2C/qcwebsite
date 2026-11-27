@@ -27,7 +27,7 @@ vi.mock("./ChangeCard", () => ({
   ),
 }));
 const m = vi.mocked(api);
-const ESTATE = { key: "traxo", label: "Traxo", defaultRole: "x", available: true, roles: [] };
+const ESTATE = { key: "traxo", label: "Traxo", defaultRole: "x", available: true, todos: true, roles: [] };
 const signed = {
   proposal: {
     kind: "add_note",

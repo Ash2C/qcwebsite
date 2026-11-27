@@ -1,13 +1,16 @@
 // Test harness: throwaway databases on the local Docker Postgres (container `monsoon-test`).
 // Never points at anything but a database whose name contains "test".
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "pg";
 
 const ADMIN_URL = process.env.MONSOON_TEST_DB ?? "postgresql://postgres:test@127.0.0.1:55433/postgres";
 // One database per vitest worker: test files run in parallel workers and each reset() drops the schema.
 const POOL_ID = /^\d+$/.test(process.env.VITEST_POOL_ID ?? "") ? (process.env.VITEST_POOL_ID as string) : "0";
-const SCHEMA_SQL = join(__dirname, "0001_init.sql");
+// Every schema file the app carries, in version order: 0001_init.sql, 0002_todos.sql, and so on.
+const SCHEMA_FILES = readdirSync(__dirname)
+  .filter((f) => /^\d{4}_.*\.sql$/.test(f))
+  .sort();
 const ACCOUNTS_SCHEMA_SQL = join(__dirname, "..", "accounts", "schema.sql");
 
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
@@ -108,8 +111,8 @@ function makeNamedDb(dbName: string, populate: (client: Client) => Promise<void>
   return db;
 }
 
-async function populateCrm(client: Client): Promise<void> {
-  await client.query(readFileSync(SCHEMA_SQL, "utf8"));
+async function populateCrmUpTo(client: Client, files: string[]): Promise<void> {
+  for (const f of files) await client.query(readFileSync(join(__dirname, f), "utf8"));
   await client.query(
     `INSERT INTO stages (key, ord, label, terminal) VALUES
        ('uncontacted', 0, 'Uncontacted', false), ('contacted', 1, 'Contacted', false),
@@ -117,8 +120,10 @@ async function populateCrm(client: Client): Promise<void> {
   );
   await client.query("INSERT INTO roles (key, label) VALUES ('investor', 'Investor'), ('introducer', 'Introducer')");
   await client.query("INSERT INTO owners (key, display_name) VALUES ('VF', 'Vincent')");
-  await client.query("INSERT INTO schema_migrations (version) VALUES (1)");
+  for (const f of files) await client.query("INSERT INTO schema_migrations (version) VALUES ($1)", [Number(f.slice(0, 4))]);
 }
+
+const populateCrm = (client: Client) => populateCrmUpTo(client, SCHEMA_FILES);
 
 async function populateAccounts(client: Client): Promise<void> {
   await client.query(readFileSync(ACCOUNTS_SCHEMA_SQL, "utf8"));
@@ -126,6 +131,11 @@ async function populateAccounts(client: Client): Promise<void> {
 
 export function makeTestDb(name: string): TestDb {
   return makeNamedDb(`monsoon_${name}_test_w${POOL_ID}`, populateCrm);
+}
+
+/** A CRM at schema version 1 only (0001_init.sql), the way a client's database is before it is upgraded. */
+export function makeV1TestDb(name: string): TestDb {
+  return makeNamedDb(`monsoon_${name}_test_w${POOL_ID}`, (client) => populateCrmUpTo(client, SCHEMA_FILES.slice(0, 1)));
 }
 
 export function makeAccountsTestDb(): TestDb {

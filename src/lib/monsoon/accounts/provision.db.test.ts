@@ -12,7 +12,7 @@ import { NotConnected, requireAccount } from "./account";
 import { encryptSecret } from "./crypto";
 import { ProvisionError, checkWall, clientNames, provisionSharedCrm } from "./provision";
 import { runSetupChecks } from "./setup-check";
-import { MONSOON_TABLES } from "./setup-script";
+import { MONSOON_TABLES_V2 } from "./setup-script";
 import { clearAccountCache } from "./store";
 
 const shared = makeTestDb("provision");
@@ -139,7 +139,7 @@ describe.skipIf(!shared.available)("the wall between clients in the shared datab
 
   it("the login reads and writes its own tables as far as the grants allow: it can add and change, never remove", async () => {
     const a = await login(urlA);
-    for (const t of MONSOON_TABLES) expect(await code(a, `SELECT 1 FROM ${t} LIMIT 1`), t).toBeUndefined();
+    for (const t of MONSOON_TABLES_V2) expect(await code(a, `SELECT 1 FROM ${t} LIMIT 1`), t).toBeUndefined();
     const org = (await a.query("INSERT INTO orgs (name, name_key, source) VALUES ('Acme', 'acme', 'test') RETURNING id")).rows[0].id;
     const person = (await a.query("INSERT INTO people (name, name_key, source) VALUES ('Carl', 'carl', 'test') RETURNING id")).rows[0].id;
     const member = (
@@ -151,7 +151,7 @@ describe.skipIf(!shared.available)("the wall between clients in the shared datab
     await a.query("UPDATE members SET stage = 'won' WHERE id = $1", [member]);
     expect((await a.query("SELECT count(*)::int AS n FROM touches WHERE member_id = $1 AND kind = 'stage'", [member])).rows[0].n).toBe(1);
     expect((await a.query("UPDATE orgs SET country = 'NL' WHERE id = $1", [org])).rowCount).toBe(1);
-    for (const t of MONSOON_TABLES) {
+    for (const t of MONSOON_TABLES_V2) {
       expect(await code(a, `DELETE FROM ${t}`), t).toBe(DENIED);
       expect(await code(a, `TRUNCATE ${t} CASCADE`), t).toBe(DENIED);
     }
@@ -166,7 +166,9 @@ describe.skipIf(!shared.available)("the wall between clients in the shared datab
       [urlB, namesA],
     ] as const) {
       const c = await login(url);
-      for (const t of MONSOON_TABLES) expect(await code(c, `SELECT * FROM ${other.schema}.${t}`), t).toBe(DENIED);
+      for (const t of MONSOON_TABLES_V2) expect(await code(c, `SELECT * FROM ${other.schema}.${t}`), t).toBe(DENIED);
+      expect(await code(c, `INSERT INTO ${other.schema}.todos (title, source) VALUES ('x', 'app')`)).toBe(DENIED);
+      expect(await code(c, `UPDATE ${other.schema}.todos SET title = 'x'`)).toBe(DENIED);
       expect(await code(c, `SELECT count(*) FROM ${other.schema}.people`)).toBe(DENIED);
       expect(await code(c, `INSERT INTO ${other.schema}.people (name, name_key, source) VALUES ('x', 'x', 'x')`)).toBe(DENIED);
       expect(await code(c, `UPDATE ${other.schema}.people SET name = 'x'`)).toBe(DENIED);
@@ -395,7 +397,7 @@ describe.skipIf(!shared.available)("the wall between clients in the shared datab
     }
     expect((await admin.query("SELECT relname FROM pg_class WHERE relname LIKE 'pwned%'")).rows).toEqual([]);
     const tables = await admin.query("SELECT tablename::text AS t FROM pg_tables WHERE schemaname = $1 ORDER BY 1", [n.schema]);
-    expect(tables.rows.map((r) => r.t)).toEqual([...MONSOON_TABLES].sort());
+    expect(tables.rows.map((r) => r.t)).toEqual([...MONSOON_TABLES_V2].sort());
     expect((await admin.query(`SELECT key, display_name FROM ${n.schema}.owners`)).rows).toEqual([{ key: "PW", display_name: name }]);
     expect((await admin.query(`SELECT key, label FROM ${n.schema}.roles`)).rows).toEqual([{ key: "contact", label }]);
   });

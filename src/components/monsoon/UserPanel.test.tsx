@@ -23,7 +23,7 @@ vi.mock("./api", () => ({
 }));
 const m = vi.mocked(api);
 
-const ESTATE = { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", available: true, roles: [] };
+const ESTATE = { key: "traxo", label: "Traxo", defaultRole: "lp_prospect", available: true, todos: true, roles: [] };
 const PAGE: UserPage = {
   person: { name: "Dana Lee", phone: "+31 6 1234 5678", email: null },
   work: { company: "Acme Ltd", website: null, roleObjectives: "Partner.\nRaise the next fund." },

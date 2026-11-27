@@ -23,7 +23,9 @@ describe.skipIf(!testDb.available)("the Contacts list beyond 2,000 pipeline entr
       `INSERT INTO people (name, name_key, source)
        SELECT 'P ' || lpad(i::text, 4, '0'), 'p ' || lpad(i::text, 4, '0'), 'seed' FROM generate_series(1, ${PEOPLE}) AS i`,
     );
-    // The later a person was added, the more recently they were updated.
+    // The later a person was added, the more recently they were updated. The seed writes next actions
+    // straight into members, as they stood before to-dos, so the schema's triggers are switched off for it.
+    await db.query("SET session_replication_role = replica");
     await db.query(
       `INSERT INTO members (person_id, role, stage, owner, source, priority, next_action, next_action_date, created_at, updated_at)
        SELECT p.id, 'investor',
@@ -36,6 +38,7 @@ describe.skipIf(!testDb.available)("the Contacts list beyond 2,000 pipeline entr
          FROM (SELECT id, substr(name, 3)::int AS i FROM people) p
         ORDER BY i`,
     );
+    await db.query("SET session_replication_role = DEFAULT");
     // A company that is itself a pipeline entry, updated a day ago.
     const org = (await db.query("INSERT INTO orgs (name, name_key, source) VALUES ('Zulu Holdings', 'zulu holdings', 'seed') RETURNING id")).rows[0].id;
     await db.query(

@@ -11,7 +11,7 @@ vi.mock("./api", () => ({ proposeChange: vi.fn(), actOnCrm: vi.fn(), researchCon
 const m = vi.mocked(api);
 
 const ESTATE = {
-  key: "traxo", label: "Traxo", defaultRole: "lp_prospect", available: true,
+  key: "traxo", label: "Traxo", defaultRole: "lp_prospect", available: true, todos: true,
   roles: [{ key: "lp_prospect", label: "LP prospect" }, { key: "introducer", label: "Introducer" }],
 };
 const STAGES = [

@@ -20,6 +20,7 @@ const ESTATE = {
   label: "Traxo",
   defaultRole: "introducer",
   available: true,
+  todos: true,
   roles: [
     { key: "lp_prospect", label: "LP prospect" },
     { key: "introducer", label: "Introducer" },
