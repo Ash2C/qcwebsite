@@ -90,6 +90,9 @@ export default function TodoPanel({
   // The latest props, so a reply that arrives later builds on what is on screen now.
   const stateRef = useRef(state);
   stateRef.current = state;
+  // The estate on screen right now (the prop), not the one the held list was last read for.
+  const estateKeyRef = useRef(estate.key);
+  estateKeyRef.current = estate.key;
   const unauthorizedRef = useRef(onUnauthorized);
   unauthorizedRef.current = onUnauthorized;
   const onStateRef = useRef(onState);
@@ -182,7 +185,8 @@ export default function TodoPanel({
   const { tick, reopen } = useTodoActions({
     estateKey: estate.key,
     onUnauthorized: () => unauthorizedRef.current(),
-    current: (key) => stateRef.current.estate === key,
+    // Applied only while the screen is still that estate AND the held list is that estate's.
+    current: (key) => estateKeyRef.current === key && stateRef.current.estate === key,
     problem: setProblem,
     reload: (key) => void load(key),
     ticking: (t, key) => {

@@ -387,6 +387,66 @@ describe("TodoPanel estate", () => {
     }
     const settle = () => act(async () => {});
 
+    // The reply is released while the new estate's own list is still on its way.
+    async function releaseBeforeLoad(trigger: () => Promise<void>, reply: never) {
+      let release: (v: never) => void = () => {};
+      m.todoAction.mockReturnValue(new Promise((r) => (release = r as never)));
+      const view = render(<Harness />);
+      await trigger();
+      let loaded: (v: never) => void = () => {};
+      m.loadTodos.mockReturnValue(new Promise((r) => (loaded = r as never)));
+      view.rerender(<Harness estate={ZERO} />);
+      await act(async () => release(reply));
+      await settle();
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      await act(async () => loaded(list([todo({ id: "z1", title: "Zero One task" })])));
+      expect(await screen.findByText("Zero One task")).toBeInTheDocument();
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^Done/ })).not.toBeInTheDocument();
+      expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    }
+
+    it("a saved tick that lands while the new list is loading opens no sheet and no Undo bar", async () => {
+      const user = userEvent.setup();
+      const t = todo({ id: "b1", title: "Send deck", contact: CONTACT });
+      m.loadTodos.mockResolvedValueOnce(list([t]));
+      await releaseBeforeLoad(async () => {
+        await user.click(await screen.findByRole("button", { name: "Mark done: Send deck" }));
+      }, written({ ...t, status: "done" }));
+    });
+
+    it("a saved tick without a contact shows no Undo bar in the new estate", async () => {
+      const user = userEvent.setup();
+      const t = todo({ id: "b4", title: "Water plants" });
+      m.loadTodos.mockResolvedValueOnce(list([t]));
+      await releaseBeforeLoad(async () => {
+        await user.click(await screen.findByRole("button", { name: "Mark done: Water plants" }));
+      }, written({ ...t, status: "done" }));
+    });
+
+    it("a failed tick that lands while the new list is loading shows no error", async () => {
+      const user = userEvent.setup();
+      const t = todo({ id: "b2", title: "Send deck", contact: CONTACT });
+      m.loadTodos.mockResolvedValueOnce(list([t]));
+      await releaseBeforeLoad(async () => {
+        await user.click(await screen.findByRole("button", { name: "Mark done: Send deck" }));
+      }, { status: 409, body: { error: "It changed." } } as never);
+    });
+
+    it("a reopen that lands while the new list is loading adds nothing", async () => {
+      const user = userEvent.setup();
+      const d = todo({ id: "b3", title: "Old thing", status: "done", closedAt: new Date().toISOString() });
+      m.loadTodos.mockResolvedValueOnce({ status: 200, body: { ready: true, open: [], done: [d] } } as never);
+      await releaseBeforeLoad(async () => {
+        await user.click(await screen.findByRole("button", { name: /^Done/ }));
+        await user.click(screen.getByRole("button", { name: "Reopen: Old thing" }));
+      }, written({ ...d, status: "open", closedAt: null }));
+    });
+
     it("a saved tick does not open a sheet or change the new estate's list", async () => {
       const user = userEvent.setup();
       const t = todo({ id: "a1", title: "Send deck", contact: CONTACT });
