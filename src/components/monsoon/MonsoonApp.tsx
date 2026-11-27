@@ -19,6 +19,7 @@ import { downsizeImage } from "./image";
 import AskPanel, { EMPTY_ASK, type AskState, type AskViewing } from "./AskPanel";
 import AskSheet from "./AskSheet";
 import ContactsPanel, { EMPTY_CONTACTS, withOpen, withOpenResearch, type ContactsState, type ContactTarget } from "./ContactsPanel";
+import TodoPanel, { EMPTY_TODOS, type TodosState } from "./TodoPanel";
 import BatchReview, { makeBatch, type Batch } from "./BatchReview";
 import { describeResult, type SavePrompt } from "./outcomes";
 import ContactFormFields, { type FormKey } from "./ContactFormFields";
@@ -156,7 +157,7 @@ export default function MonsoonApp() {
   const [batchRunning, setBatchRunning] = useState(false);
   // Ask is a sheet over whatever is on screen, not a mode. Its conversation lives here so it survives
   // closing the sheet and the passcode screen; askBusy is reported by AskPanel.
-  const [mode, setMode] = useState<"capture" | "contacts">("capture");
+  const [mode, setMode] = useState<"capture" | "todo" | "contacts">("capture");
   const [askOpen, setAskOpen] = useState(false);
   // The loaded profile underneath, reported by ContactsPanel; null whenever none is on screen.
   const [viewing, setViewing] = useState<AskViewing | null>(null);
@@ -179,6 +180,8 @@ export default function MonsoonApp() {
   }
   // Contacts mode: search text and the open profile live here too, so they survive tab switches and the passcode screen.
   const [contacts, setContacts] = useState<ContactsState>(EMPTY_CONTACTS);
+  // To do mode: the list and any open form live here too, so they survive tab switches.
+  const [todos, setTodos] = useState<TodosState>(EMPTY_TODOS);
   const [ask, setAsk] = useState<AskState>(EMPTY_ASK);
   const [askBusy, setAskBusy] = useState(false);
   // A "Run research" tap is only good while Contacts is showing; leaving it, or opening Ask over it, withdraws the request.
@@ -196,6 +199,7 @@ export default function MonsoonApp() {
       askEstateRef.current = estateKey;
       setAsk(EMPTY_ASK);
       setContacts(EMPTY_CONTACTS);
+      setTodos(EMPTY_TODOS);
       // The user's page is about one CRM too: its work fields and notes do not carry over.
       setUserOpen(false);
       setUserDraft(EMPTY_USER_DRAFT);
@@ -232,6 +236,7 @@ export default function MonsoonApp() {
           setAsk(EMPTY_ASK);
           setAskOpen(false);
           setContacts(EMPTY_CONTACTS);
+          setTodos(EMPTY_TODOS);
           setMode("capture");
           setKeyOpen(false);
         }
@@ -887,9 +892,9 @@ export default function MonsoonApp() {
         <div
           role="group"
           aria-label="Mode"
-          className="grid grid-cols-2 gap-1 rounded-xl bg-neutral-200/80 p-1 dark:bg-white/10"
+          className="grid grid-cols-3 gap-1 rounded-xl bg-neutral-200/80 p-1 dark:bg-white/10"
         >
-          {(["capture", "contacts"] as const).map((m) => (
+          {(["capture", "todo", "contacts"] as const).map((m) => (
             <button
               key={m}
               type="button"
@@ -910,12 +915,22 @@ export default function MonsoonApp() {
                   : "text-neutral-600 dark:text-neutral-300"
               }`}
             >
-              {m === "capture" ? "Capture" : "Contacts"}
+              {m === "capture" ? "Capture" : m === "todo" ? "To do" : "Contacts"}
             </button>
           ))}
         </div>
 
-        {mode === "contacts" && estate ? (
+        {mode === "todo" && estate ? (
+          <TodoPanel
+            estate={estate}
+            state={todos}
+            onState={setTodos}
+            onUnauthorized={() => setPhase("locked")}
+            onOpenContact={openContact}
+            // Prepare me opens Ask with the to-do's contact; that arrives with the profile to-dos.
+            onPrepare={() => {}}
+          />
+        ) : mode === "contacts" && estate ? (
           <ContactsPanel
             estate={estate}
             state={contacts}

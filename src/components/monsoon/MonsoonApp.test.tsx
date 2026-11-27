@@ -40,6 +40,8 @@ vi.mock("./api", () => ({
   finishImport: vi.fn(),
   loadImports: vi.fn(),
   loadImportContacts: vi.fn(),
+  loadTodos: vi.fn(),
+  todoAction: vi.fn(),
 }));
 vi.mock("./image", () => ({
   downsizeImage: vi.fn(),
@@ -1537,6 +1539,7 @@ describe("Contacts mode", () => {
     await ready();
     expect(within(screen.getByRole("group", { name: "Mode" })).getAllByRole("button").map((b) => b.textContent)).toEqual([
       "Capture",
+      "To do",
       "Contacts",
     ]);
     await typeName(user);
@@ -1675,6 +1678,73 @@ describe("Profile actions and links", () => {
     await user.click(screen.getByRole("button", { name: "Ask Monsoon" }));
     expect(await screen.findByText("Jane is warm.")).toBeInTheDocument();
     expect(screen.getByText("Who is warm?")).toBeInTheDocument();
+  });
+
+  describe("To do tab", () => {
+    const TODAY = (() => {
+      const d = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    })();
+    const ROW = {
+      id: "t1", title: "Send deck", dueDate: TODAY, firstDueDate: TODAY, movedCount: 0, status: "open", outcome: null,
+      closedAt: null, owner: null, mine: true, due: "today",
+      contact: {
+        memberId: "m1", memberKind: "person", name: "Jane Tan", company: "Acme Capital", personId: "p1", orgId: "o1",
+        aboutPersonId: null, aboutName: null, stage: "lead", stageLabel: "Lead", priority: null, lastAction: null,
+      },
+    };
+    const listed = (...open: unknown[]) => ({ status: 200, body: { ready: true, open, done: [] } }) as never;
+
+    it("reads the list when the tab opens and shows it", async () => {
+      const user = userEvent.setup();
+      signedIn();
+      m.loadTodos.mockResolvedValue(listed(ROW));
+      render(<MonsoonApp />);
+      await ready();
+      await user.click(screen.getByRole("button", { name: "To do" }));
+      expect(screen.getByRole("button", { name: "To do" })).toHaveAttribute("aria-pressed", "true");
+      expect(await screen.findByText("Send deck")).toBeInTheDocument();
+      expect(m.loadTodos).toHaveBeenCalledWith("traxo");
+    });
+
+    it("keeps an open form when switching tabs and back", async () => {
+      const user = userEvent.setup();
+      signedIn();
+      m.loadTodos.mockResolvedValue(listed());
+      render(<MonsoonApp />);
+      await ready();
+      await user.click(screen.getByRole("button", { name: "To do" }));
+      await user.click(await screen.findByRole("button", { name: "Add" }));
+      await screen.findByLabelText("What");
+      await user.click(screen.getByRole("button", { name: "Capture" }));
+      await user.click(screen.getByRole("button", { name: "To do" }));
+      expect(await screen.findByLabelText("What")).toBeInTheDocument();
+    });
+
+    it("tapping the contact's name opens that profile in Contacts", async () => {
+      const user = userEvent.setup();
+      signedIn();
+      m.loadTodos.mockResolvedValue(listed(ROW));
+      m.loadProfile.mockResolvedValue({ status: 200, body: { profile: PROFILE } } as never);
+      render(<MonsoonApp />);
+      await ready();
+      await user.click(screen.getByRole("button", { name: "To do" }));
+      await user.click(await screen.findByRole("button", { name: "Jane Tan" }));
+      expect(await screen.findByRole("heading", { name: "Jane Tan" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Contacts" })).toHaveAttribute("aria-pressed", "true");
+      expect(m.loadProfile).toHaveBeenCalledWith("traxo", { memberId: undefined, personId: "p1", orgId: undefined }, expect.any(String));
+    });
+
+    it("a 401 from the list goes back to the passcode screen", async () => {
+      const user = userEvent.setup();
+      signedIn();
+      m.loadTodos.mockResolvedValue({ status: 401, body: { error: "unauthorized" } } as never);
+      render(<MonsoonApp />);
+      await ready();
+      await user.click(screen.getByRole("button", { name: "To do" }));
+      expect(await screen.findByLabelText("Passcode")).toBeInTheDocument();
+    });
   });
 
   async function tapRunResearch(user: User) {
