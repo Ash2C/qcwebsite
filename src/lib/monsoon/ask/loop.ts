@@ -4,7 +4,7 @@ import type { ClientBase } from "pg";
 import type { SignedProposal } from "./proposal";
 import type { Viewer } from "../todos";
 import { vocabulary, type Vocabulary } from "./queries";
-import { refKey, runTool, toolsFor, type GranolaAccess, type Ref, type ResearchOffer } from "./tools";
+import { MAX_RESULT_CHARS, refKey, runTool, toolsFor, type GranolaAccess, type Ref, type ResearchOffer } from "./tools";
 
 export type AskMessage =
   | { role: "user"; content: string }
@@ -28,7 +28,6 @@ const MIN_FINAL_MS = 5_000; // less than this left: no final call either
 const MAX_TOOLS_PER_REPLY = 8;
 const MAX_PROPOSALS = 4;
 const MAX_REFS = 30;
-const MAX_RESULT_CHARS = 24_000;
 const MAX_TOTAL_RESULT_CHARS = 120_000; // all tool output sent back to the model in one request
 
 const TOO_BIG_TURN = "Answer now from what you have, in a sentence or two, and say the question was too big to finish.";

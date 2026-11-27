@@ -12,7 +12,7 @@ const { p } = vi.hoisted(() => ({
 }));
 vi.mock("./todo-actions", () => p);
 
-import { runTool, TODO_TOOLS, TOOLS, toolsFor, GRANOLA_TOOLS, type ToolContext } from "./tools";
+import { MAX_RESULT_CHARS, runTool, TODO_TOOLS, TOOLS, toolsFor, GRANOLA_TOOLS, type ToolContext } from "./tools";
 
 const db = { fake: true } as unknown as ClientBase;
 const CUSTOMER = "c0000000-0000-4000-8000-00000000000a";
@@ -191,5 +191,58 @@ describe("the four propose tools", () => {
     expect(out.proposal).toBeUndefined();
     expect(((await runTool(ctx, "propose_move_todo", { todo_id: TODO })).result as { error: string }).error).toMatch(/due_date/);
     expect(((await runTool(ctx, "propose_todo", { title: "  " })).result as { error: string }).error).toMatch(/title/);
+  });
+});
+
+describe("the size of a result", () => {
+  const long = (c: string, n: number) => c.repeat(n);
+  const heavy = (i: number, over: Record<string, unknown> = {}) =>
+    todo(i, {
+      title: long("t", 300),
+      contact: contact({
+        memberKind: "company", name: long("C", 300), company: null, personId: null,
+        aboutPersonId: "33333333-3333-4333-8333-333333333333", aboutName: long("P", 300), stageLabel: long("S", 300),
+        lastAction: { kind: "meeting", at: "2026-11-01T10:00:00.000Z" },
+      }),
+      ...over,
+    });
+
+  it("list_todos stays under the loop's limit for 50 heavy rows, reports the true total, and keeps overdue rows first", async () => {
+    const open = [
+      ...Array.from({ length: 40 }, (_, i) => heavy(i + 1, { due: "later" })),
+      ...Array.from({ length: 10 }, (_, i) => heavy(i + 100, { due: "overdue", title: `Overdue ${i}` })),
+    ];
+    t.listTodos.mockResolvedValue({ open, done: [] });
+    const out = await runTool(ctx, "list_todos", {});
+    const r = out.result as { todos: { title: string; due: string }[]; total: number; note: string };
+    expect(JSON.stringify(out.result).length).toBeLessThan(MAX_RESULT_CHARS);
+    expect(r.total).toBe(50);
+    expect(r.todos.length).toBeLessThan(50);
+    expect(r.todos.slice(0, 10).map((x) => x.due)).toEqual(Array(10).fill("overdue"));
+    expect(r.todos[0].title).toBe("Overdue 0");
+    expect(r.note).toBe(`Showing the first ${r.todos.length} of 50; ${50 - r.todos.length} not shown.`);
+  });
+
+  it("list_nudges with both lists full of heavy contacts stays under the limit", async () => {
+    const row = (kind: string) => ({
+      kind, quietDays: 99,
+      contact: contact({
+        memberKind: "company", name: long("C", 300), company: null, personId: null,
+        aboutPersonId: "33333333-3333-4333-8333-333333333333", aboutName: long("P", 300), stageLabel: long("S", 300),
+      }),
+    });
+    n.listNudges.mockResolvedValue({
+      noNextStep: Array.from({ length: 10 }, () => row("no_next_step")),
+      quiet: Array.from({ length: 10 }, () => row("quiet")),
+      noNextStepTotal: 400,
+      quietTotal: 90,
+    });
+    const out = await runTool(ctx, "list_nudges", {});
+    expect(JSON.stringify(out.result).length).toBeLessThan(MAX_RESULT_CHARS);
+  });
+
+  it("list_todos has its own due enum without none", () => {
+    const e = TODO_TOOLS.find((x) => x.name === "list_todos")!.input_schema.properties.due.enum;
+    expect(e).toEqual(["overdue", "today", "week", "later", "undated"]);
   });
 });

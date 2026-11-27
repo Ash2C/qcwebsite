@@ -1,5 +1,7 @@
-// The assistant's toolbox: twelve fixed tools. Eight read the CRM; three only prepare a change and
-// return a signed proposal; one offers research, which the user starts with a button. Nothing in this
+// The assistant's toolbox: twelve fixed tools, and six more to-do tools on a CRM with the to-do table.
+// Eight of the twelve read the CRM; three only prepare a change and return a signed proposal; one
+// offers research, which the user starts with a button. The six: two read to-dos and nudges, four
+// prepare a to-do change. Nothing in this
 // file writes to the database, searches the web or calls a model.
 // A person who has connected their own Granola key gets three more, which only read their meetings
 // through the Granola client. They exist for nobody else: not in the list sent to the model and not
@@ -69,6 +71,11 @@ type ToolDef = {
 };
 
 const DUE = ["overdue", "today", "week", "later", "undated", "none"];
+const TODO_DUE = ["overdue", "today", "week", "later", "undated"];
+/** The most characters of one tool result the loop passes on; a bigger one is replaced by an error. */
+export const MAX_RESULT_CHARS = 24_000;
+// What list_todos fills with rows: well under the limit, leaving room for the totals and the note.
+const TODO_BUDGET = MAX_RESULT_CHARS - 5_000;
 const MEMBER_ID: Prop = { type: "string", description: "A member id taken from an earlier tool result." };
 const PERSON_ID: Prop = { type: "string", description: "A person id taken from an earlier tool result." };
 const ORG_ID: Prop = { type: "string", description: "A company id (orgId) taken from an earlier tool result." };
@@ -229,7 +236,7 @@ export const TODO_TOOLS: ToolDef[] = [
   tool(
     "list_todos",
     "List the user's open to-dos, at most 50, in due order, each with its id, due date, due bucket (overdue, today, week, later, undated), how many times it was moved, and its contact with stage, priority and last contact. Optionally only one due bucket, or only one contact's to-dos. Use it for what the user has to do.",
-    { due: { type: "string", description: "A due bucket.", enum: DUE }, member_id: MEMBER_ID, person_id: PERSON_ID },
+    { due: { type: "string", description: "A due bucket.", enum: TODO_DUE }, member_id: MEMBER_ID, person_id: PERSON_ID },
   ),
   tool(
     "list_nudges",
@@ -587,18 +594,30 @@ async function todoTool(ctx: ToolContext, viewer: Viewer, name: string, a: Recor
       const rows = open.filter(
         (t) => (a.due === undefined || t.due === a.due) && (aboutOnly === undefined || t.contact?.aboutPersonId === aboutOnly),
       );
-      const shown = rows.slice(0, TODO_ROWS).map((t) => ({
-        id: t.id,
-        title: t.title,
-        dueDate: t.dueDate,
-        due: t.due,
-        ...(t.movedCount > 0 ? { movedCount: t.movedCount } : {}),
-        ...(t.contact ? contactRow(t.contact) : {}),
-      }));
+      // Overdue first, then today: the ones the user needs when the list is cut. Stable within a bucket.
+      const rank = (d: string) => (d === "overdue" ? 0 : d === "today" ? 1 : 2);
+      const ordered = rows.map((t, i) => ({ t, i })).sort((x, y) => rank(x.t.due) - rank(y.t.due) || x.i - y.i).map((x) => x.t);
+      // Rows are added until the next would pass the budget, so the result always fits the loop's limit.
+      const shown: unknown[] = [];
+      let size = 0;
+      for (const t of ordered.slice(0, TODO_ROWS)) {
+        const row = slim({
+          id: t.id,
+          title: t.title,
+          dueDate: t.dueDate,
+          due: t.due,
+          ...(t.movedCount > 0 ? { movedCount: t.movedCount } : {}),
+          ...(t.contact ? contactRow(t.contact) : {}),
+        });
+        const chars = JSON.stringify(row).length + 1;
+        if (size + chars > TODO_BUDGET) break;
+        size += chars;
+        shown.push(row);
+      }
       return read({
-        todos: slim(shown),
+        todos: shown,
         total: rows.length,
-        ...(rows.length > TODO_ROWS ? { note: `Showing the first ${TODO_ROWS} of ${rows.length}; ${rows.length - TODO_ROWS} not shown.` } : {}),
+        ...(rows.length > shown.length ? { note: `Showing the first ${shown.length} of ${rows.length}; ${rows.length - shown.length} not shown.` } : {}),
       });
     }
     case "list_nudges": {
