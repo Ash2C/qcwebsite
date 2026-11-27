@@ -57,7 +57,7 @@ export function prepareMessage(name: string, title: string, due: string | null):
 }
 
 // What opening a ref asks the server for: the person; else the company, only for a company ref; else the member.
-function refTarget(r: Ref): ContactTarget {
+export function refTarget(r: Ref): ContactTarget {
   if (r.personId) return { personId: r.personId };
   if (r.kind === "company" && r.orgId) return { orgId: r.orgId };
   return { memberId: r.memberId };
@@ -146,6 +146,7 @@ export default function AskPanel({
   onChanged,
   send: sendRequest,
   blocked = false,
+  speakHint: showSpeakHint = false,
 }: {
   /** The request logic, owned by the parent; built from the same estate, state and viewing. */
   ask: ReturnType<typeof useAsk>;
@@ -176,10 +177,15 @@ export default function AskPanel({
    * a change until it is done. Typing and dictation still work.
    */
   blocked?: boolean;
+  /** The voice pill found no speech recognition here: show the keyboard-microphone hint. */
+  speakHint?: boolean;
 }) {
   // The microphone uses the browser's speech recognition, which hands over text only. Where the
   // browser has none, the hint points at the keyboard's own dictation.
-  const [speakHint, setSpeakHint] = useState(false);
+  const [speakHint, setSpeakHint] = useState(showSpeakHint);
+  useEffect(() => {
+    if (showSpeakHint) setSpeakHint(true);
+  }, [showSpeakHint]);
   // What was in the box when listening began; speech is added after it.
   const spokenBaseRef = useRef("");
   const dictation = useDictation((spoken) => {

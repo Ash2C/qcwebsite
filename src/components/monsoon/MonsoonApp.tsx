@@ -22,6 +22,8 @@ import AskWindow from "./AskWindow";
 import { AskPageContext } from "./askPage";
 import type { AskFootprint } from "./UndoBar";
 import { useAsk } from "./useAsk";
+import { useAskVoiceWiring } from "./useAskVoiceWiring";
+import VoicePill from "./VoicePill";
 import ContactsPanel, { EMPTY_CONTACTS, withOpen, withOpenResearch, type ContactsState, type ContactTarget } from "./ContactsPanel";
 import TodoPanel, { EMPTY_TODOS, type TodosState } from "./TodoPanel";
 import BatchReview, { makeBatch, type Batch } from "./BatchReview";
@@ -111,9 +113,9 @@ const ROOM_FOR_ASK: Record<AskFootprint, string> = {
   window: "pb-[calc(min(62dvh,580px)+1.5rem+env(safe-area-inset-bottom))]",
 };
 
-function Shell({ children }: { children: React.ReactNode }) {
+function Shell({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
   return (
-    <div className="min-h-dvh bg-[#f2f2f7] text-neutral-900 dark:bg-[#07090C] dark:text-white">
+    <div style={style} className="min-h-dvh bg-[#f2f2f7] text-neutral-900 dark:bg-[#07090C] dark:text-white">
       <UpdateBanner />
       {children}
     </div>
@@ -214,6 +216,7 @@ export default function MonsoonApp() {
     setAskCollapsed(false);
     setPrepared(null);
     setSendRequest(null);
+    setSpeakHint(false);
   }
   // Opens (or expands) the window. A computer focuses the question box; a touch screen only on an
   // explicit request to type (Ask about this contact), so the keyboard does not cover the page.
@@ -260,6 +263,10 @@ export default function MonsoonApp() {
   const [profileBusy, setProfileBusy] = useState(false);
   // Asks the Ask panel to focus its question box (see openAsk); the panel clears it once done.
   const [focusAsk, setFocusAsk] = useState(false);
+  // The voice pill found no speech recognition: the window shows the keyboard-microphone hint until closed.
+  const [speakHint, setSpeakHint] = useState(false);
+  // The caption strip's height above the pill row (0 when none shows); the Undo bar is lifted by it.
+  const [stripHeight, setStripHeight] = useState(0);
   // The Ask conversation belongs to one estate: any path that changes the estate clears it.
   const askEstateRef = useRef(estateKey);
   useEffect(() => {
@@ -289,6 +296,19 @@ export default function MonsoonApp() {
   });
   // Ask is busy while a question is out or a change card is being confirmed.
   const askBusy = askHook.asking || ask.turns.some((t) => t.cards?.some((c) => c.state === "working"));
+  // The page is reading or writing: Ask starts nothing until it is done (one write at a time).
+  const askBlocked = reading || saving || tidying || batchRunning || profileBusy || pageWrites.size > 0;
+  // Voice on phones: the pill speaks through askHook into the same conversation.
+  const voice = useAskVoiceWiring({
+    estate: estate ?? null,
+    ask: askHook,
+    state: ask,
+    onChange: setAsk,
+    disabled: askBlocked || askBusy,
+    openAsk,
+    onOpenContact: openContact,
+    onSpeakHint: () => setSpeakHint(true),
+  });
   const batchStarted = batch?.rows.some((r) => r.status === "saved") ?? false;
 
   const load = useCallback(async () => {
@@ -846,19 +866,30 @@ export default function MonsoonApp() {
         ? "text-red-600 dark:text-red-400"
         : "text-neutral-900 dark:text-white";
 
-  // The page is reading or writing: Ask starts nothing until it is done (one write at a time).
-  const askBlocked = reading || saving || tidying || batchRunning || profileBusy || pageWrites.size > 0;
   // What Ask shows at the bottom: the pill row (closed), the minimised bar above it, or the window.
   const footprint: AskFootprint = !askOpen ? "pill" : askCollapsed ? "bar" : "window";
-  // The pill row shows while Ask is closed or minimised; the expanded window takes its place.
-  const askButton = estate && footprint !== "window" ? (
+  // The pill row shows while Ask is closed or minimised; the expanded window takes its place. On a
+  // phone it is the voice pill; on a computer (and before the device is known) the Ask button.
+  const askButton = !estate || footprint === "window" ? null : voice.phone === true ? (
+    <VoicePill
+      voice={voice.voice}
+      disabled={askBlocked || askBusy}
+      buttonRef={askButtonRef}
+      onKeyboard={voice.onKeyboard}
+      onRate={voice.onRate}
+      rating={voice.rating}
+      chips={voice.chips}
+      raised={footprint === "bar"}
+      onStripHeight={setStripHeight}
+    />
+  ) : (
     <div className="pointer-events-none fixed inset-x-0 bottom-0 z-10 flex justify-center px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
       <button
         type="button"
         ref={askButtonRef}
         aria-label="Ask Monsoon"
         disabled={askBlocked}
-        onClick={() => openAsk()}
+        onClick={() => openAsk(voice.phone === false ? { focus: true } : undefined)}
         className="pointer-events-auto flex min-h-[60px] w-[62%] max-w-[280px] items-center justify-center gap-2.5 rounded-full bg-[#0E7FA6] px-6 text-[19px] font-semibold text-white shadow-lg shadow-black/25 active:bg-[#0D6A8F] disabled:bg-neutral-400 disabled:text-white dark:bg-[#6AE6FF] dark:text-[#04121A] dark:active:bg-[#3FB8D4] dark:disabled:bg-neutral-700 dark:disabled:text-neutral-400"
       >
         <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
@@ -867,7 +898,7 @@ export default function MonsoonApp() {
         Ask
       </button>
     </div>
-  ) : null;
+  );
   const roomForAsk = estate ? ROOM_FOR_ASK[footprint] : "pb-4";
   const askWindow =
     askOpen && estate ? (
@@ -878,7 +909,7 @@ export default function MonsoonApp() {
         onClose={closeAsk}
         looking={lookingLine(prepared ?? viewing)}
         hasConversation={ask.turns.length > 0}
-        sound={null}
+        sound={voice.phone === true ? voice.sound : null}
       >
         <AskPanel
           ask={askHook}
@@ -894,6 +925,7 @@ export default function MonsoonApp() {
           viewing={prepared ?? viewing}
           send={sendRequest ?? undefined}
           blocked={askBlocked}
+          speakHint={speakHint}
           // What is underneath is read again at once: the open profile and the To do list.
           onChanged={() => setProfileReload((n) => n + 1)}
         />
@@ -902,7 +934,7 @@ export default function MonsoonApp() {
   // Every screen: Ask over the live page, which knows whether Ask is busy and what it shows at the bottom.
   const frame = (main: React.ReactNode) => (
     <AskPageContext.Provider value={{ askBusy, above: footprint, reportBusy }}>
-      <Shell>
+      <Shell style={{ "--ask-strip": `${stripHeight}px` } as React.CSSProperties}>
         {askWindow}
         {askButton}
         {main}

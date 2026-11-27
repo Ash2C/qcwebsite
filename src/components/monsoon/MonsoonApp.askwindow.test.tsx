@@ -42,6 +42,8 @@ vi.mock("./api", () => ({
   todoAction: vi.fn(),
 }));
 vi.mock("./image", () => ({ downsizeImage: vi.fn() }));
+// These suites cover the Ask button and window as on a computer; voice on phones is in MonsoonApp.voice.test.tsx.
+vi.mock("./askDevice", async (actual) => ({ ...(await actual<typeof import("./askDevice")>()), useIsPhone: () => false }));
 
 const m = vi.mocked(api);
 type User = ReturnType<typeof userEvent.setup>;
@@ -400,6 +402,8 @@ describe("Ask as a floating window over a live page", () => {
     const bar = () => screen.getByText("Done: Renew domain").closest('[role="status"]') as HTMLElement;
     await screen.findByText("Done: Renew domain");
     expect(bar().className).toContain("bottom-[calc(6rem+env(safe-area-inset-bottom))]");
+    // A voice caption strip above the pill row lifts it by the strip's height.
+    expect(bar().className).toContain("-translate-y-[var(--ask-strip,0px)]");
     await openAsk(user);
     expect(bar().className).toContain("bottom-[calc(min(62dvh,580px)+1.5rem+env(safe-area-inset-bottom))]");
     await user.click(screen.getByRole("button", { name: "Minimise Ask and keep reading" }));
@@ -449,13 +453,16 @@ describe("Ask as a floating window over a live page", () => {
       expect(screen.getByRole("button", { name: "Ask Monsoon" })).toHaveFocus();
     });
 
-    it("on a touch screen, opening does not focus the question box, but Ask about this contact does", async () => {
+    // On a phone the window opening by itself (a spoken answer with a card) leaves the box unfocused:
+    // see MonsoonApp.voice.test.tsx. The Ask button, shown only where the device is not a phone, always
+    // focuses it, and so does Ask about this contact on a touch screen.
+    it("on a touch screen, the Ask button and Ask about this contact both focus the question box", async () => {
       pointer(true);
       const user = userEvent.setup();
       await start();
       await openAnna(user);
       await openAsk(user);
-      expect(questionBox()).not.toHaveFocus();
+      expect(questionBox()).toHaveFocus();
       await user.click(screen.getByRole("button", { name: "Minimise Ask and keep reading" }));
       await user.click(screen.getByRole("button", { name: "Ask about this contact" }));
       expect(await screen.findByRole("textbox", { name: "Your question" })).toHaveFocus();

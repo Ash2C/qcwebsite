@@ -12,6 +12,7 @@ const MAX_SENT = 24;
 const MAX_SENT_CHARS = 50_000;
 export const MAX_DRAFT = 2000;
 const ASK_FAILURE = "Could not get an answer. Check signal and try again.";
+const TOO_LONG = "That question is too long. Shorten it and try again.";
 
 export type AskOutcome =
   | { ok: true; turn: AskTurn; audio: string | null; captions: Caption[] }
@@ -90,8 +91,18 @@ export function useAsk(args: {
     const question = text ?? state.draft;
     if (askRef.current || working) return { ok: false, reason: "busy" };
     if (question.trim() === "") return { ok: false, reason: "empty" };
-    // Longer than the box allows (the box itself stops this) or no estate to ask: nothing is sent.
-    if (question.length > MAX_DRAFT || !estate) return { ok: false, reason: "failed" };
+    // Longer than the box allows (the box itself stops this, so only a spoken question gets here) or no
+    // estate to ask: nothing is sent. A given question goes into the box with a reason, as any failed one does.
+    if (question.length > MAX_DRAFT || !estate) {
+      if (text !== undefined) {
+        onChange((prev) => ({
+          ...prev,
+          draft: (prev.draft.trim() === "" ? question : `${question}\n${prev.draft}`).slice(0, MAX_DRAFT),
+        }));
+      }
+      setFailure(question.length > MAX_DRAFT ? TOO_LONG : ASK_FAILURE);
+      return { ok: false, reason: "failed" };
+    }
     askRef.current = true;
     setAsking(true);
     setFailure(null);
@@ -113,7 +124,8 @@ ${prev.draft}`).slice(0, MAX_DRAFT),
         messages,
         ...(viewing ? { viewing: viewing.target } : {}),
         ...(opts?.spoken ? { spoken: true } : {}),
-        ...(opts?.sound ? { sound: true } : {}),
+        // The server makes audio unless told sound: false, so a spoken question always says which.
+        ...(opts?.spoken ? { sound: opts.sound !== false } : {}),
       });
       if (gen !== genRef.current) return { ok: false, reason: "stale" };
       if (res.status === 401) {

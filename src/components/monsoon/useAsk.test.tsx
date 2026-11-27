@@ -82,6 +82,30 @@ describe("useAsk", () => {
     expect(out).toEqual({ ok: true, turn: result.current.state.turns[1], audio: "QUJD", captions });
   });
 
+  it("spoken with sound off sends sound: false, so the server makes no audio", async () => {
+    m.askCrm.mockResolvedValueOnce(answer("Jane is hot."));
+    const { result } = setup();
+    await act(async () => {
+      await result.current.ask.send("Who is hot?", { spoken: true, sound: false });
+    });
+    const body = m.askCrm.mock.calls[0][0];
+    expect(body.spoken).toBe(true);
+    expect(body.sound).toBe(false);
+  });
+
+  it("a given question too long to send goes into the box with a failure line, like any failed question", async () => {
+    const { result } = setup({ turns: [], draft: "typed" });
+    const long = "x".repeat(2001);
+    let out!: AskOutcome;
+    await act(async () => {
+      out = await result.current.ask.send(long, { spoken: true, sound: true });
+    });
+    expect(out).toEqual({ ok: false, reason: "failed" });
+    expect(m.askCrm).not.toHaveBeenCalled();
+    expect(result.current.state.draft).toBe(`${long}\ntyped`.slice(0, 2000));
+    expect(result.current.ask.failure).toBe("That question is too long. Shorten it and try again.");
+  });
+
   it("a second send while the first is in flight returns busy and sends once", async () => {
     const resolve = pending();
     const { result } = setup();

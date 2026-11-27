@@ -46,6 +46,8 @@ vi.mock("./api", () => ({
 vi.mock("./image", () => ({
   downsizeImage: vi.fn(),
 }));
+// These suites cover the Ask button and window as on a computer; voice on phones is in MonsoonApp.voice.test.tsx.
+vi.mock("./askDevice", async (actual) => ({ ...(await actual<typeof import("./askDevice")>()), useIsPhone: () => false }));
 
 const m = vi.mocked(api);
 
