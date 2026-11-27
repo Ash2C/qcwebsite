@@ -10,6 +10,7 @@ import {
   NO_SPEECH_MS,
   PAUSE_MS,
   REPLAY_WINDOW_MS,
+  STOP_FALLBACK_MS,
   useVoiceAsk,
 } from "./useVoiceAsk";
 import { isAppleTouch, useAskSound, useIsPhone } from "./askDevice";
@@ -17,6 +18,9 @@ import { isAppleTouch, useAskSound, useIsPhone } from "./askDevice";
 // ---- A fake speech recognition the tests drive by hand ----
 class FakeRecognition {
   static instances: FakeRecognition[] = [];
+  /** Chrome on Android sometimes never delivers onend after stop(); false mimics that. */
+  static endOnStop = true;
+  static startThrows = false;
   continuous = false;
   interimResults = false;
   lang = "";
@@ -31,11 +35,12 @@ class FakeRecognition {
     FakeRecognition.instances.push(this);
   }
   start() {
+    if (FakeRecognition.startThrows) throw new Error("already started");
     this.started += 1;
   }
   stop() {
     this.stopped += 1;
-    this.end();
+    if (FakeRecognition.endOnStop) this.end();
   }
   abort() {
     this.aborted += 1;
@@ -150,6 +155,8 @@ async function askAndAnswer(h: ReturnType<typeof setup>, text = "where does Anna
 beforeEach(() => {
   vi.useFakeTimers();
   FakeRecognition.instances = [];
+  FakeRecognition.endOnStop = true;
+  FakeRecognition.startThrows = false;
   FakeAudioContext.instances = [];
   FakeAudioContext.decodeFails = false;
   vi.stubGlobal("SpeechRecognition", FakeRecognition);
@@ -172,6 +179,119 @@ describe("constants", () => {
     expect(NO_SPEECH_MS).toBe(7000);
     expect(REPLAY_WINDOW_MS).toBe(12_000);
     expect(CAPTION_LINGER_MS).toBe(1500);
+    expect(STOP_FALLBACK_MS).toBe(2000);
+  });
+});
+
+describe("robustness", () => {
+  it("stop with no onend: after 2 s the question is sent once and the recognition aborted", async () => {
+    FakeRecognition.endOnStop = false;
+    const h = setup();
+    act(() => h.result.current.onPill());
+    act(() => rec().say("who is Anna"));
+    advance(PAUSE_MS);
+    expect(rec().stopped).toBe(1);
+    expect(h.send).not.toHaveBeenCalled();
+    advance(STOP_FALLBACK_MS - 1);
+    expect(h.send).not.toHaveBeenCalled();
+    advance(1);
+    expect(h.send).toHaveBeenCalledTimes(1);
+    expect(h.send).toHaveBeenCalledWith("who is Anna", { spoken: true, sound: true });
+    expect(rec().aborted).toBe(1);
+    await flush();
+    expect(h.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("stop with no onend and nothing heard: the not-heard path runs once", () => {
+    FakeRecognition.endOnStop = false;
+    const h = setup();
+    act(() => h.result.current.onPill());
+    advance(NO_SPEECH_MS + STOP_FALLBACK_MS);
+    expect(h.result.current.phase).toBe("idle");
+    expect(h.result.current.notice).toBe("not_heard");
+    expect(h.onEvent.mock.calls.filter((c) => c[0] === "no_speech")).toHaveLength(1);
+  });
+
+  it("onend arriving 1 s after stop: sent once, nothing more at 2 s", async () => {
+    FakeRecognition.endOnStop = false;
+    const h = setup();
+    act(() => h.result.current.onPill());
+    act(() => rec().say("who is Anna"));
+    advance(PAUSE_MS);
+    advance(1000);
+    act(() => rec().end());
+    expect(h.send).toHaveBeenCalledTimes(1);
+    await flush();
+    advance(STOP_FALLBACK_MS);
+    await flush();
+    expect(h.send).toHaveBeenCalledTimes(1);
+    expect(rec().aborted).toBe(0);
+  });
+
+  it("sound is read once at the tap: a toggle mid-question does not change send's sound", async () => {
+    const h = setup({ sound: false });
+    act(() => h.result.current.onPill());
+    act(() => rec().say("who is Anna"));
+    h.rerender({ sound: true, disabled: false });
+    advance(PAUSE_MS);
+    expect(h.send).toHaveBeenCalledWith("who is Anna", { spoken: true, sound: false });
+    expect(FakeAudioContext.instances).toHaveLength(0);
+    await flush();
+  });
+
+  it("a start() that throws: event no_speech with start-failed, notice not_heard, idle", () => {
+    FakeRecognition.startThrows = true;
+    const h = setup();
+    act(() => h.result.current.onPill());
+    expect(h.result.current.phase).toBe("idle");
+    expect(h.result.current.notice).toBe("not_heard");
+    expect(h.onEvent).toHaveBeenCalledWith("no_speech", expect.stringMatching(/^start-failed; /));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("hidden during thinking: the answer is delivered without audio, idle with replay offered, replay then plays", async () => {
+    let resolve!: (o: AskOutcome) => void;
+    const h = setup({ outcome: new Promise<AskOutcome>((r) => (resolve = r)) });
+    act(() => h.result.current.onPill());
+    act(() => rec().say("who is Anna"));
+    advance(PAUSE_MS);
+    expect(h.result.current.phase).toBe("thinking");
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(h.result.current.phase).toBe("thinking");
+    resolve(okOutcome());
+    await flush();
+    expect(h.onAnswer).toHaveBeenCalledWith(TURN);
+    expect(ctx().sources.filter((s) => s.started && (s.buffer as { silent?: boolean }).silent !== true)).toHaveLength(0);
+    expect(h.result.current.phase).toBe("idle");
+    expect(h.result.current.canReplay).toBe(true);
+    expect(h.result.current.lastTurn).toEqual(TURN);
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    act(() => h.result.current.replay());
+    expect(h.result.current.phase).toBe("speaking");
+    expect(ctx().answerSource()!.started).toBe(true);
+  });
+
+  it("a send that rejects after a long delay (the request layer's 70 s timeout) returns idle and opens the window", async () => {
+    const outcome = new Promise<AskOutcome>((_, reject) => setTimeout(() => reject(new Error("timeout")), 70_000));
+    outcome.catch(() => {});
+    const h = setup({ outcome });
+    act(() => h.result.current.onPill());
+    act(() => rec().say("who is Anna"));
+    advance(PAUSE_MS);
+    expect(h.result.current.phase).toBe("thinking");
+    // The send's clock started before the 1.5 s pause; it rejects at 70 s.
+    advance(70_000 - PAUSE_MS - 1);
+    await flush();
+    expect(h.result.current.phase).toBe("thinking");
+    expect(h.onNeedsWindow).not.toHaveBeenCalled();
+    advance(1);
+    await flush();
+    expect(h.result.current.phase).toBe("idle");
+    expect(h.onNeedsWindow).toHaveBeenCalledWith("failed");
   });
 });
 
@@ -507,6 +627,15 @@ describe("speaking", () => {
     h.unmount();
     expect(src.stopped).toBe(true);
     expect(c.closed).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+
+    // The page listener went with it: a later visibility change changes nothing.
+    const events = h.onEvent.mock.calls.length;
+    const sources = c.sources.length;
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    expect(() => document.dispatchEvent(new Event("visibilitychange"))).not.toThrow();
+    expect(h.onEvent.mock.calls.length).toBe(events);
+    expect(c.sources.length).toBe(sources);
     expect(vi.getTimerCount()).toBe(0);
   });
 

@@ -20,6 +20,8 @@ export const NO_SPEECH_MS = 7000;
 export const REPLAY_WINDOW_MS = 12_000;
 /** The last sentence stays up this long after an answer ends. */
 export const CAPTION_LINGER_MS = 1500;
+/** After the hook calls stop(), listening is ended by hand if the browser sends no onend by then. */
+export const STOP_FALLBACK_MS = 2000;
 /** Captions without audio step on this timer, from their own times. */
 const CAPTION_TICK_MS = 150;
 
@@ -107,6 +109,8 @@ export function useVoiceAsk(args: VoiceAskArgs) {
   const canReplayRef = useRef(false);
   /** Bumped whenever a question is abandoned (hidden page, unmount); late answers are dropped. */
   const runRef = useRef(0);
+  /** The run whose page was hidden while thinking: its answer arrives silently, for a replay tap. */
+  const hiddenRunRef = useRef<number | null>(null);
   /** A listen started in this tick; a second tap in the same tick is its echo, not a stop. */
   const justStartedRef = useRef(false);
   const justStartedTimer = useRef<number | null>(null);
@@ -117,6 +121,7 @@ export function useVoiceAsk(args: VoiceAskArgs) {
   const tickTimer = useRef<number | null>(null);
   const capTimer = useRef<number | null>(null);
   const pauseTimer = useRef<number | null>(null);
+  const stopFallbackTimer = useRef<number | null>(null);
 
   const ctxRef = useRef<AudioContext | null>(null);
   const bufferRef = useRef<AudioBuffer | null>(null);
@@ -148,6 +153,7 @@ export function useVoiceAsk(args: VoiceAskArgs) {
     clearTimer(tickTimer);
     clearTimer(capTimer);
     clearTimer(pauseTimer);
+    clearTimer(stopFallbackTimer);
   }
 
   function clearAfterTimers() {
@@ -190,6 +196,19 @@ export function useVoiceAsk(args: VoiceAskArgs) {
   }
 
   function stopRecognition(rec: Recognition) {
+    // Chrome on Android sometimes never sends onend after stop(): end the listen by hand then,
+    // through the same onend logic, which drops the recognition first so nothing fires twice.
+    clearTimer(stopFallbackTimer);
+    stopFallbackTimer.current = window.setTimeout(() => {
+      stopFallbackTimer.current = null;
+      if (recRef.current !== rec) return;
+      rec.onend?.();
+      try {
+        rec.abort();
+      } catch {
+        // Already ended.
+      }
+    }, STOP_FALLBACK_MS);
     try {
       rec.stop();
     } catch {
@@ -221,7 +240,9 @@ export function useVoiceAsk(args: VoiceAskArgs) {
     setCanReplay(false);
     clearAfterTimers();
     setCaption("");
-    if (a.sound) unlockAudio();
+    // Read once, at the tap: the unlock and the request agree even if sound is toggled mid-question.
+    const sound = a.sound;
+    if (sound) unlockAudio();
 
     const run = ++runRef.current;
     let rec: Recognition;
@@ -273,7 +294,7 @@ export function useVoiceAsk(args: VoiceAskArgs) {
       clearListenTimers();
       const question = heardRef.current.trim();
       if (question) {
-        void ask(question, run);
+        void ask(question, run, sound);
         return;
       }
       setHeard("");
@@ -302,15 +323,18 @@ export function useVoiceAsk(args: VoiceAskArgs) {
     } catch {
       recRef.current = null;
       clearListenTimers();
+      clearTimer(justStartedTimer);
+      justStartedRef.current = false;
+      setNotice("not_heard");
       setPhase("idle");
+      argsRef.current.onEvent("no_speech", eventDetail("start-failed"));
     }
   }
 
-  async function ask(question: string, run: number) {
+  async function ask(question: string, run: number, sound: boolean) {
     setPhase("thinking");
     setHeard(question);
     setCaption("");
-    const sound = argsRef.current.sound;
     let outcome: AskOutcome;
     try {
       outcome = await argsRef.current.send(question, { spoken: true, sound });
@@ -342,6 +366,12 @@ export function useVoiceAsk(args: VoiceAskArgs) {
         bufferRef.current = null;
       }
       if (run !== runRef.current) return;
+    }
+    if (hiddenRunRef.current === run) {
+      // The phone was locked while thinking: audio cannot start outside a tap on iOS, so the
+      // answer waits silently with replay offered; the replay tap plays it.
+      finish();
+      return;
     }
     play();
   }
@@ -455,6 +485,7 @@ export function useVoiceAsk(args: VoiceAskArgs) {
       if (document.visibilityState !== "hidden") return;
       if (phaseRef.current === "listening") abandonListening();
       else if (phaseRef.current === "speaking") stopSpeaking(false);
+      else if (phaseRef.current === "thinking") hiddenRunRef.current = runRef.current;
     }
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
