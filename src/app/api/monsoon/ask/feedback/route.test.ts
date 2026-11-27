@@ -58,6 +58,17 @@ describe("POST /api/monsoon/ask/feedback", () => {
     expect(account.feedback).toHaveBeenCalledWith({ pipelineKey: "traxo", kind: "no_speech", mode: "voice", detail: "a".repeat(200) });
   });
 
+  it("strips control characters from a detail before storing it", async () => {
+    const res = await POST(post(valid({ kind: "no_speech", detail: "heard\u001b[31m nothing\nat all\u0085" })));
+    expect(res.status).toBe(204);
+    expect(account.feedback).toHaveBeenCalledWith({ pipelineKey: "traxo", kind: "no_speech", mode: "voice", detail: "heard[31m nothingat all" });
+  });
+
+  it("strips control characters before the 200-character cut", async () => {
+    await POST(post(valid({ kind: "no_speech", detail: "\u001b".repeat(50) + "a".repeat(300) })));
+    expect(account.feedback).toHaveBeenCalledWith(expect.objectContaining({ detail: "a".repeat(200) }));
+  });
+
   it("stores null for a missing or non-text detail on a failure kind", async () => {
     await POST(post(valid({ kind: "mic_blocked" })));
     await POST(post(valid({ kind: "unsupported", detail: 5 })));

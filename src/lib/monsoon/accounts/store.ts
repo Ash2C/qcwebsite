@@ -307,6 +307,21 @@ export async function activityInLastDay(customerId: string, personId: string, ac
   });
 }
 
+/** One statement: inserts a 'speak' activity row only while this person has fewer than `limit` in the last 24 hours. True when the row was written. */
+export async function reserveSpeak(a: { customerId: string; personId: string; pipelineKey: string | null; limit: number }): Promise<boolean> {
+  return withAccountsDb(async (db) => {
+    // One statement: the limit check and the insert cannot be separated by another request.
+    const r = await db.query(
+      `INSERT INTO activity (customer_id, person_id, pipeline_key, action)
+       SELECT $1, $2, $3, 'speak'
+        WHERE (SELECT count(*) FROM activity
+                WHERE customer_id = $1 AND person_id = $2 AND action = 'speak' AND at > now() - interval '24 hours') < $4`,
+      [a.customerId, a.personId, a.pipelineKey, a.limit],
+    );
+    return r.rowCount === 1;
+  });
+}
+
 /** Appends one row; false (and nothing written) once the person has FEEDBACK_DAILY_LIMIT rows in 24 hours. */
 export async function recordFeedback(a: {
   customerId: string;

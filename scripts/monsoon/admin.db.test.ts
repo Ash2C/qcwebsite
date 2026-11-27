@@ -282,11 +282,27 @@ describe.skipIf(!db.available)("monsoon admin", () => {
     await fb("no_speech", 4, "heard nothing; ua 2");
     await fb("no_speech", 5, "other");
     await fb("mic_blocked", 40, "old", 4);
+    await fb("replay", 2, null, 2);
+    await fb("stopped", 6);
+    await fb("typed_instead", 12, null, 3);
     expect(await run(["ask-review"])).toBe(0);
-    expect(lines[0]).toBe("acme | last 7 days | questions 3 | spoken 2 | up 2 | down 0 | no_speech 3 | mic_blocked 0 | unsupported 0");
-    expect(lines[1]).toBe("acme | last 30 days | questions 5 | spoken 3 | up 2 | down 1 | no_speech 3 | mic_blocked 0 | unsupported 0");
+    expect(lines[0]).toBe(
+      "acme | last 7 days | questions 3 | spoken 2 | up 2 | down 0 | no_speech 3 | mic_blocked 0 | unsupported 0 | replay 2 | stopped 1 | typed_instead 0",
+    );
+    expect(lines[1]).toBe(
+      "acme | last 30 days | questions 5 | spoken 3 | up 2 | down 1 | no_speech 3 | mic_blocked 0 | unsupported 0 | replay 2 | stopped 1 | typed_instead 3",
+    );
     expect(lines[2]).toBe("acme | no_speech details | heard nothing x2 | other x1");
     expect(lines).toHaveLength(3);
+  });
+
+  it("ask-review prints no control characters from stored details", async () => {
+    await run(["customer", "add", "acme", "Acme Ltd"]);
+    const acme = (await client.query("SELECT id FROM customers WHERE code = 'acme'")).rows[0].id;
+    await client.query("INSERT INTO ask_feedback (customer_id, kind, mode, detail) VALUES ($1, 'no_speech', 'voice', $2)", [acme, "\u001b[2Jheard\u0007 nothing"]);
+    expect(await run(["ask-review"])).toBe(0);
+    expect(text()).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    expect(lines.some((l) => l.includes("[2Jheard nothing x1"))).toBe(true);
   });
 
   it("ask-review says so when nothing is in the window", async () => {

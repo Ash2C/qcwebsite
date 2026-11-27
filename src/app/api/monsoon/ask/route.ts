@@ -18,6 +18,8 @@ export const maxDuration = 60;
 
 /** Spoken answers with audio, per person per 24 hours; beyond it the answer comes as captions only. */
 export const SPOKEN_DAILY_LIMIT = 150;
+/** Longest answer sent to the paid speech service; a longer one gets captions only. */
+export const MAX_SPOKEN_CHARS = 700;
 
 const MAX_BODY = 262_144;
 const MAX_MESSAGES = 30;
@@ -180,21 +182,14 @@ function aboutOf(page: UserPage): AboutUser {
 /** Audio when allowed and available, else captions timed by length. Never throws, never logs the answer. */
 async function spokenReply(account: Account, estateKey: string, answer: string, sound: boolean): Promise<{ audio: string | null; captions: Caption[] }> {
   const captionsOnly = () => ({ audio: null, captions: captionsFor(answer, null) });
-  if (!sound) return captionsOnly();
+  if (!sound || answer.length > MAX_SPOKEN_CHARS) return captionsOnly();
   try {
-    if ((await account.countInLastDay("speak")) >= SPOKEN_DAILY_LIMIT) return captionsOnly();
+    // Reserved before speaking and never given back: a failed synthesis still spends one of the day's slots.
+    if (!(await account.reserveSpeak(estateKey, SPOKEN_DAILY_LIMIT))) return captionsOnly();
   } catch {
     return captionsOnly(); // an unreadable count counts as over the cap
   }
-  const out = await speak(answer, { env: process.env });
-  if (out.audio !== null) {
-    try {
-      await account.record("speak", estateKey);
-    } catch {
-      // the answer is already made; a missed count must not lose it
-    }
-  }
-  return out;
+  return speak(answer, { env: process.env });
 }
 
 export async function POST(request: Request) {

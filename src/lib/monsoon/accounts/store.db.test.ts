@@ -12,6 +12,7 @@ import {
   recordActivity,
   recordAttempt,
   recordFeedback,
+  reserveSpeak,
 } from "./store";
 
 const db = makeAccountsTestDb();
@@ -79,6 +80,29 @@ describe.skipIf(!db.available)("accounts store", () => {
     expect((await client.query("SELECT count(*)::int AS n FROM ask_feedback")).rows[0].n).toBe(300);
     expect(await recordFeedback({ customerId: cid, personId: pid, pipelineKey: null, kind: "up", mode: "typed", detail: null })).toBe(false);
     expect((await client.query("SELECT count(*)::int AS n FROM ask_feedback")).rows[0].n).toBe(300);
+  });
+
+  it("reserveSpeak writes a speak row only while the person has fewer than the limit in 24 hours", async () => {
+    const { cid, pid } = await seed();
+    const other = (await client.query("INSERT INTO people (customer_id, display_name, owner_key, passcode_hash) VALUES ($1, 'Bea', 'BE', 'h') RETURNING id", [cid])).rows[0].id;
+    await client.query("INSERT INTO activity (customer_id, person_id, action) SELECT $1, $2, 'speak' FROM generate_series(1, 149)", [cid, pid]);
+    await client.query("INSERT INTO activity (customer_id, person_id, action, at) SELECT $1, $2, 'speak', now() - interval '25 hours' FROM generate_series(1, 20)", [cid, pid]);
+    await client.query("INSERT INTO activity (customer_id, person_id, action) SELECT $1, $2, 'speak' FROM generate_series(1, 30)", [cid, other]);
+    await client.query("INSERT INTO activity (customer_id, person_id, action) SELECT $1, $2, 'ask' FROM generate_series(1, 30)", [cid, pid]);
+    expect(await reserveSpeak({ customerId: cid, personId: pid, pipelineKey: "first", limit: 150 })).toBe(true);
+    expect(await activityInLastDay(cid, pid, "speak")).toBe(150);
+    expect(await reserveSpeak({ customerId: cid, personId: pid, pipelineKey: "first", limit: 150 })).toBe(false);
+    expect(await activityInLastDay(cid, pid, "speak")).toBe(150);
+    const row = await client.query("SELECT pipeline_key FROM activity WHERE person_id = $1 AND action = 'speak' ORDER BY at DESC LIMIT 1", [pid]);
+    expect(row.rows[0].pipeline_key).toBe("first");
+    expect(await reserveSpeak({ customerId: cid, personId: other, pipelineKey: null, limit: 150 })).toBe(true);
+  });
+
+  it("concurrent reserveSpeak calls cannot pass the limit together", async () => {
+    const { cid, pid } = await seed();
+    const results = await Promise.all(Array.from({ length: 6 }, () => reserveSpeak({ customerId: cid, personId: pid, pipelineKey: null, limit: 3 })));
+    expect(results.filter(Boolean).length).toBe(3);
+    expect(await activityInLastDay(cid, pid, "speak")).toBe(3);
   });
 
   it("activeOwnerKeys lists only the active people of that customer", async () => {

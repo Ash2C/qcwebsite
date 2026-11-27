@@ -11,6 +11,9 @@ const MAX_DETAIL = 200;
 /** Only these kinds carry a reason; for the others anything sent is dropped. */
 const DETAIL_KINDS: readonly FeedbackKind[] = ["no_speech", "mic_blocked", "unsupported"];
 
+/** Terminal escape sequences and line breaks have no place in a stored reason. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+
 const bad = (error: string) => NextResponse.json({ error }, { status: 400 });
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -31,7 +34,7 @@ export async function POST(request: Request) {
   if (!kind) return bad("Unknown kind");
   if (b.mode !== "voice" && b.mode !== "typed") return bad("Unknown mode");
 
-  const detail = DETAIL_KINDS.includes(kind) && typeof b.detail === "string" ? b.detail.slice(0, MAX_DETAIL) : null;
+  const detail = DETAIL_KINDS.includes(kind) && typeof b.detail === "string" ? b.detail.replace(CONTROL_CHARS, "").slice(0, MAX_DETAIL) : null;
   await account.feedback({ pipelineKey: estate.key, kind, mode: b.mode, detail });
   return new NextResponse(null, { status: 204 });
 }

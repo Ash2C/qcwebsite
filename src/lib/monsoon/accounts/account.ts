@@ -14,6 +14,7 @@ import {
   loadAccountRows,
   recordActivity,
   recordFeedback,
+  reserveSpeak,
   activityInLastDay,
   type FeedbackKind,
   recordClaudeStatus,
@@ -51,6 +52,8 @@ export type Account = {
   record(action: ActivityAction, pipelineKey?: string | null): Promise<void>;
   /** This person's activity rows of this action in the last 24 hours. */
   countInLastDay(action: ActivityAction): Promise<number>;
+  /** Reserves one spoken answer in a single statement; false once this person has `limit` in 24 hours. */
+  reserveSpeak(pipelineKey: string | null, limit: number): Promise<boolean>;
   /** Appends one Ask feedback row; false once this person has hit the daily limit. */
   feedback(a: { pipelineKey: string | null; kind: FeedbackKind; mode: "voice" | "typed"; detail: string | null }): Promise<boolean>;
   /** True for the one person who may change the customer's Claude key. */
@@ -162,6 +165,9 @@ export function buildAccount(rows: { customer: CustomerRow; person: PersonRow; p
     },
     countInLastDay(action) {
       return activityInLastDay(customer.id, person.id, action);
+    },
+    reserveSpeak(pipelineKey, limit) {
+      return reserveSpeak({ customerId: customer.id, personId: person.id, pipelineKey, limit });
     },
     feedback(a) {
       return recordFeedback({ customerId: customer.id, personId: person.id, ...a });

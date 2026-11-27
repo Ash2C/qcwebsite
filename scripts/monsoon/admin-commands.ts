@@ -610,7 +610,8 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
       case "ask-review": {
         parseArgs(argv.slice(1));
         // Counts only, read-only: nothing here comes from a customer's CRM, and no question or answer is stored anywhere.
-        const failures = ["no_speech", "mic_blocked", "unsupported"];
+        const failures = ["no_speech", "mic_blocked", "unsupported"]; // the kinds that carry a detail
+        const kinds = ["up", "down", ...failures, "replay", "stopped", "typed_instead"];
         const windows = [7, 30];
         const cs = await db.query("SELECT id, code FROM customers ORDER BY code");
         let shown = 0;
@@ -640,9 +641,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
               `${c.code} | last ${days} days`,
               `questions ${r.questions}`,
               `spoken ${r.spoken}`,
-              `up ${r.byKind.get("up") ?? 0}`,
-              `down ${r.byKind.get("down") ?? 0}`,
-              ...failures.map((k) => `${k} ${r.byKind.get(k) ?? 0}`),
+              ...kinds.map((k) => `${k} ${r.byKind.get(k) ?? 0}`),
             ];
             out(parts.join(" | "));
           });
@@ -654,7 +653,7 @@ export async function runAdmin(argv: string[], deps: AdminDeps): Promise<number>
                 GROUP BY 1 ORDER BY n DESC, prefix LIMIT 3`,
               [c.id, kind],
             );
-            if (d.rowCount) out(`${c.code} | ${kind} details | ${d.rows.map((r: { prefix: string; n: number }) => `${r.prefix} x${r.n}`).join(" | ")}`);
+            if (d.rowCount) out(`${c.code} | ${kind} details | ${d.rows.map((r: { prefix: string; n: number }) => `${r.prefix.replace(/[\u0000-\u001f\u007f-\u009f]/g, "")} x${r.n}`).join(" | ")}`);
           }
         }
         if (shown === 0) out("No Ask activity or feedback in the last 30 days.");

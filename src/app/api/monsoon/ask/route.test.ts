@@ -26,7 +26,7 @@ vi.mock("@/lib/monsoon/accounts/account", async () =>
 import type { Account } from "@/lib/monsoon/accounts/account";
 import { TrialPaused } from "@/lib/monsoon/accounts/not-connected";
 import { fakeAccount, signInAs, signOut } from "@/lib/monsoon/testing/account";
-import { POST, SPOKEN_DAILY_LIMIT } from "./route";
+import { MAX_SPOKEN_CHARS, POST, SPOKEN_DAILY_LIMIT } from "./route";
 
 const fakeDb = { fake: true };
 const fakeMessages = { create: vi.fn() };
@@ -656,67 +656,92 @@ describe("POST /api/monsoon/ask: to-do tools", () => {
     expect(res.status).toBe(502);
     expect(runAsk).not.toHaveBeenCalled();
   });
+});
 
-  describe("spoken answers", () => {
-    const spokenBody = (over: Record<string, unknown> = {}) => valid({ spoken: true, ...over });
+describe("POST /api/monsoon/ask: spoken answers", () => {
+  const spokenBody = (over: Record<string, unknown> = {}) => valid({ spoken: true, ...over });
 
-    it("returns audio and captions, records speak, and tells the loop it is spoken", async () => {
-      const res = await POST(post(spokenBody()));
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ...RESULT, audio: "QUJD", captions: [{ text: "Hi.", start: 0, end: 1 }] });
-      expect(runAsk.mock.calls[0][0].spoken).toBe(true);
-      expect(speak).toHaveBeenCalledWith("Hi.", { env: process.env });
-      expect(account.record).toHaveBeenCalledWith("ask", "traxo");
-      expect(account.record).toHaveBeenCalledWith("speak", "traxo");
-    });
+  it("returns audio and captions, reserves a speak slot first, and tells the loop it is spoken", async () => {
+    const res = await POST(post(spokenBody()));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ...RESULT, audio: "QUJD", captions: [{ text: "Hi.", start: 0, end: 1 }] });
+    expect(runAsk.mock.calls[0][0].spoken).toBe(true);
+    expect(account.reserveSpeak).toHaveBeenCalledWith("traxo", SPOKEN_DAILY_LIMIT);
+    expect(speak).toHaveBeenCalledWith("Hi.", { env: process.env });
+    expect(account.record).toHaveBeenCalledWith("ask", "traxo");
+    expect(account.record).not.toHaveBeenCalledWith("speak", expect.anything());
+    expect(account.countInLastDay).not.toHaveBeenCalled();
+  });
 
-    it("sound: false never calls speak and returns length-timed captions", async () => {
-      const res = await POST(post(spokenBody({ sound: false })));
-      const body = await res.json();
-      expect(speak).not.toHaveBeenCalled();
-      expect(body.audio).toBeNull();
-      expect(body.captions).toEqual([{ text: "Hi.", start: 0, end: expect.any(Number) }]);
-      expect(account.record).not.toHaveBeenCalledWith("speak", expect.anything());
-    });
+  it("reserves before it speaks", async () => {
+    await POST(post(spokenBody()));
+    expect(vi.mocked(account.reserveSpeak).mock.invocationCallOrder[0]).toBeLessThan(speak.mock.invocationCallOrder[0]);
+  });
 
-    it("at the daily limit never calls speak", async () => {
-      vi.mocked(account.countInLastDay).mockResolvedValue(SPOKEN_DAILY_LIMIT);
-      const body = await (await POST(post(spokenBody()))).json();
-      expect(account.countInLastDay).toHaveBeenCalledWith("speak");
-      expect(speak).not.toHaveBeenCalled();
-      expect(body.audio).toBeNull();
-      expect(body.captions.length).toBe(1);
-    });
+  it("sound: false never reserves or speaks and returns length-timed captions", async () => {
+    const res = await POST(post(spokenBody({ sound: false })));
+    const body = await res.json();
+    expect(speak).not.toHaveBeenCalled();
+    expect(account.reserveSpeak).not.toHaveBeenCalled();
+    expect(body.audio).toBeNull();
+    expect(body.captions).toEqual([{ text: "Hi.", start: 0, end: expect.any(Number) }]);
+  });
 
-    it("a failing count means captions only", async () => {
-      vi.mocked(account.countInLastDay).mockRejectedValue(new Error("db"));
-      const res = await POST(post(spokenBody()));
-      expect(res.status).toBe(200);
-      expect(speak).not.toHaveBeenCalled();
-      expect((await res.json()).audio).toBeNull();
-    });
+  it("an answer over MAX_SPOKEN_CHARS gets captions only, with nothing reserved", async () => {
+    expect(MAX_SPOKEN_CHARS).toBe(700);
+    runAsk.mockResolvedValue({ ...RESULT, answer: "a".repeat(MAX_SPOKEN_CHARS + 1) });
+    const res = await POST(post(spokenBody()));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(speak).not.toHaveBeenCalled();
+    expect(account.reserveSpeak).not.toHaveBeenCalled();
+    expect(body.audio).toBeNull();
+    expect(body.captions.length).toBe(1);
+  });
 
-    it("audio null records no speak row and still answers", async () => {
-      speak.mockResolvedValue({ audio: null, captions: [{ text: "Hi.", start: 0, end: 1 }] });
-      const res = await POST(post(spokenBody()));
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.answer).toBe("Hi.");
-      expect(body.audio).toBeNull();
-      expect(account.record).not.toHaveBeenCalledWith("speak", expect.anything());
-    });
+  it("an answer of exactly MAX_SPOKEN_CHARS is still spoken", async () => {
+    runAsk.mockResolvedValue({ ...RESULT, answer: "a".repeat(MAX_SPOKEN_CHARS) });
+    await POST(post(spokenBody()));
+    expect(speak).toHaveBeenCalledTimes(1);
+  });
 
-    it("a non-spoken request has no audio or captions key", async () => {
-      const body = await (await POST(post(valid()))).json();
-      expect(body).toEqual(RESULT);
-      expect(speak).not.toHaveBeenCalled();
-      expect(runAsk.mock.calls[0][0]).not.toHaveProperty("spoken");
-    });
+  it("a refused reservation (at the daily limit) never calls speak", async () => {
+    vi.mocked(account.reserveSpeak).mockResolvedValue(false);
+    const body = await (await POST(post(spokenBody()))).json();
+    expect(speak).not.toHaveBeenCalled();
+    expect(body.audio).toBeNull();
+    expect(body.captions.length).toBe(1);
+  });
 
-    it("treats spoken: \"yes\" as absent", async () => {
-      const body = await (await POST(post(valid({ spoken: "yes" })))).json();
-      expect(body).toEqual(RESULT);
-      expect(speak).not.toHaveBeenCalled();
-    });
+  it("a failing reservation means captions only", async () => {
+    vi.mocked(account.reserveSpeak).mockRejectedValue(new Error("db"));
+    const res = await POST(post(spokenBody()));
+    expect(res.status).toBe(200);
+    expect(speak).not.toHaveBeenCalled();
+    expect((await res.json()).audio).toBeNull();
+  });
+
+  it("audio null keeps the reservation, writes no further speak row and still answers", async () => {
+    speak.mockResolvedValue({ audio: null, captions: [{ text: "Hi.", start: 0, end: 1 }] });
+    const res = await POST(post(spokenBody()));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.answer).toBe("Hi.");
+    expect(body.audio).toBeNull();
+    expect(account.reserveSpeak).toHaveBeenCalledTimes(1);
+    expect(account.record).not.toHaveBeenCalledWith("speak", expect.anything());
+  });
+
+  it("a non-spoken request has no audio or captions key", async () => {
+    const body = await (await POST(post(valid()))).json();
+    expect(body).toEqual(RESULT);
+    expect(speak).not.toHaveBeenCalled();
+    expect(runAsk.mock.calls[0][0]).not.toHaveProperty("spoken");
+  });
+
+  it("treats spoken: \"yes\" as absent", async () => {
+    const body = await (await POST(post(valid({ spoken: "yes" })))).json();
+    expect(body).toEqual(RESULT);
+    expect(speak).not.toHaveBeenCalled();
   });
 });
