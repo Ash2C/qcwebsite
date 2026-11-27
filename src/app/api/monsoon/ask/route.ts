@@ -187,7 +187,7 @@ async function spokenReply(account: Account, estateKey: string, answer: string, 
     // Reserved before speaking and never given back: a failed synthesis still spends one of the day's slots.
     if (!(await account.reserveSpeak(estateKey, SPOKEN_DAILY_LIMIT))) return captionsOnly();
   } catch {
-    return captionsOnly(); // an unreadable count counts as over the cap
+    return captionsOnly(); // a reservation that cannot be made counts as over the cap
   }
   return speak(answer, { env: process.env });
 }

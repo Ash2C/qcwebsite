@@ -307,22 +307,44 @@ export async function activityInLastDay(customerId: string, personId: string, ac
   });
 }
 
-/** One statement: inserts a 'speak' activity row only while this person has fewer than `limit` in the last 24 hours. True when the row was written. */
-export async function reserveSpeak(a: { customerId: string; personId: string; pipelineKey: string | null; limit: number }): Promise<boolean> {
+/**
+ * Runs a conditional insert for one person with that person's per-person lock held. The lock is taken in its own
+ * statement before the insert: under READ COMMITTED the insert then takes a fresh snapshot after any wait, so it sees
+ * every row a concurrent request committed. Without that, two requests could both read the count below the limit.
+ * Rolls back and releases the connection on any failure.
+ */
+async function insertUnderPersonLimit(personId: string, sql: string, params: unknown[]): Promise<boolean> {
   return withAccountsDb(async (db) => {
-    // One statement: the limit check and the insert cannot be separated by another request.
-    const r = await db.query(
-      `INSERT INTO activity (customer_id, person_id, pipeline_key, action)
-       SELECT $1, $2, $3, 'speak'
-        WHERE (SELECT count(*) FROM activity
-                WHERE customer_id = $1 AND person_id = $2 AND action = 'speak' AND at > now() - interval '24 hours') < $4`,
-      [a.customerId, a.personId, a.pipelineKey, a.limit],
-    );
-    return r.rowCount === 1;
+    await db.query("BEGIN");
+    try {
+      await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))", [personId]);
+      const r = await db.query(sql, params);
+      await db.query("COMMIT");
+      return r.rowCount === 1;
+    } catch (err) {
+      try {
+        await db.query("ROLLBACK");
+      } catch {
+        // the connection is closed by withAccountsDb either way
+      }
+      throw err;
+    }
   });
 }
 
-/** Appends one row; false (and nothing written) once the person has FEEDBACK_DAILY_LIMIT rows in 24 hours. */
+/** Inserts a 'speak' activity row only while this person has fewer than `limit` in the last 24 hours, serialised per person. True when the row was written. */
+export async function reserveSpeak(a: { customerId: string; personId: string; pipelineKey: string | null; limit: number }): Promise<boolean> {
+  return insertUnderPersonLimit(
+    a.personId,
+    `INSERT INTO activity (customer_id, person_id, pipeline_key, action)
+     SELECT $1, $2, $3, 'speak'
+      WHERE (SELECT count(*) FROM activity
+              WHERE customer_id = $1 AND person_id = $2 AND action = 'speak' AND at > now() - interval '24 hours') < $4`,
+    [a.customerId, a.personId, a.pipelineKey, a.limit],
+  );
+}
+
+/** Appends one row; false (and nothing written) once the person has FEEDBACK_DAILY_LIMIT rows in 24 hours. Serialised per person. */
 export async function recordFeedback(a: {
   customerId: string;
   personId: string;
@@ -331,15 +353,12 @@ export async function recordFeedback(a: {
   mode: "voice" | "typed";
   detail: string | null;
 }): Promise<boolean> {
-  return withAccountsDb(async (db) => {
-    // One statement: the limit check and the insert cannot be separated by another request.
-    const r = await db.query(
-      `INSERT INTO ask_feedback (customer_id, person_id, pipeline_key, kind, mode, detail)
-       SELECT $1, $2, $3, $4, $5, $6
-        WHERE (SELECT count(*) FROM ask_feedback
-                WHERE customer_id = $1 AND person_id = $2 AND at > now() - interval '24 hours') < $7`,
-      [a.customerId, a.personId, a.pipelineKey, a.kind, a.mode, a.detail, FEEDBACK_DAILY_LIMIT],
-    );
-    return r.rowCount === 1;
-  });
+  return insertUnderPersonLimit(
+    a.personId,
+    `INSERT INTO ask_feedback (customer_id, person_id, pipeline_key, kind, mode, detail)
+     SELECT $1, $2, $3, $4, $5, $6
+      WHERE (SELECT count(*) FROM ask_feedback
+              WHERE customer_id = $1 AND person_id = $2 AND at > now() - interval '24 hours') < $7`,
+    [a.customerId, a.personId, a.pipelineKey, a.kind, a.mode, a.detail, FEEDBACK_DAILY_LIMIT],
+  );
 }
