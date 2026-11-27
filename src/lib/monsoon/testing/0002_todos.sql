@@ -101,7 +101,8 @@ CREATE TRIGGER trg_todos_sync_member AFTER INSERT OR UPDATE OF status, title, du
 
 -- A direct write to members.next_action (old code) becomes to-do changes. pg_trigger_depth() is
 -- 1 for a write made by a statement and higher when the mirror trigger above made it, which
--- this guard leaves alone. Blank or null text counts as cleared.
+-- this guard leaves alone. Blank or null text counts as cleared. Nothing to convert returns
+-- before `todos` is read, so a login without to-do rights can still add and edit members.
 CREATE OR REPLACE FUNCTION members_next_action_guard() RETURNS TRIGGER AS $$
 DECLARE
     earliest UUID;
@@ -114,11 +115,18 @@ BEGIN
        AND NEW.next_action_date IS NOT DISTINCT FROM OLD.next_action_date THEN
         RETURN NEW;
     END IF;
-    SELECT t.id INTO earliest
-      FROM todos t
-     WHERE t.member_id = NEW.id AND t.status = 'open'
-     ORDER BY t.due_date NULLS LAST, t.created_at, t.id
-     LIMIT 1;
+    IF TG_OP = 'INSERT' AND NEW.next_action IS NULL AND NEW.next_action_date IS NULL THEN
+        RETURN NEW;
+    END IF;
+    -- A new member cannot have a to-do yet, so only an update looks for one; blank text or a
+    -- stray date on a new member is cleared below without reading `todos`.
+    IF TG_OP = 'UPDATE' THEN
+        SELECT t.id INTO earliest
+          FROM todos t
+         WHERE t.member_id = NEW.id AND t.status = 'open'
+         ORDER BY t.due_date NULLS LAST, t.created_at, t.id
+         LIMIT 1;
+    END IF;
     IF btrim(coalesce(NEW.next_action, '')) <> '' THEN
         IF earliest IS NOT NULL THEN
             UPDATE todos SET title = left(btrim(NEW.next_action), 300), due_date = NEW.next_action_date
