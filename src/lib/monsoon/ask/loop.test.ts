@@ -10,6 +10,7 @@ vi.mock("./tools", async (orig) => ({
   runTool: (...a: unknown[]) => runTool(...a),
 }));
 
+import { SPEECH_TIMEOUT_MS, SPOKEN_REPLY_INSTRUCTION } from "./speech";
 import { aboutBlock, buildSystem, runAsk, viewingLine, type AboutUser, type AskMessage, type ModelClient, type Viewing } from "./loop";
 
 const VOCAB = {
@@ -48,6 +49,7 @@ function setup(
     person?: { name: string; ownerKey: string };
     granola?: { key: string; onStatus?: (status: "key_rejected" | "no_access") => void };
     todos?: { viewer: { ownerKey: string; solo: boolean; appOwnerKeys: string[] } };
+    spoken?: boolean;
   } = {},
 ) {
   const calls: Record<string, unknown>[] = [];
@@ -80,6 +82,7 @@ function setup(
     ownerNames: extra.ownerNames,
     ...(extra.granola ? { granola: extra.granola } : {}),
     ...(extra.todos ? { todos: extra.todos } : {}),
+    ...(extra.spoken ? { spoken: true } : {}),
   };
   return { calls, create, timeouts, run: (m: AskMessage[] = Q) => runAsk(deps, m) };
 }
@@ -1020,5 +1023,44 @@ ${TODO_PROMPT}`)).toBe(true);
     const sent = (s.calls[0].tools as { name: string }[]).map((t) => t.name);
     for (const n of TODO_NAMES) expect(sent).not.toContain(n);
     expect(s.calls[0].system).not.toContain("list_todos");
+  });
+});
+
+describe("runAsk spoken", () => {
+  const HISTORY: AskMessage[] = [
+    { role: "user", content: "first question" },
+    { role: "assistant", content: "first answer" },
+    { role: "user", content: "who is Jane?" },
+  ];
+
+  it("adds the instruction to the model's copy of the last user message only", async () => {
+    const s = setup([text("Jane is an investor.")], () => 0, { spoken: true });
+    const input = JSON.parse(JSON.stringify(HISTORY));
+    await s.run(HISTORY);
+    expect(HISTORY).toEqual(input);
+    const sent = s.calls[0].messages as { role: string; content: string }[];
+    expect(sent[0]).toEqual({ role: "user", content: "first question" });
+    expect(sent[1].role).toBe("assistant");
+    expect(sent[2].content.startsWith("who is Jane?")).toBe(true);
+    expect(sent[2].content.endsWith(`(${SPOKEN_REPLY_INSTRUCTION})`)).toBe(true);
+  });
+
+  it("strips markdown from the returned answer", async () => {
+    const s = setup([text("**Jane** is an investor.")], () => 0, { spoken: true });
+    expect((await s.run(HISTORY)).answer).toBe("Jane is an investor.");
+  });
+
+  it("sends the request unchanged without spoken", async () => {
+    const s = setup([text("Jane.")]);
+    await s.run(HISTORY);
+    expect((s.calls[0].messages as unknown[])[2]).toEqual({ role: "user", content: "who is Jane?" });
+  });
+
+  it("gives up the loop earlier by the speech timeout", async () => {
+    const at = 50_000 - SPEECH_TIMEOUT_MS;
+    const s = setup([text("Too big, sorry.")], () => at, { spoken: true, startedAt: 0 });
+    const out = await s.run(HISTORY);
+    expect(out.answer).toBe("That question was too big to finish. Try a narrower one.");
+    expect(s.create).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireAccount } from "@/lib/monsoon/accounts/account";
+import { requireAccount, type Account } from "@/lib/monsoon/accounts/account";
 import { claudeFailureResponse } from "@/lib/monsoon/claude-failure";
 import type { Client } from "pg";
 import { runAsk, type AboutUser, type AskMessage, type ModelClient, type Viewing } from "@/lib/monsoon/ask/loop";
@@ -7,6 +7,7 @@ import { loadAskContext, type AskContext, type UserPage, type Who } from "@/lib/
 import { readGranolaKeyForAsk, recordGranolaStatus } from "@/lib/monsoon/accounts/granola-key";
 import { getProfile } from "@/lib/monsoon/contacts";
 import type { Ref } from "@/lib/monsoon/ask/tools";
+import { captionsFor, speak, type Caption } from "@/lib/monsoon/ask/speech";
 import { readJson } from "@/lib/monsoon/body";
 import { resolveToday } from "@/lib/monsoon/today";
 import { todosReady } from "@/lib/monsoon/todos";
@@ -14,6 +15,9 @@ import { todosReady } from "@/lib/monsoon/todos";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+/** Spoken answers with audio, per person per 24 hours; beyond it the answer comes as captions only. */
+export const SPOKEN_DAILY_LIMIT = 150;
 
 const MAX_BODY = 262_144;
 const MAX_MESSAGES = 30;
@@ -173,6 +177,26 @@ function aboutOf(page: UserPage): AboutUser {
   };
 }
 
+/** Audio when allowed and available, else captions timed by length. Never throws, never logs the answer. */
+async function spokenReply(account: Account, estateKey: string, answer: string, sound: boolean): Promise<{ audio: string | null; captions: Caption[] }> {
+  const captionsOnly = () => ({ audio: null, captions: captionsFor(answer, null) });
+  if (!sound) return captionsOnly();
+  try {
+    if ((await account.countInLastDay("speak")) >= SPOKEN_DAILY_LIMIT) return captionsOnly();
+  } catch {
+    return captionsOnly(); // an unreadable count counts as over the cap
+  }
+  const out = await speak(answer, { env: process.env });
+  if (out.audio !== null) {
+    try {
+      await account.record("speak", estateKey);
+    } catch {
+      // the answer is already made; a missed count must not lose it
+    }
+  }
+  return out;
+}
+
 export async function POST(request: Request) {
   const startedAt = Date.now(); // the loop's deadline counts from here, database connection included
   const auth = await requireAccount(request);
@@ -190,6 +214,9 @@ export async function POST(request: Request) {
   if (typeof messages === "string") return bad(messages);
   const today = resolveToday(b.today, startedAt);
   const viewingTarget = cleanViewing(b.viewing);
+  // Only the literal booleans count; anything else is as if the field were absent.
+  const spoken = b.spoken === true;
+  const sound = b.sound !== false;
 
   try {
     // One AI use for the whole question, however many rounds the loop takes. The customer's own
@@ -222,6 +249,7 @@ export async function POST(request: Request) {
           now: () => Date.now(),
           startedAt,
           viewing,
+          ...(spoken ? { spoken: true } : {}),
           ...(context ? { about: aboutOf(context.page), ownerNames: context.ownerNames } : {}),
           ...(todos ? { todos } : {}),
           ...(granola !== null ? { granola: { key: granola, onStatus: granolaStatusRecorder(who) } } : {}),
@@ -231,7 +259,8 @@ export async function POST(request: Request) {
     });
     await account.noteClaude();
     await account.record("ask", estate.key);
-    return NextResponse.json(result);
+    if (!spoken) return NextResponse.json(result);
+    return NextResponse.json({ ...result, ...(await spokenReply(account, estate.key, result.answer, sound)) });
   } catch (err) {
     // Name and status only: messages can carry questions, contact data or connection details.
     const status = (err as { status?: unknown })?.status;

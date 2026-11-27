@@ -4,6 +4,7 @@ import type { ClientBase } from "pg";
 import type { SignedProposal } from "./proposal";
 import type { Viewer } from "../todos";
 import { vocabulary, type Vocabulary } from "./queries";
+import { cleanForSpeech, SPEECH_TIMEOUT_MS, spokenText } from "./speech";
 import { MAX_RESULT_CHARS, refKey, runTool, toolsFor, type GranolaAccess, type Ref, type ResearchOffer } from "./tools";
 
 export type AskMessage =
@@ -314,12 +315,16 @@ export async function runAsk(
     granola?: GranolaAccess;
     /** Set only when the CRM has the to-do table: adds the six to-do tools, for this viewer. */
     todos?: { viewer: Viewer };
+    /** A spoken reply: written for the ear, markdown-free, and the deadline leaves room for the audio. */
+    spoken?: boolean;
   },
   messages: AskMessage[],
 ): Promise<AskResult> {
   const { db, customerId, estate, estateLabel, defaultRole, person, model, today, client, now } = deps;
   const start = deps.startedAt ?? now();
-  const remaining = () => DEADLINE_MS - (now() - start);
+  const spoken = deps.spoken === true;
+  const deadline = spoken ? DEADLINE_MS - SPEECH_TIMEOUT_MS : DEADLINE_MS;
+  const remaining = () => deadline - (now() - start);
   const opts = () => ({ timeout: Math.min(CALL_TIMEOUT_MS, remaining() - 1_000) });
   const vocab = await vocabulary(db);
   // A key with nothing in it is no key: the tools and the prompt stay exactly as without Granola.
@@ -328,13 +333,18 @@ export async function runAsk(
   const tools = toolsFor(granola !== undefined, todos !== undefined);
   const system = buildSystem(estateLabel, vocab, today, person, deps.viewing, deps.about, deps.ownerNames, granola !== undefined, todos !== undefined);
   const convo = toModelMessages(messages);
+  if (spoken) {
+    // Only the model's copy of the last question carries the instruction; `messages` is untouched.
+    const last = convo[convo.length - 1];
+    if (last && last.role === "user" && typeof last.content === "string") convo[convo.length - 1] = { role: "user", content: spokenText(last.content) };
+  }
 
   const refs = new Map<string, Ref>();
   const proposals: SignedProposal[] = [];
   let research: ResearchOffer | undefined; // the latest offer; the screen shows one card
   let sentChars = 0; // tool output sent back to the model so far
   const finish = (answer: string): AskResult => ({
-    answer: tidy(answer) === "" ? NO_ANSWER : tidy(answer),
+    answer: spoken ? cleanForSpeech(tidy(answer) === "" ? NO_ANSWER : tidy(answer)) : tidy(answer) === "" ? NO_ANSWER : tidy(answer),
     refs: [...refs.values()].slice(-MAX_REFS),
     proposals,
     ...(research ? { research } : {}),
