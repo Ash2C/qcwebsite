@@ -11,7 +11,7 @@ vi.mock("./api", () => ({ refineCard: vi.fn() }));
 const m = vi.mocked(api);
 
 const FIELDS = { name: "Jane Tan", title: "", org: "Acme", email: "", phone: "", linkedin: "" };
-const RESULT = { fields: { ...FIELDS, title: "CIO" }, notes: "Now CIO." };
+const RESULT = { fields: { ...FIELDS, title: "CIO" }, notes: "Now CIO.", todos: [] };
 
 let onApply: ReturnType<typeof vi.fn>;
 let onBusy: ReturnType<typeof vi.fn>;
@@ -133,7 +133,7 @@ describe("SpeakNotes", () => {
     expect(onApply).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Use as typed" }));
     expect(onApply).toHaveBeenCalledWith(
-      { fields: FIELDS, notes: "met at demo\ncall her" },
+      { fields: FIELDS, notes: "met at demo\ncall her", todos: [] },
       { fields: FIELDS, notes: "met at demo" },
     );
     expect(lastDraft).toBe("");

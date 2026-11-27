@@ -24,7 +24,7 @@ const FIELDS = {
   phone: "",
   linkedin: "",
 };
-const OUT = { fields: { ...FIELDS, title: "CIO" }, notes: "Now CIO." };
+const OUT = { fields: { ...FIELDS, title: "CIO" }, notes: "Now CIO.", todos: [] };
 
 function req(body: unknown, raw?: string): Request {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -105,8 +105,19 @@ describe("POST /api/monsoon/refine", () => {
       fields: FIELDS,
       notes: "met at demo",
       spoken: "she is CIO now",
+      today: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
     });
     expect(account.record).toHaveBeenCalledWith("tidy");
+  });
+
+  it("passes the browser's day through resolveToday", async () => {
+    refineContact.mockResolvedValue(OUT);
+    const server = new Date().toISOString().slice(0, 10);
+    await POST(req(valid({ today: server })));
+    expect(refineContact.mock.calls[0][2].today).toBe(server);
+    refineContact.mockClear();
+    await POST(req(valid({ today: "1999-01-01" })));
+    expect(refineContact.mock.calls[0][2].today).toBe(server);
   });
 
   it("records no activity when tidying fails", async () => {

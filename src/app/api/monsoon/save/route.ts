@@ -3,6 +3,8 @@ import { requireAccount } from "@/lib/monsoon/accounts/account";
 import { readJson } from "@/lib/monsoon/body";
 import { capture, type CaptureInput, type CaptureKind } from "@/lib/monsoon/capture";
 import { ensureOwner } from "@/lib/monsoon/owners";
+import { cleanOfferedTodos, MAX_OFFERED_TODOS } from "@/lib/monsoon/refine";
+import { resolveToday } from "@/lib/monsoon/today";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -54,6 +56,13 @@ export async function POST(request: Request) {
       ? str((extracted as Record<string, unknown>).raw_text)
       : undefined;
 
+  // Offered to-dos come from the browser: a list of at most 5, cleaned the way the model's are.
+  let todos: CaptureInput["todos"];
+  if (b.todos !== undefined) {
+    if (!Array.isArray(b.todos) || b.todos.length > MAX_OFFERED_TODOS) return invalid("todos must be a list of at most 5");
+    todos = cleanOfferedTodos(b.todos, resolveToday(b.today, Date.now()));
+  }
+
   const input: CaptureInput = {
     captureId: b.captureId,
     name: str(f.name) ?? "",
@@ -72,6 +81,7 @@ export async function POST(request: Request) {
         ? b.samePerson
         : undefined,
     kind: typeof b.kind === "string" && KINDS.includes(b.kind) ? (b.kind as CaptureKind) : undefined,
+    ...(todos ? { todos } : {}),
   };
 
   try {

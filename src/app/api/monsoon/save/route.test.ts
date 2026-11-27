@@ -204,6 +204,25 @@ describe("POST /api/monsoon/save", () => {
     expect(withDb.mock.calls[0][0]).toBe("zeroone");
   });
 
+  it("passes the offered to-dos on, cleaned, and leaves the key off when none were sent", async () => {
+    capture.mockResolvedValue({ outcome: "duplicate", person: "p", org: null });
+    await POST(post(validBody()));
+    expect(capture.mock.calls[0][1]).not.toHaveProperty("todos");
+    const today = new Date().toISOString().slice(0, 10);
+    await POST(post(validBody({ todos: [{ title: " Send deck ", due: "1999-01-01" }, { title: "", due: today }, { title: "Call", due: today }] })));
+    expect(capture.mock.calls[1][1].todos).toEqual([{ title: "Send deck", due: null }, { title: "Call", due: today }]);
+  });
+
+  it.each([
+    ["a non-array", "nope"],
+    ["an object", { title: "x" }],
+    ["more than 5", Array.from({ length: 6 }, (_, i) => ({ title: `t${i}`, due: "" }))],
+  ])("400 for todos that are %s", async (_n, todos) => {
+    const res = await POST(post(validBody({ todos })));
+    expect(res.status).toBe(400);
+    expect(capture).not.toHaveBeenCalled();
+  });
+
   it("passes samePerson only as a string or false, newOrg only as true", async () => {
     capture.mockResolvedValue({ outcome: "duplicate", person: "p", org: null });
     await POST(post(validBody({ samePerson: "pid-1", newOrg: false })));

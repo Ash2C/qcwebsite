@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAccount } from "@/lib/monsoon/accounts/account";
 import { claudeFailureResponse } from "@/lib/monsoon/claude-failure";
 import { readJson } from "@/lib/monsoon/body";
+import { resolveToday } from "@/lib/monsoon/today";
 import {
   MAX_FIELD,
   MAX_NOTES,
@@ -55,6 +56,7 @@ export async function POST(request: Request) {
       fields,
       notes: b.notes,
       spoken: b.spoken,
+      today: resolveToday(b.today, Date.now()),
     });
     await account.noteClaude();
     await account.record("tidy");

@@ -4,7 +4,7 @@
 import type { CardFields, CardKind } from "@/lib/monsoon/extract";
 import type { CardMatch } from "@/lib/monsoon/match";
 import type { CaptureResult } from "@/lib/monsoon/capture";
-import type { RefineInput, RefineOutput } from "@/lib/monsoon/refine";
+import type { OfferedTodo, RefineInput, RefineOutput } from "@/lib/monsoon/refine";
 import type { AskMessage, AskResult } from "@/lib/monsoon/ask/loop";
 import type { Profile } from "@/lib/monsoon/contacts";
 import type { ImportInfo, SiftHit, Sort } from "@/lib/monsoon/sift";
@@ -48,6 +48,10 @@ export type SaveBody = {
   samePerson?: string | false;
   kind?: CardKind;
   batch?: boolean;
+  /** To-dos the user kept from the tidy step; the server cleans them and writes them with the contact. */
+  todos?: OfferedTodo[];
+  /** The browser's local day, so offered dates already past are dropped. */
+  today?: string;
 };
 
 export type ApiResult<T> = { status: number; body: T };
@@ -145,13 +149,13 @@ export async function saveCard(
 }
 
 export async function refineCard(
-  body: RefineInput,
+  body: Omit<RefineInput, "today">,
 ): Promise<ApiResult<RefineOutput | { error: string }>> {
   return noted(
     await parse(
       await request(
         "/api/monsoon/refine",
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, today: localDay() }) },
         TIMEOUT_MS.standard,
       ),
     ),

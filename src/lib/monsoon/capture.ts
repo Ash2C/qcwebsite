@@ -1,6 +1,8 @@
 // Port of the CRM core's capture transaction (quantcloud/crm/db.py Crm.capture) plus the
 // monsoon additions in the spec, section 6.4. All SQL is parameterised and unnamed.
 import type { ClientBase } from "pg";
+import type { OfferedTodo } from "./refine";
+import { MAX_TODO_TITLE, todosReady, validDay } from "./todos";
 import { mergeFillEmpty, nameKey, similarOrgNames } from "./rules";
 
 export type CaptureKind = "card" | "badge" | "screen" | "other";
@@ -20,6 +22,7 @@ export type CaptureInput = {
   newOrg?: boolean;
   samePerson?: string | false; // person id, or false = a different person
   kind?: CaptureKind; // what the image was; sets the timeline wording
+  todos?: OfferedTodo[]; // written as open to-dos on the member, only when the CRM has the to-do table
 };
 
 // `name` is the name on file (a match by email can carry another spelling than the typed one).
@@ -120,7 +123,7 @@ export async function capture(db: ClientBase, input: CaptureInput, owner: string
     return r.rows[0];
   }
 
-  async function run(): Promise<CaptureResult> {
+  async function run(writeTodos: boolean): Promise<CaptureResult> {
     // 1. Lock on the capture id; an earlier capture with this id returns its result.
     await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [input.captureId]);
     const earlier = await db.query(
@@ -261,6 +264,21 @@ export async function capture(db: ClientBase, input: CaptureInput, owner: string
       summary,
     ]);
 
+    // 8. Offered to-dos: plain inserts in this transaction (addTodo opens its own, which cannot nest).
+    // No timeline entry; the trigger sets the member's next action.
+    if (writeTodos) {
+      for (const todo of input.todos ?? []) {
+        const title = typeof todo?.title === "string" ? todo.title.trim().slice(0, MAX_TODO_TITLE) : "";
+        if (!title) continue;
+        const due = typeof todo.due === "string" && validDay(todo.due) ? todo.due : null;
+        await db.query(
+          `INSERT INTO todos (title, due_date, member_id, about_person_id, owner, source)
+           VALUES ($1, $2::date, $3, $4, $5, 'notes')`,
+          [title, due, member.id, filedUnder ? person.id : null, owner],
+        );
+      }
+    }
+
     if (filedUnder) {
       return {
         outcome: "filed",
@@ -282,10 +300,12 @@ export async function capture(db: ClientBase, input: CaptureInput, owner: string
     };
   }
 
+  // Checked before the transaction: a missing version table is an error that would abort it.
+  const writeTodos = (input.todos?.length ?? 0) > 0 && (await todosReady(db));
   await db.query("BEGIN ISOLATION LEVEL READ COMMITTED");
   try {
     await db.query("SET LOCAL statement_timeout = '10s'");
-    const result = await run();
+    const result = await run(writeTodos);
     await db.query(result.outcome === "added" || result.outcome === "existing" || result.outcome === "filed"
         ? "COMMIT" : "ROLLBACK");
     return result;

@@ -77,7 +77,7 @@ export default function SpeakNotes({
   function applyAsTyped() {
     if (disabled) return;
     onBusy?.(true);
-    finish({ fields, notes: [notes, draft].filter(Boolean).join("\n") }, { fields, notes });
+    finish({ fields, notes: [notes, draft].filter(Boolean).join("\n"), todos: [] }, { fields, notes });
     onBusy?.(false);
   }
 

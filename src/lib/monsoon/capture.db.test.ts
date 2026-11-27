@@ -3,7 +3,7 @@ import type { Client } from "pg";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { capture, type CaptureInput } from "./capture";
 import { ensureOwner } from "./owners";
-import { testDb } from "./testing/db";
+import { makeV1TestDb, testDb } from "./testing/db";
 
 function input(over: Partial<CaptureInput> = {}): CaptureInput {
   return { captureId: randomUUID(), name: "Jane Tan", role: "investor", ...over };
@@ -408,5 +408,68 @@ describe.skipIf(!testDb.available)("capture transaction (real Postgres)", () => 
     expect(r.outcome).toBe("added");
     expect((await db.query("SELECT owner FROM members")).rows).toEqual([{ owner: "AB" }]);
     expect((await db.query("SELECT by_whom FROM touches")).rows).toEqual([{ by_whom: "AB" }]);
+  });
+
+  describe("offered to-dos", () => {
+    const offered = [
+      { title: "Send her the deck", due: "2026-12-01" },
+      { title: "Intro her to Sam", due: null },
+    ];
+    const todoRows = async () =>
+      (await db.query("SELECT t.title, t.due_date::text AS due, t.status, t.source, t.owner, t.member_id, t.about_person_id FROM todos t ORDER BY t.created_at, t.id")).rows;
+
+    it("writes them as open to-dos on the new contact's member, source notes, owned by the capture's owner", async () => {
+      const r = await capture(db, input({ org: "Acme Capital", todos: offered }), "VF");
+      expect(r.outcome).toBe("added");
+      const m = (await db.query("SELECT id, next_action, next_action_date::text AS d FROM members")).rows[0];
+      expect(await todoRows()).toEqual([
+        { title: "Send her the deck", due: "2026-12-01", status: "open", source: "notes", owner: "VF", member_id: m.id, about_person_id: null },
+        { title: "Intro her to Sam", due: null, status: "open", source: "notes", owner: "VF", member_id: m.id, about_person_id: null },
+      ]);
+      // The trigger sets the member's next action; no timeline entry beyond the meeting touch.
+      expect(m.next_action).toBe("Send her the deck");
+      expect(m.d).toBe("2026-12-01");
+      expect(await count("touches")).toBe(1);
+    });
+
+    it("sets about_person_id when the person sits under a member company", async () => {
+      const org = (
+        await db.query("INSERT INTO orgs (name, name_key, source) VALUES ('Northwind Capital', 'northwind capital', 'test') RETURNING id")
+      ).rows[0];
+      const memberId = (
+        await db.query("INSERT INTO members (org_id, role, stage, owner, source) VALUES ($1, 'investor', 'uncontacted', 'VF', 'test') RETURNING id", [org.id])
+      ).rows[0].id;
+      const r = await capture(db, input({ name: "Omar Reyes", org: "Northwind Capital", todos: [offered[0]] }), "VF");
+      expect(r.outcome).toBe("filed");
+      expect(await todoRows()).toEqual([
+        { title: "Send her the deck", due: "2026-12-01", status: "open", source: "notes", owner: "VF", member_id: memberId, about_person_id: (r as { person: string }).person },
+      ]);
+    });
+
+    it("writes none for a duplicate capture", async () => {
+      const i = input({ org: "Acme Capital", todos: [offered[0]] });
+      await capture(db, i, "VF");
+      expect((await capture(db, i, "VF")).outcome).toBe("duplicate");
+      expect(await count("todos")).toBe(1);
+    });
+
+    it("writes none when the capture is not saved", async () => {
+      const r = await capture(db, input({ role: "nope", todos: offered }), "VF");
+      expect(r.outcome).toBe("invalid");
+      expect(await count("todos")).toBe(0);
+    });
+
+    it("on a CRM still at schema version 1 the capture succeeds and writes none", async () => {
+      const v1 = makeV1TestDb("capture_v1");
+      await v1.reset();
+      const old = await v1.connect();
+      try {
+        const r = await capture(old, input({ org: "Acme Capital", todos: offered }), "VF");
+        expect(r.outcome).toBe("added");
+        expect((await old.query("SELECT count(*)::int AS n FROM members")).rows[0].n).toBe(1);
+      } finally {
+        await old.end();
+      }
+    });
   });
 });
